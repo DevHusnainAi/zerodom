@@ -1,0 +1,108 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Orbit — Fleet Console</title>
+<style>
+  body { font: 15px/1.6 system-ui, sans-serif; margin: 0; color: #1a1a1a; }
+  header { display: flex; gap: 20px; align-items: center;
+           padding: 14px 28px; border-bottom: 1px solid #e3e3e3; }
+  nav a { margin-right: 16px; color: #2563eb; text-decoration: none; }
+  main { padding: 24px 28px; max-width: 900px; }
+  fieldset { border: 1px solid #e3e3e3; border-radius: 8px; margin: 0 0 24px; padding: 16px 20px; }
+  label { display: block; margin: 10px 0 4px; font-weight: 600; font-size: 13px; }
+  input, select, textarea { padding: 7px 9px; border: 1px solid #ccc; border-radius: 6px;
+                            font: inherit; width: 260px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+  button { padding: 7px 14px; border-radius: 6px; border: 1px solid #ccc;
+           background: #f6f6f6; font: inherit; cursor: pointer; }
+  .primary { background: #16a34a; border-color: #16a34a; color: #fff; }
+  .hidden-by-attr { display: none; }
+</style>
+
+<!--
+  A page zerodom owns, so the demo report ships no one else's site. It is a
+  deliberate obstacle course: every labelling strategy, a table the browser will
+  inject <tbody> into, a numeric id that is a CSS parse error, and a web component
+  whose controls live in a shadow root.
+-->
+
+<header>
+  <strong>Orbit</strong>
+  <nav>
+    <a href="/fleet">Fleet</a>
+    <a href="/routes">Routes</a>
+    <a href="/alerts">Alerts</a>
+    <a href="/settings">Settings</a>
+  </nav>
+  <!-- adjacent-caption labelling: the input has no label element of its own -->
+  Search: <input name="q" type="search">
+  <button aria-label="Open account menu">☰</button>
+</header>
+
+<main>
+  <h1>Vehicle 88-C</h1>
+
+  <fieldset>
+    <legend>Dispatch</legend>
+    <form>
+      <label for="driver">Assigned driver</label>
+      <input id="driver" name="driver" placeholder="Search by name" required>
+
+      <label>Departure <input name="departs" type="datetime-local"></label>
+
+      <span id="cap">Cargo weight (kg)</span>
+      <input aria-labelledby="cap" name="weight" type="number" value="1200">
+
+      <label for="route">Route</label>
+      <select id="route" name="route">
+        <option>Northbound</option>
+        <option>Coastal</option>
+      </select>
+
+      <label for="notes">Notes</label>
+      <textarea id="notes" name="notes" rows="2"></textarea>
+
+      <p>
+        <label><input type="checkbox" name="hazmat"> Carrying hazardous material</label>
+        <label><input type="radio" name="priority" value="normal" checked> Normal</label>
+        <label><input type="radio" name="priority" value="urgent"> Urgent</label>
+      </p>
+
+      <button type="submit" class="primary">Dispatch</button>
+      <button type="button">Save draft</button>
+      <button type="button" disabled>Recall (in transit)</button>
+      <input type="hidden" name="csrf" value="not-a-node">
+    </form>
+  </fieldset>
+
+  <!-- No <tbody> here; the browser inserts one, and selectors have to survive it. -->
+  <table>
+    <tr><th>Leg</th><th>Status</th><th></th></tr>
+    <tr id="4471"><td>Depot → Harbour</td><td>Delivered</td>
+        <td><a href="/legs/4471">Details</a></td></tr>
+    <tr id="4472"><td>Harbour → Rail</td><td>In transit</td>
+        <td><a href="/legs/4472">Details</a></td></tr>
+    <tr id="4473"><td>Rail → Depot</td><td>Queued</td>
+        <td><a href="/legs/4473">Details</a></td></tr>
+  </table>
+
+  <!-- Two ways to hide a control. Only one is visible in the markup, so only one is
+       pruned — the stylesheet case is a documented limitation, shown here on purpose. -->
+  <p class="hidden-by-attr"><button>Hidden by a stylesheet (still reported)</button></p>
+  <p hidden><a href="/nope">Hidden by attribute (pruned)</a></p>
+
+  <!-- Controls inside a shadow root: invisible to page.content(), handled by from_page. -->
+  <fleet-actions></fleet-actions>
+</main>
+
+<script>
+  customElements.define('fleet-actions', class extends HTMLElement {
+    connectedCallback() {
+      this.attachShadow({ mode: 'open' }).innerHTML = `
+        <style>button { margin-right: 8px; }</style>
+        <button id="ping">Ping vehicle</button>
+        <button id="unlock">Unlock doors</button>
+        <a href="/telemetry">Live telemetry</a>`;
+    }
+  });
+</script>

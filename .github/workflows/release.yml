@@ -1,0 +1,33 @@
+name: Release
+
+# Tags, not every push to main: PyPI rejects a re-upload of an existing version,
+# so `git tag v0.0.2 && git push --tags` is the publish button.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Job-level permissions REPLACE the workflow-level block rather than merging
+      # with it, so contents:read has to be repeated here or checkout 404s on a
+      # private repo.
+      contents: read
+      id-token: write # mints the OIDC token PyPI trusts instead of an API key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # Without this, tagging v0.0.2 while pyproject still says 0.0.1 publishes
+      # 0.0.1 under the wrong name — and PyPI versions cannot be reused.
+      - name: Tag matches pyproject version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          got=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
+          [ "$want" = "$got" ] || { echo "tag $want != pyproject $got"; exit 1; }
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1

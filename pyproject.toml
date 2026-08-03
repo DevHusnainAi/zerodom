@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zerodom"
+version = "0.0.1"
+description = "DOM-to-Interaction-Graph middleware for AI web agents"
+# PyPI cannot resolve relative image paths and the repo is private, so the full
+# README's screenshots would render broken. This one is image-free.
+readme = "README.pypi.md"
+requires-python = ">=3.10"
+license = "BUSL-1.1"
+license-files = ["LICENSE"]
+keywords = ["dom", "llm", "agent", "playwright", "mcp", "browser-automation", "tokens"]
+authors = [{ name = "Syed Husnain Khalid", email = "contact@vexralabs.com" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+dependencies = [
+    # lxml only — BeautifulSoup's tree construction alone costs ~60ms on a 5k-node
+    # page, which does not fit the <50ms budget. See zerodom/parser.py.
+    "lxml",
+    "tiktoken",
+    "mcp[cli]",
+    "playwright",
+]
+
+[project.urls]
+Homepage = "https://github.com/DevHusnainAi/zerodom"
+Repository = "https://github.com/DevHusnainAi/zerodom"
+Issues = "https://github.com/DevHusnainAi/zerodom/issues"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[project.scripts]
+zerodom = "zerodom.cli:main"
+zerodom-mcp = "zerodom.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["zerodom"]
+
+[tool.hatch.build.targets.sdist]
+# The README points at GitHub-hosted images, so shipping 1.5MB of PNGs in every
+# source download buys nothing.
+exclude = ["assets", "demo", ".github"]

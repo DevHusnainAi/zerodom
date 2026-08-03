@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+dist/
+*.egg-info/
+
+# session transcripts and scratch captures — local only
+*-this-session-is-being-continued-from-a-previous-c.txt
+assets/screenshot.png
+# regenerable: `zerodom inspect --render --screenshot ... --html ... demo/demo-page.html`
+demo/report.html
+demo/annotated.png
