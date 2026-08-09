@@ -23,7 +23,12 @@ SERIALIZE = """() => {
       // A stylesheet rule is invisible to a parser reading HTML text, so
       // `<input class="hidden">` looks clickable and an agent burns a 30s
       // timeout on it. Only the browser knows; record what it knows.
-      if (!el.checkVisibility({ visibilityProperty: true, contentVisibilityAuto: true })) {
+      //
+      // NOT contentVisibilityAuto: `content-visibility: auto` is a rendering
+      // optimisation for offscreen content, not a way to hide it. Counting it
+      // as hidden deletes everything below the fold — on vercel.com that was
+      // 129 of 177 controls, an agent blinded to most of the page.
+      if (!el.checkVisibility({ visibilityProperty: true })) {
         el.setAttribute('data-zerodom-hidden', '');
         marked.push(el);
       }

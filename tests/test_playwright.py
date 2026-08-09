@@ -292,3 +292,18 @@ def test_icon_link_label_survives_a_real_browser(browser):
     assert [n["label"] for n in nodes] == ["upvote"]
     assert p.locator(nodes[0]["selector"]).count() == 1
     p.close()
+
+
+def test_offscreen_content_is_not_treated_as_hidden(browser):
+    """`content-visibility: auto` skips *rendering* offscreen content; it is still
+    real, scrollable and clickable. Counting it as hidden deleted 129 of 177
+    controls on vercel.com in 0.0.2 — worse than the bug it was fixing."""
+    p = browser.new_page()
+    p.set_content(
+        "<html><head><style>.lazy{content-visibility:auto}</style></head><body>"
+        "<div style='height:200vh'></div>"
+        "<section class='lazy'><button>Below the fold</button></section>"
+        "</body></html>"
+    )
+    assert [n["label"] for n in ZeroDOM.from_page(p)["nodes"]] == ["Below the fold"]
+    p.close()
