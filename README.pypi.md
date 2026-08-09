@@ -7,24 +7,39 @@ the buttons, inputs and links an agent can actually act on, and nothing else.
 
 An agent driving a browser gets one of two action spaces today, and both are bad.
 **Pixels** are slow, expensive, and produce coordinates that go stale the moment
-the page scrolls. **The accessibility tree** is cheaper but enormous, and it has
-no stable handles: 102 of Hacker News' 220 actionable nodes share a
-`(role, name)` pair with another node, so there is no way to say *which* story to
-upvote.
+the page scrolls. **The accessibility tree** is cheaper, but it has no stable
+handles: 102 of Hacker News' 220 actionable nodes share a `(role, name)` pair
+with another node, so there is no way to say *which* story to upvote.
 
-ZeroDOM is a third option — a flat list of what the page can do, where every
-entry has a stable id, and the addressing information that makes it clickable
-never enters the context window. A median of **10.2 tokens per action across 111
-live sites**, where **10,275 of 10,382 selectors resolved to exactly one live
-element** and only 2 were ambiguous.
+That second failure is the expensive one. A graph that costs a few tokens too
+many wastes money. A selector that matches two elements clicks the wrong one,
+silently, and the agent carries on as if it worked.
 
-- **No LLM in the loop.** lxml in, graph out, 10–30ms, identical output every run.
+ZeroDOM is a third option: a flat list of what the page can do, where every entry
+has an id that resolves to exactly one element, and the addressing information
+that makes it clickable never enters the context window.
+
+**Measured on 111 live sites** — static, SPA, web components, iframes, canvas,
+dashboards, commerce, government, forms, login walls:
+
+| | |
+|---|---|
+| nodes audited | **10,382** |
+| resolved to exactly one live element | **98.97%** |
+| **ambiguous — matched more than one** | **0.02%** (2 nodes) |
+| invalid selectors | **0** |
+| actionable to Playwright (sampled) | 96.1% of 1,201 |
+
+695 of those selectors had to be scoped against open shadow roots — 121 of 129 on
+shoelace.style — and every one resolves uniquely. It is also small: a median of
+**10.2 tokens per action** against the accessibility tree's 23–70, **98.9%**
+smaller than raw HTML, parsed in a median 39ms with no model in the loop.
+
+- **No LLM in the loop.** lxml in, graph out, identical output every run.
 - **Selectors never enter the context window.** The model sees `[03]`; the CSS
   path stays in `selector_map()` on your side.
 - **Nothing leaves your machine.** No telemetry, no API keys, no storage — the
   only network traffic is the page you pointed it at.
-- **The selectors actually resolve.** Verified in a real browser: 231/231 on
-  Hacker News, where rows carry no `id` or `class` and numeric ids need escaping.
 
 ## Install
 

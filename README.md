@@ -21,23 +21,58 @@ the buttons, inputs and links an agent can actually act on, and nothing else.
 
 ---
 
-## Why your agent should read this instead of the HTML
+## The problem is addressing, not size
 
 An agent driving a browser gets one of two action spaces today, and both are bad.
 **Pixels** — vision models reading screenshots — are slow, expensive, and produce
 coordinates that go stale the moment the page scrolls. **The accessibility tree**
-is cheaper but enormous, and it has no stable handles: 102 of Hacker News' 220
-actionable nodes share a `(role, name)` pair with another node, so there is no way
-to say *which* story to upvote.
+is cheaper, but it has no stable handles: 102 of Hacker News' 220 actionable
+nodes share a `(role, name)` pair with another node, so there is no way to say
+*which* story to upvote.
 
-ZeroDOM is a third option — a flat list of what the page can do, where every entry
-has a stable id, and the addressing information that makes it clickable never
-enters the context window. A median of **10.3 tokens per action across 49 live
-sites**, and never more than 21.
+That second failure is the expensive one. A graph that costs a few tokens too
+many wastes money. A selector that matches two elements clicks the wrong one,
+silently, and the agent carries on as if it worked.
+
+ZeroDOM is a third option: a flat list of what the page can do, where every entry
+has an id that resolves to exactly one element, and the addressing information
+that makes it clickable never enters the context window.
+
+### Measured on 111 live sites
+
+`benchmarks/benchmark_sites.py` — static pages, SPAs, web components, iframes,
+canvas apps, dashboards, commerce, government, forms and login walls:
+
+| | |
+|---|---|
+| nodes audited | **10,382** |
+| resolved to exactly one live element | **98.97%** |
+| **ambiguous — matched more than one** | **0.02%** (2 nodes) |
+| invalid selectors | **0** |
+| actionable to Playwright (sampled) | 96.1% of 1,201 |
+| unlabelled | 0.67% |
+
+Two ambiguous nodes in ten thousand, and both on a page that rewrites itself
+while you read it. Re-tested on a settled DOM they resolve cleanly, as do the
+residual misses — bbc.co.uk goes from 180 to 0, surveymonkey.com from 94 to 0.
+**A graph is a snapshot; re-read after each action and the MCP server does that
+for you.**
+
+**The hard cases are the point.** 695 selectors across 11 sites had to be scoped
+against open shadow roots — 121 of 129 on shoelace.style, 85 of 95 on
+vercel.com — and every one of them resolves uniquely. Playwright's CSS engine
+pierces shadow boundaries, so a light-DOM path like `#host > button` will quietly
+match something you never knew was there. That bug shipped in 0.0.1 and is why
+this section leads.
+
+**It is also small and fast.** A median of **10.2 tokens per action** (range
+8.3–20.8) against the accessibility tree's 23–70, a median **98.9%** smaller than
+raw HTML, and a median parse of 39ms with no model in the loop. Full numbers in
+[Benchmarks](#benchmarks).
 
 **No LLM in the loop.** The parse is deterministic — lxml in, graph out,
-10–30ms, identical output every run. Nothing about your page reaches a model
-until *you* send the graph to one.
+identical output every run. Nothing about your page reaches a model until *you*
+send the graph to one.
 
 **Selectors never enter the context window.** The model sees `[03]`; the CSS
 path `#row > span > a` stays in `selector_map()` on your side. On real pages
@@ -47,12 +82,6 @@ path on almost every one of its 231 links.
 **Nothing leaves your machine.** The browser is yours, the parse is local, the
 graph is a dict you own. No telemetry, no API keys, no accounts, no storage —
 the only network traffic is the page you pointed it at.
-
-**The selectors actually resolve.** Every one is verified in a real browser —
-231/231 on Hacker News, where rows carry no `id` or `class`, browsers inject
-`<tbody>` that source HTML omits, and numeric ids (`id="49151933"`) are escaped
-because `#49151933` is a CSS parse error. A selector that doesn't resolve is a
-silent wrong action, so it's the thing ZeroDOM is most careful about.
 
 ## From this → to this
 
@@ -133,7 +162,7 @@ cost more than the labels do.
 | en.wikipedia.org article | 37,535 | 17,011 | **2,961** | 54.7% | **92.1%** |
 | news.ycombinator.com | 11,882 | 18,428 | **2,326** | −55.1% | **80.4%** |
 
-**Mean 93.1% across these five. Over 49 live sites the median is 97.9% and the
+**Mean 93.1% across these five. Over 111 live sites the median is 98.9% and the
 worst is 64.1%** — see below. Parsing runs in 10–30ms on a typical page; a
 synthetic 5,000-node page parses in ~24ms.
 
@@ -197,31 +226,41 @@ variable. Context cost scales with what a page can *do*, not with how it was
 built — a budget you can plan around before you know which page the agent lands
 on. There is no page in this set where ZeroDOM costs more per action.
 
-## Measured across 49 live sites
+## Measured across 111 live sites
 
-`benchmarks/benchmark_sites.py` drives ZeroDOM over 50 real pages — static,
-SPA, shadow-DOM component libraries, iframe editors, canvas apps, e-commerce,
-government, and login walls — then verifies **every selector against the live
-browser**:
+`benchmarks/benchmark_sites.py` drives ZeroDOM over 111 real pages — static,
+SPA, web-component libraries, iframe editors, canvas apps, dashboards,
+e-commerce, government, forms and login walls — then verifies **every selector
+against the live browser** with Playwright locators, samples real actionability,
+and re-parses each page to confirm the output is stable:
 
 | | |
 |---|---|
-| nodes audited | **4,754** |
-| resolve to exactly one element | **4,754 (100.00%)** |
-| ambiguous — match more than one | **0** |
-| dead — match nothing | **0** |
-| unlabelled | 33 (0.69%) |
-| tokens per node | median **10.3**, range 8.3–20.8 |
-| saving vs raw HTML | median **97.9%**, worst **64.1%** |
-| parse time | median **33ms**, p90 218ms |
+| nodes audited | **10,382** |
+| resolve to exactly one element | **10,275 (98.97%)** |
+| ambiguous — match more than one | **2 (0.02%)** |
+| invalid selectors | **0** |
+| actionable to Playwright | 1,154 of 1,201 sampled (96.1%) |
+| unlabelled | 70 (0.67%) |
+| tokens per node | median **10.2**, range 8.3–20.8 |
+| saving vs raw HTML | median **98.9%**, worst **64.1%** |
+| parse time | median **39ms**, p90 214ms |
 
-Zero ambiguous selectors is the number that matters: an ambiguous selector is a
-silent wrong click. 695 of those selectors needed shadow-root scoping — 121 of
-129 on shoelace.style, 85 of 95 on vercel.com — and all of them resolve.
+Two ambiguous selectors in ten thousand is the number that matters: an ambiguous
+selector is a silent wrong click. 695 of these needed shadow-root scoping — 121
+of 129 on shoelace.style, 85 of 95 on vercel.com — and all of them resolve.
 
-The floor is lean, link-dense pages with nothing to strip: danluu.com saves
-64.1%, archive.org 66.6%. The ceiling is app shells — cloudflare.com goes from
-687,807 tokens to 466.
+**The residual 1% is timing, not addressing.** Third-party scripts insert wrapper
+elements between the parse and the check, and a structural path is position
+dependent — one injected `<div>` shifts every `nth-of-type` index after it. On
+caniuse.com the culprit was a `div.google-anno-skip` present in the snapshot and
+gone seconds later. Re-tested on a settled DOM, bbc.co.uk goes from 180 misses to
+**0**, surveymonkey.com from 94 to **0**, railway.com from 30 to **0**. Treat a
+graph as a snapshot and re-read after each action.
+
+The floor for token saving is lean, link-dense pages with nothing to strip:
+danluu.com saves 64.1%, archive.org 66.6%. The ceiling is app shells —
+cloudflare.com goes from 687,807 tokens to 466.
 
 ## Claude MCP setup
 
@@ -305,6 +344,7 @@ after parse_url : ''             ← wiped by goto
 ```bash
 zerodom https://example.com                   # the compact graph + a token report
 zerodom https://example.com --find "sign in"  # only the nodes that match
+zerodom https://example.com --frames         # also read inside iframes
 zerodom https://example.com --json            # the full graph, selectors included
 zerodom https://example.com --render          # headless Chromium, for JS pages
 ```
@@ -395,9 +435,20 @@ so nothing can enumerate it.
 root and no matching `<slot>`, the browser draws none of the host's light children —
 ZeroDOM still emits them, because that's a rendering decision invisible in markup.
 
-**Iframes aren't traversed.** Each frame is a separate document; ZeroDOM parses
-the top one. Payment fields, embedded editors and consent gates typically live in
-an iframe and won't appear.
+**Iframes are opt-in.** By default ZeroDOM parses the top document only. Pass
+`frames=True` — `ZeroDOM.from_page(page, frames=True)`, `zerodom --frames`, or
+the MCP tool's `frames=True` — and it reads same- and cross-origin frames at any
+depth, keeping every node clickable through `frames.locate()`. It stays off by
+default because it costs a read per frame, and most frames on a commercial page
+are advertising. Frames are chosen by rendered size, never by URL: a `srcdoc` or
+`document.write` preview keeps the `about:blank` URL, and that is exactly the
+embedded editor you came for.
+
+**An almost-empty graph tells you why.** When fewer than three nodes come back,
+`metadata["warning"]` names the cause — a bot wall, an open modal holding the
+rest of the page under `aria-hidden`/`inert`, or content behind an iframe or
+canvas. Eight of 111 benchmarked sites hit one of those three, and every one was
+initially misread as "ZeroDOM found nothing".
 
 **Canvas and WebGL apps have nothing to parse.** Figma-style surfaces draw their
 controls as pixels — there is no element to emit. Screenshot-based computer use
