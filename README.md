@@ -561,7 +561,7 @@ multi-megabyte file. Use `--screenshot` alone if you only need the image.
 ```bash
 uv sync
 uv run playwright install chromium   # needed for the browser-backed tests
-uv run pytest                        # 96 tests; browser ones skip without chromium
+uv run pytest                        # 131 tests; browser ones skip without chromium
 uv build                             # wheel + sdist into dist/
 ```
 
