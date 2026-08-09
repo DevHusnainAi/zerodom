@@ -48,6 +48,42 @@ def frame_chain(frame: Any) -> list[str] | None:
     return list(reversed(chain))
 
 
+async def frame_chain_async(frame: Any) -> list[str] | None:
+    """`frame_chain` for async pages, nesting included.
+
+    Playwright's two APIs share no base class, so the walk is written twice
+    rather than wrapped — a sync/async shim here would be more code than the
+    duplicate loop and harder to read at the point of failure.
+    """
+    chain: list[str] = []
+    current = frame
+    while current.parent_frame is not None:
+        try:
+            element = await current.frame_element()
+            index = await element.evaluate(
+                "e => [...e.ownerDocument.querySelectorAll('iframe')].indexOf(e)"
+            )
+        except Exception:
+            return None
+        if index < 0:
+            return None
+        chain.append(f"iframe >> nth={index}")
+        current = current.parent_frame
+    return list(reversed(chain))
+
+
+async def is_worth_reading_async(frame: Any) -> bool:
+    """`is_worth_reading` for async pages."""
+    if any((frame.url or "").lower().startswith(p) for p in SKIP_URL_PREFIXES):
+        return False
+    try:
+        element = await frame.frame_element()
+        box = await element.bounding_box()
+    except Exception:
+        return False
+    return bool(box) and box["width"] >= MIN_FRAME_PX and box["height"] >= MIN_FRAME_PX
+
+
 def is_worth_reading(frame: Any) -> bool:
     """Is this frame rendered, and big enough to hold something clickable?
 

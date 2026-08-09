@@ -6,10 +6,10 @@ import inspect
 from typing import Any
 
 from .frames import (
-    MIN_FRAME_PX,
-    SKIP_URL_PREFIXES,
     frame_chain,
+    frame_chain_async,
     is_worth_reading,
+    is_worth_reading_async,
     locate,
     renumber,
 )
@@ -147,28 +147,15 @@ def _merge_frames(page: Any, graph: InteractionGraph) -> InteractionGraph:
 
 
 async def _merge_frames_async(page: Any, graph: InteractionGraph) -> InteractionGraph:
-    """`_merge_frames` for async pages; Playwright's two APIs share no base class."""
+    """`_merge_frames` for async pages, nesting included."""
     added, skipped = [], 0
     for frame in page.frames:
         if frame is page.main_frame:
             continue
-        try:
-            element = await frame.frame_element()
-            box = await element.bounding_box()
-            index = await element.evaluate(
-                "e => [...e.ownerDocument.querySelectorAll('iframe')].indexOf(e)"
-            )
-        except Exception:
-            skipped += 1
+        if not await is_worth_reading_async(frame):
             continue
-        url = (frame.url or "").lower()
-        if any(url.startswith(p) for p in SKIP_URL_PREFIXES) or not url:
-            continue
-        if not box or box["width"] < MIN_FRAME_PX or box["height"] < MIN_FRAME_PX:
-            continue
-        # Only one level deep for async: nested cross-origin frames need a
-        # parent walk, and no caller has asked for them yet.
-        if index < 0 or frame.parent_frame is not page.main_frame:
+        chain = await frame_chain_async(frame)
+        if chain is None:
             skipped += 1
             continue
         try:
@@ -178,7 +165,7 @@ async def _merge_frames_async(page: Any, graph: InteractionGraph) -> Interaction
             skipped += 1
             continue
         for node in sub["nodes"]:
-            node["frame"] = [f"iframe >> nth={index}"]
+            node["frame"] = chain
             node["frame_url"] = frame.url
         added += sub["nodes"]
     return _finish(graph, added, skipped)

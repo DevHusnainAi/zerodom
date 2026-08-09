@@ -53,7 +53,9 @@ def fetch_with_frames(url: str):
     return graph, html, final_url
 
 
-def capture(url: str, screenshot: str | None, html_path: str | None) -> tuple[str, str, str]:
+def capture(
+    url: str, screenshot: str | None, html_path: str | None, frames: bool = False
+):
     """Load a URL once and write whichever visual artifacts were asked for.
 
     Measuring, annotating and screenshotting all need the same live page, so they
@@ -62,13 +64,14 @@ def capture(url: str, screenshot: str | None, html_path: str | None) -> tuple[st
     from playwright.sync_api import sync_playwright
 
     from . import report
+    from .playwright_wrapper import ZeroDOM
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         page.goto(url, wait_until="networkidle")
         source, final_url = serialize(page), page.url
-        graph = ZeroDOMParser(source, final_url).parse()
+        graph = ZeroDOM.from_page(page, frames=frames)
 
         png, layout = report.screenshot(page, graph, screenshot)
         browser.close()
@@ -81,7 +84,7 @@ def capture(url: str, screenshot: str | None, html_path: str | None) -> tuple[st
         with open(html_path, "w", encoding="utf-8") as fh:
             fh.write(graph.to_html_report(png, layout))
         notes.append(f"  HTML report        {html_path}")
-    return source, final_url, "\n".join(notes)
+    return graph, source, final_url, "\n".join(notes)
 
 
 def inspect(
@@ -98,12 +101,12 @@ def inspect(
         url = Path(url).resolve().as_uri()
 
     extra = ""
-    if frames:
+    if screenshot or html_path:
+        # One browser session for the graph and every artifact asked for.
+        graph, html, final_url, extra = capture(url, screenshot, html_path, frames)
+    elif frames:
         # Frames only exist in a live browser, so this is a --render superset.
         graph, html, final_url = fetch_with_frames(url)
-    elif screenshot or html_path:
-        html, final_url, extra = capture(url, screenshot, html_path)
-        graph = ZeroDOMParser(html, final_url).parse()
     else:
         html, final_url = fetch(url, render)
         graph = ZeroDOMParser(html, final_url).parse()

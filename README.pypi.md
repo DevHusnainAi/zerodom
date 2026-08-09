@@ -14,8 +14,9 @@ upvote.
 
 ZeroDOM is a third option — a flat list of what the page can do, where every
 entry has a stable id, and the addressing information that makes it clickable
-never enters the context window. A median of **10.3 tokens per action across 49
-live sites**, where **4,754 of 4,754 selectors resolved to exactly one element**.
+never enters the context window. A median of **10.2 tokens per action across 111
+live sites**, where **10,275 of 10,382 selectors resolved to exactly one live
+element** and only 2 were ambiguous.
 
 - **No LLM in the loop.** lxml in, graph out, 10–30ms, identical output every run.
 - **Selectors never enter the context window.** The model sees `[03]`; the CSS
@@ -82,9 +83,16 @@ in a model's context.
 **A median of ~10 tokens per action**, against ARIA's 23–70 and wildly variable.
 Mean 71.0% fewer tokens than the snapshot a model actually gets.
 
-Across 49 live sites (static, SPA, shadow DOM, iframe, canvas, commerce, gov,
-login walls): **4,754/4,754 selectors resolved to exactly one live element — 0
-ambiguous, 0 dead**. Median saving vs raw HTML 97.9%, worst case 64.1%.
+Across **111 live sites** (static, SPA, shadow DOM, iframe, canvas, commerce,
+government, forms, login walls), `benchmarks/benchmark_sites.py` measured
+**10,382 nodes: 98.97% resolved to exactly one live element, 0.02% ambiguous,
+0 invalid**, and 96.1% of a sampled 1,201 were actionable to Playwright. Median
+saving vs raw HTML 98.9%, worst case 64.1%. Parse: median 39ms, p90 214ms.
+
+The residual misses are almost all timing, not addressing: a page that is still
+hydrating, or a third-party script inserting a wrapper `<div>`, shifts the
+structural paths underneath you. Re-tested on a settled DOM, bbc.co.uk goes from
+180 misses to 0 and surveymonkey.com from 94 to 0.
 
 ## MCP server
 
@@ -121,6 +129,7 @@ zerodom https://news.ycombinator.com          # compact graph + token savings
 zerodom https://example.com --find checkout   # only the nodes that match
 zerodom https://example.com --render          # headless Chromium, for JS-heavy pages
 zerodom https://example.com --json            # full JSON graph, selectors included
+zerodom https://example.com --frames          # also read inside iframes
 zerodom https://example.com --html out.html   # graph beside an annotated screenshot
 ```
 
@@ -128,8 +137,10 @@ zerodom https://example.com --html out.html   # graph beside an annotated screen
 
 - **Closed shadow roots** are unreachable — no browser API exposes them. Open
   roots work.
-- **Cross-origin and same-origin iframes** are not traversed yet; only the top
-  frame is parsed.
+- **Iframes are opt-in.** `from_page(page, frames=True)`, `zerodom --frames` or
+  the MCP tool's `frames=True` reads same- and cross-origin frames and keeps
+  every node clickable. It is off by default because it costs a read per frame
+  and most frames on a commercial page are advertising.
 - **Canvas-rendered UIs** have no DOM to read. Use a vision model there.
 - **Stylesheet-hidden controls need a live browser.** With a real page
   (`from_page`, `--render`, the MCP server) the cascade is consulted and hidden
@@ -137,8 +148,16 @@ zerodom https://example.com --html out.html   # graph beside an annotated screen
   `<div class="hidden">` is emitted as if visible.
 - **Labels come from the page**, so a hostile page can write anything into one.
   Treat graph text as untrusted input — see SECURITY.md.
+- **A graph is a snapshot.** Selectors are structural, so a page still
+  hydrating — or a third-party script inserting a wrapper `<div>` — can
+  invalidate one within seconds. Re-read after each action; the MCP server does
+  this for you.
 - ZeroDOM operates on a `Page` you already control. It does not bypass bot
   detection and makes no attempt to.
+
+When a graph comes back almost empty, `metadata["warning"]` says why — bot wall,
+open modal, or content behind an iframe or canvas — instead of leaving you to
+guess whether the page or the parser was at fault.
 
 ## Links
 
