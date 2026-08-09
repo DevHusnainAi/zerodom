@@ -393,13 +393,13 @@ ran. The one exception is the CLI's convenience fetch (`zerodom <url>`),
 which is an ordinary HTTP request and will hit a wall like any other; the
 benchmark script flags that case rather than working around it.
 
-**Visibility is read from markup, not from layout.** Hiding is detected on the
-element itself — `[hidden]`, `aria-hidden`, `type="hidden"`, and `display:none` /
-`visibility:hidden` in an inline `style`. A stylesheet rule can't be seen, so
-`<div class="hidden">` and its children are emitted as if visible, as is anything
-sized to zero or buried under an overlay. Use `--screenshot` or `--html`: an
-element the browser can't locate, or one whose box lands somewhere absurd, shows
-up immediately.
+**Stylesheet-hidden controls need a live browser.** With a real page —
+`from_page`, `--render`, `--screenshot`, `--html`, or the MCP server — the
+serializer asks the browser `checkVisibility()` and drops anything the cascade
+hides, then restores the page exactly as it found it. Parsing an HTML *string*
+has no cascade to consult, so there `<div class="hidden">` is emitted as if
+visible. Either way, an element sized to zero or buried under an overlay still
+counts as visible; `--screenshot` or `--html` shows that immediately.
 
 ## Troubleshooting
 
@@ -424,10 +424,11 @@ inside an `<iframe>` (not traversed), inside a **closed** shadow root (unreachab
 by any API), drawn on a `<canvas>` (no element to find), or the page hadn't
 finished rendering when you parsed. See [Limitations](#limitations).
 
-**A node is in the graph but isn't on the page.** Usually hidden by a stylesheet
-class rather than by markup — ZeroDOM reads visibility from the element, so
-`<div class="hidden">` looks visible to it. `--html` shows this immediately: the
-node lands in the list but gets no box.
+**A node is in the graph but isn't on the page.** If you parsed an HTML string,
+a stylesheet class hid it and there was no browser to ask — reparse with
+`--render` or `from_page`, which drop cascade-hidden elements. If you already
+used a live page, it is sized to zero or under an overlay. `--html` shows this
+immediately: the node lands in the list but gets no box.
 
 **`Unknown node '07'. Call zerodom_parse_url first.`** The MCP session has no graph
 yet, or the page navigated and ids renumbered. Call `zerodom_read_page`. Ids are

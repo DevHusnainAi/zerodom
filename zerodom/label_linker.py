@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from lxml.html import HtmlElement
 
 # Attribute fallbacks, most explicit first. Split around the adjacent-text
@@ -43,6 +45,20 @@ def adjacent_text(el: HtmlElement) -> str:
     if not caption:
         return ""
     return " ".join(caption.split()[-6:])[:MAX_LABEL_LEN]
+
+
+def _href_label(href: str) -> str:
+    """A link's destination, trimmed to the part a person would read aloud.
+
+    Last resort only — a real caption always wins. `javascript:` and bare
+    fragments say nothing about where the link goes, so they stay unlabelled.
+    """
+    href = href.strip()
+    if href.startswith(("javascript:", "#")) or not href:
+        return ""
+    # Drop scheme and www so "https://news.ycombinator.com/" reads as the site.
+    trimmed = re.sub(r"^[a-z][a-z0-9+.-]*://(www\.)?", "", href, flags=re.I)
+    return trimmed.rstrip("/")[:MAX_LABEL_LEN]
 
 
 class LabelLinker:
@@ -106,10 +122,20 @@ class LabelLinker:
             if (val := element.get(attr)) and val.strip():
                 return val.strip()[:MAX_LABEL_LEN]
 
-        # Image-only links and buttons carry their label on the <img>.
-        for img in element.iterdescendants("img"):
-            if alt := (img.get("alt") or img.get("title") or "").strip():
-                return alt[:MAX_LABEL_LEN]
+        # Icon-only controls carry their label on a descendant, not on themselves:
+        # an <img alt>, but just as often a styled <div title> or <i aria-label>.
+        # Hacker News' vote arrows are <a><div class="votearrow" title="upvote"></div></a>,
+        # and they are the most-clicked control on the page.
+        for descendant in element.iterdescendants():
+            for attr in AUTHORED_ATTRS:
+                if (val := descendant.get(attr)) and val.strip():
+                    return val.strip()[:MAX_LABEL_LEN]
+
+        # A link with no text and no icon label still has somewhere to go, and the
+        # destination is the only thing left that tells an agent them apart.
+        if element.tag == "a" and (href := (element.get("href") or "").strip()):
+            if label := _href_label(href):
+                return label
 
         return "Unlabelled Element"
 

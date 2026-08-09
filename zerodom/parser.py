@@ -178,7 +178,14 @@ class ZeroDOMParser:
 
     @staticmethod
     def _is_hidden(el: HtmlElement) -> bool:
-        """Hidden by an inline style, an ARIA attribute, or a boolean attribute."""
+        """Hidden by an inline style, an ARIA attribute, or a boolean attribute.
+
+        `data-zerodom-hidden` is set by the browser-side serializer, which is the
+        only place a stylesheet rule can actually be resolved — see SERIALIZE in
+        playwright_wrapper. Parsing HTML text alone cannot see the cascade.
+        """
+        if "data-zerodom-hidden" in el.attrib:
+            return True
         style = el.get("style", "").lower().replace(" ", "")
         if "display:none" in style or "visibility:hidden" in style:
             return True

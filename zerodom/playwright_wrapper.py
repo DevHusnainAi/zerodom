@@ -16,17 +16,31 @@ from .parser import InteractionGraph, ZeroDOMParser
 # Closed roots stay unreachable by design; no API exposes them.
 SERIALIZE = """() => {
   const roots = [];
+  const marked = [];
   const visit = (root) => {
     for (const el of root.querySelectorAll('*')) {
       if (el.shadowRoot) { roots.push(el.shadowRoot); visit(el.shadowRoot); }
+      // A stylesheet rule is invisible to a parser reading HTML text, so
+      // `<input class="hidden">` looks clickable and an agent burns a 30s
+      // timeout on it. Only the browser knows; record what it knows.
+      if (!el.checkVisibility({ visibilityProperty: true, contentVisibilityAuto: true })) {
+        el.setAttribute('data-zerodom-hidden', '');
+        marked.push(el);
+      }
     }
   };
   visit(document);
   const html = document.documentElement;
-  if (!roots.length || !html.getHTML) return null;  // nothing to add: let content() win
-  return '<html' + [...html.attributes].map(a => ` ${a.name}="${a.value}"`).join('')
-       + '>' + html.getHTML({ serializableShadowRoots: true, shadowRoots: roots })
-       + '</html>';
+  if (!html.getHTML) { for (const el of marked) el.removeAttribute('data-zerodom-hidden'); return null; }
+  try {
+    return '<html' + [...html.attributes].map(a => ` ${a.name}="${a.value}"`).join('')
+         + '>' + html.getHTML({ serializableShadowRoots: true, shadowRoots: roots })
+         + '</html>';
+  } finally {
+    // The page belongs to the caller; leave it exactly as we found it. This
+    // whole function is synchronous, so nothing else can observe the marks.
+    for (const el of marked) el.removeAttribute('data-zerodom-hidden');
+  }
 }"""
 
 

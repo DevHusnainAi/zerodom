@@ -257,3 +257,38 @@ def test_report_measures_shadow_nodes(browser):
     layout = report.measure(p, graph)
     assert len(layout["boxes"]) == len(graph["nodes"]) == 1
     p.close()
+
+
+def test_stylesheet_hidden_controls_are_dropped(browser):
+    """The cascade is invisible to a parser reading HTML text.
+
+    `<input class="anomaly">` looks perfectly clickable in the source; only the
+    browser knows a stylesheet hid it. Emitting it costs the agent a 30s
+    Playwright timeout on an element it can never click.
+    """
+    p = browser.new_page()
+    p.set_content(
+        "<html><head><style>.gone{display:none}.invis{visibility:hidden}</style>"
+        "</head><body>"
+        "<button>Visible</button>"
+        "<input class='gone' name='ghost1'>"
+        "<input class='invis' name='ghost2'>"
+        "</body></html>"
+    )
+    labels = [n["label"] for n in ZeroDOM.from_page(p)["nodes"]]
+    assert labels == ["Visible"]
+    # The page belongs to the caller: no marker attributes may survive the parse.
+    assert p.evaluate("document.querySelectorAll('[data-zerodom-hidden]').length") == 0
+    p.close()
+
+
+def test_icon_link_label_survives_a_real_browser(browser):
+    """The Hacker News vote arrow, as the browser actually builds it."""
+    p = browser.new_page()
+    p.set_content(
+        "<a id='up_1' href='vote?id=1'><div class='votearrow' title='upvote'></div></a>"
+    )
+    nodes = ZeroDOM.from_page(p)["nodes"]
+    assert [n["label"] for n in nodes] == ["upvote"]
+    assert p.locator(nodes[0]["selector"]).count() == 1
+    p.close()

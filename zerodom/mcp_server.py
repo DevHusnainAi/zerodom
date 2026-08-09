@@ -6,10 +6,11 @@ from typing import Any
 
 from mcp.server import MCPServer
 
+from . import __version__
 from .parser import ZeroDOMParser, compact_line, find_nodes
 from .playwright_wrapper import serialize_async
 
-mcp = MCPServer("zerodom", version="0.0.1")
+mcp = MCPServer("zerodom", version=__version__)
 
 # ponytail: one global browser session — the MCP server drives a single agent.
 # Add a session_id parameter only if concurrent pages are ever needed.

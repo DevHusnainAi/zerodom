@@ -128,6 +128,10 @@ zerodom https://example.com --html out.html   # graph beside an annotated screen
 - **Cross-origin and same-origin iframes** are not traversed yet; only the top
   frame is parsed.
 - **Canvas-rendered UIs** have no DOM to read. Use a vision model there.
+- **Stylesheet-hidden controls need a live browser.** With a real page
+  (`from_page`, `--render`, the MCP server) the cascade is consulted and hidden
+  elements are dropped. Parsing an HTML *string* has no cascade, so
+  `<div class="hidden">` is emitted as if visible.
 - **Labels come from the page**, so a hostile page can write anything into one.
   Treat graph text as untrusted input — see SECURITY.md.
 - ZeroDOM operates on a `Page` you already control. It does not bypass bot

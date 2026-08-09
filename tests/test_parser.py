@@ -463,3 +463,43 @@ def test_pages_without_shadow_roots_are_untouched():
     """The whole mechanism must cost nothing on the 99% of pages with no shadow DOM."""
     html = "<html><body><div id='d'><button>Go</button></div></body></html>"
     assert parse_html(html)["nodes"][0]["selector"] == "#d > button"
+
+
+def test_icon_only_link_uses_descendant_title():
+    """Hacker News' vote arrow: <a><div class="votearrow" title="upvote"></div></a>.
+
+    The label lives on a descendant div, not on the <a> and not on an <img>.
+    """
+    graph = parse_html(
+        "<a id='up_1' href='vote?id=1'><div class='votearrow' title='upvote'></div></a>"
+    )
+    assert graph["nodes"][0]["label"] == "upvote"
+
+
+def test_image_link_without_alt_falls_back_to_href():
+    """HN's logo is <a href="https://news.ycombinator.com"><img src="y18.svg"></a> —
+    no text, no alt, no title. The destination is all that is left."""
+    graph = parse_html(
+        '<a href="https://news.ycombinator.com"><img src="y18.svg"></a>'
+    )
+    assert graph["nodes"][0]["label"] == "news.ycombinator.com"
+
+
+def test_href_fallback_skips_uninformative_targets():
+    for href in ("#", "javascript:void(0)"):
+        graph = parse_html(f'<a href="{href}"><img src="i.png"></a>')
+        assert graph["nodes"][0]["label"] == "Unlabelled Element", href
+
+
+def test_real_label_still_beats_href():
+    graph = parse_html('<a href="https://example.com">Docs</a>')
+    assert graph["nodes"][0]["label"] == "Docs"
+
+
+def test_browser_marked_hidden_node_is_dropped():
+    """The serializer marks what the CSS cascade hides; the parser must honour it."""
+    graph = parse_html(
+        "<button>Real</button>"
+        "<input data-zerodom-hidden name='ghost'>"
+    )
+    assert [n["label"] for n in graph["nodes"]] == ["Real"]
