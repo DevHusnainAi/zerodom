@@ -12,6 +12,16 @@ from lxml.html import HtmlElement
 AUTHORED_ATTRS = ("aria-label", "placeholder", "alt", "title")
 IDENTIFIER_ATTRS = ("value", "name")
 
+# Icon buttons routinely put their only human-readable caption in a tooltip
+# library's data attribute. These four cover Tippy, Bootstrap and the
+# conventional hand-rolled spelling, which between them are most of the web.
+TOOLTIP_ATTRS = (
+    "data-tooltip",
+    "data-original-title",
+    "data-tippy-content",
+    "data-tippy-simple-content",
+)
+
 # Controls that sit next to their caption. Buttons and links carry their own text.
 CAPTIONED_TAGS = {"input", "select", "textarea"}
 
@@ -45,6 +55,32 @@ def adjacent_text(el: HtmlElement) -> str:
     if not caption:
         return ""
     return " ".join(caption.split()[-6:])[:MAX_LABEL_LEN]
+
+
+# Handler names that describe the plumbing rather than the action.
+_HANDLER_NOISE = {
+    "return", "function", "void", "this", "event", "typeof", "new", "if",
+    "settimeout", "requestanimationframe", "preventdefault", "stoppropagation",
+}
+_HANDLER_CALL = re.compile(r"([A-Za-z_$][\w$]*)\s*\(")
+_WORD_BREAK = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _handler_label(onclick: str) -> str:
+    """The action an inline handler names, as words. `_bsa.close(…)` -> "close".
+
+    Only ever reached when an element has no text, no icon and no attribute of
+    its own, which in practice means an icon `<div onclick>` built out of an SVG
+    path. Conservative on purpose: a name that describes the wiring instead of
+    the intent is worse than admitting the control is unlabelled.
+    """
+    for name in reversed(_HANDLER_CALL.findall(onclick or "")):
+        if len(name) < 3 or name.lower().lstrip("_") in _HANDLER_NOISE:
+            continue
+        words = _WORD_BREAK.sub(" ", name.strip("_$")).replace("_", " ").replace("-", " ")
+        if cleaned := " ".join(words.split()).lower():
+            return cleaned[:MAX_LABEL_LEN]
+    return ""
 
 
 def _href_label(href: str) -> str:
@@ -130,12 +166,29 @@ class LabelLinker:
             for attr in AUTHORED_ATTRS:
                 if (val := descendant.get(attr)) and val.strip():
                     return val.strip()[:MAX_LABEL_LEN]
+            # <svg><title>Save</title></svg> is the standards-defined accessible
+            # name for an inline icon. The walk prunes <svg>, but the label
+            # lookup reads it directly.
+            if descendant.tag in ("title", "desc") and (text := text_of(descendant)):
+                return text
+
+        # Tooltip libraries, checked after real markup and before giving up.
+        for attr in TOOLTIP_ATTRS:
+            if (val := element.get(attr)) and val.strip():
+                return val.strip()[:MAX_LABEL_LEN]
 
         # A link with no text and no icon label still has somewhere to go, and the
         # destination is the only thing left that tells an agent them apart.
         if element.tag == "a" and (href := (element.get("href") or "").strip()):
             if label := _href_label(href):
                 return label
+
+        # Last resort: the handler's own name. A bare `<div onclick="_bsa.close(…)">`
+        # wrapping an SVG path has no text, no alt, no title and no tooltip — but
+        # somebody named the function, and "close" is worth more to an agent than
+        # "Unlabelled Element".
+        if handler := _handler_label(element.get("onclick", "")):
+            return handler
 
         return "Unlabelled Element"
 

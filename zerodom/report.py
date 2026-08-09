@@ -72,6 +72,8 @@ _ANNOTATE_JS = """
 }
 """
 
+from .frames import locate  # noqa: E402  (kept below the JS blobs for readability)
+
 
 def measure(page: Any, graph: Any) -> dict[str, Any]:
     """Bounding boxes for every node, in document coordinates."""
@@ -82,12 +84,14 @@ def measure(page: Any, graph: Any) -> dict[str, Any]:
     # `:light()` / `>> nth=` syntax, so shadow nodes come back unmeasured. Playwright's
     # engine resolves all of them — one round trip each, but only for the misses, so
     # pages without shadow DOM pay nothing.
-    missed = {i: s for i, s in selectors.items() if i not in layout["boxes"]}
+    # An in-frame node is never in `layout` either: the JS ran in the top document.
+    missed = [n for n in graph["nodes"] if n["id"] not in layout["boxes"]]
     if missed:
         scroll_x, scroll_y = page.evaluate("() => [window.scrollX, window.scrollY]")
-        for node_id, selector in missed.items():
+        for node in missed:
+            node_id = node["id"]
             try:
-                box = page.locator(selector).first.bounding_box(timeout=250)
+                box = locate(page, node).first.bounding_box(timeout=250)
             except Exception:  # genuinely unresolvable — that's the report's whole point
                 continue
             if box and (box["width"] or box["height"]):

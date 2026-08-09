@@ -14,8 +14,8 @@ upvote.
 
 ZeroDOM is a third option — a flat list of what the page can do, where every
 entry has a stable id, and the addressing information that makes it clickable
-never enters the context window. About **10 tokens per action, on every page
-tested**.
+never enters the context window. A median of **10.3 tokens per action across 49
+live sites**, where **4,754 of 4,754 selectors resolved to exactly one element**.
 
 - **No LLM in the loop.** lxml in, graph out, 10–30ms, identical output every run.
 - **Selectors never enter the context window.** The model sees `[03]`; the CSS
@@ -79,9 +79,12 @@ in a model's context.
 
 *tokens per actionable node — measured 2026-08-03*
 
-**~10 tokens per action, flat across every page**, against 23–70 and wildly
-variable. Mean 71.0% fewer tokens than the snapshot a model actually gets, and
-93.1% against raw HTML.
+**A median of ~10 tokens per action**, against ARIA's 23–70 and wildly variable.
+Mean 71.0% fewer tokens than the snapshot a model actually gets.
+
+Across 49 live sites (static, SPA, shadow DOM, iframe, canvas, commerce, gov,
+login walls): **4,754/4,754 selectors resolved to exactly one live element — 0
+ambiguous, 0 dead**. Median saving vs raw HTML 97.9%, worst case 64.1%.
 
 ## MCP server
 

@@ -307,3 +307,88 @@ def test_offscreen_content_is_not_treated_as_hidden(browser):
     )
     assert [n["label"] for n in ZeroDOM.from_page(p)["nodes"]] == ["Below the fold"]
     p.close()
+
+
+FRAME_HOST = """<html><body>
+  <button>Top level</button>
+  <iframe width="400" height="200"
+          srcdoc="<button>Inside srcdoc</button><a href='/x'>Srcdoc link</a>"></iframe>
+  <iframe width="10" height="10" srcdoc="<button>Tracking pixel</button>"></iframe>
+  <iframe width="400" height="200" style="display:none"
+          srcdoc="<button>Hidden frame</button>"></iframe>
+</body></html>"""
+
+
+def test_frames_are_ignored_unless_asked_for(browser):
+    p = browser.new_page()
+    p.set_content(FRAME_HOST)
+    labels = [n["label"] for n in ZeroDOM.from_page(p)["nodes"]]
+    assert labels == ["Top level"]
+    p.close()
+
+
+def test_frames_true_reaches_inside_and_the_nodes_are_clickable(browser):
+    """A node inside a frame is worthless unless it can also be acted on."""
+    from zerodom.frames import locate
+
+    p = browser.new_page()
+    p.set_content(FRAME_HOST)
+    graph = ZeroDOM.from_page(p, frames=True)
+    labels = [n["label"] for n in graph["nodes"]]
+    assert labels == ["Top level", "Inside srcdoc", "Srcdoc link"]
+    # srcdoc keeps the about:blank URL; filtering on URL would have missed it.
+    assert graph["metadata"]["frames_read"] == 1
+    for node in graph["nodes"]:
+        assert locate(p, node).count() == 1, node
+    p.close()
+
+
+def test_pixel_and_hidden_frames_are_skipped(browser):
+    """Ad pixels and display:none frames outnumber real ones on a commercial page."""
+    p = browser.new_page()
+    p.set_content(FRAME_HOST)
+    labels = [n["label"] for n in ZeroDOM.from_page(p, frames=True)["nodes"]]
+    assert "Tracking pixel" not in labels and "Hidden frame" not in labels
+    p.close()
+
+
+def test_frame_nodes_are_renumbered_densely(browser):
+    p = browser.new_page()
+    p.set_content(FRAME_HOST)
+    ids = [n["id"] for n in ZeroDOM.from_page(p, frames=True)["nodes"]]
+    assert ids == ["node_01", "node_02", "node_03"]
+    p.close()
+
+
+def test_iframe_warning_is_dropped_once_frames_are_read(browser):
+    """"content is probably in an iframe" is wrong advice after we read them."""
+    p = browser.new_page()
+    p.set_content(
+        "<html><body><!--" + "p" * 5000 + "-->"
+        "<iframe width='400' height='200' srcdoc=\"<button>Inner</button>\"></iframe>"
+        "</body></html>"
+    )
+    assert "warning" in ZeroDOM.from_page(p)["metadata"]
+    assert "warning" not in ZeroDOM.from_page(p, frames=True)["metadata"]
+    p.close()
+
+
+def test_script_injected_head_content_does_not_shift_body_indexes(browser):
+    """A <div> appended into <head> used to relocate the whole head into <body>.
+
+    Re-parsing HTML text treats flow content in head as the implicit start of
+    body, so every `body > div:nth-of-type(N)` path shifted. On europa.eu that
+    silently broke 12 of 47 selectors — they resolved to nothing.
+    """
+    p = browser.new_page()
+    p.set_content(
+        "<html><head><title>T</title></head><body>"
+        "<div>one</div><div><button>Target</button></div>"
+        "</body></html>"
+    )
+    p.evaluate("() => document.head.appendChild(document.createElement('div'))")
+    graph = ZeroDOM.from_page(p)
+    node = next(n for n in graph["nodes"] if n["label"] == "Target")
+    assert p.locator(node["selector"]).count() == 1
+    assert graph["metadata"]["page_title"] == "T"
+    p.close()

@@ -38,6 +38,21 @@ def fetch(url: str, render: bool) -> tuple[str, str]:
         return resp.read().decode(resp.headers.get_content_charset() or "utf-8", "replace"), resp.url
 
 
+def fetch_with_frames(url: str):
+    """Load in a real browser and read every readable iframe as well."""
+    from playwright.sync_api import sync_playwright
+
+    from .playwright_wrapper import ZeroDOM
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page()
+        page.goto(url, wait_until="networkidle")
+        graph, html, final_url = ZeroDOM.from_page(page, frames=True), serialize(page), page.url
+        browser.close()
+    return graph, html, final_url
+
+
 def capture(url: str, screenshot: str | None, html_path: str | None) -> tuple[str, str, str]:
     """Load a URL once and write whichever visual artifacts were asked for.
 
@@ -76,17 +91,22 @@ def inspect(
     screenshot: str | None = None,
     html_path: str | None = None,
     find: str | None = None,
+    frames: bool = False,
 ) -> int:
     # A local path is a perfectly good thing to inspect; both fetchers need file://.
     if "://" not in url and Path(url).exists():
         url = Path(url).resolve().as_uri()
 
     extra = ""
-    if screenshot or html_path:
+    if frames:
+        # Frames only exist in a live browser, so this is a --render superset.
+        graph, html, final_url = fetch_with_frames(url)
+    elif screenshot or html_path:
         html, final_url, extra = capture(url, screenshot, html_path)
+        graph = ZeroDOMParser(html, final_url).parse()
     else:
         html, final_url = fetch(url, render)
-    graph = ZeroDOMParser(html, final_url).parse()
+        graph = ZeroDOMParser(html, final_url).parse()
 
     raw_tokens = count_tokens(html)
     # Measure what a model would actually be sent: compact JSON, or the text DSL.
@@ -131,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
         help="emit the full JSON graph instead of the token-dense text DSL",
     )
     insp.add_argument(
+        "--frames",
+        action="store_true",
+        help="also read inside iframes (implies --render; embedded editors, payment fields)",
+    )
+    insp.add_argument(
         "--find",
         metavar="QUERY",
         help="print only the nodes whose type or label matches QUERY",
@@ -155,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     return inspect(
-        args.url, args.render, args.as_json, args.screenshot, args.html_path, args.find
+        args.url, args.render, args.as_json, args.screenshot,
+        args.html_path, args.find, args.frames,
     )
 
 

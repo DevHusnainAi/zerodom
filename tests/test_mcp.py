@@ -18,6 +18,20 @@ NEXT_PAGE = """
 """
 
 
+class FakeLocator:
+    """What `frames.locate()` returns for a FakePage: actions route straight back
+    to the page, so existing call assertions keep working unchanged."""
+
+    def __init__(self, page, selector):
+        self.page, self.selector = page, selector
+
+    async def click(self, *a, **kw):
+        await self.page.click(self.selector)
+
+    async def fill(self, text, *a, **kw):
+        await self.page.fill(self.selector, text)
+
+
 class FakePage:
     """Stands in for a Playwright page so MCP tools are testable without a browser."""
 
@@ -36,6 +50,9 @@ class FakePage:
 
     async def evaluate(self, script):
         return None  # no shadow roots, so the serializer falls back to content()
+
+    def locator(self, selector):
+        return FakeLocator(self, selector)
 
     async def wait_for_load_state(self, state=None):
         self.calls.append(("wait_for_load_state", state))

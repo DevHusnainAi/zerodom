@@ -7,8 +7,10 @@ from typing import Any
 from mcp.server import MCPServer
 
 from . import __version__
-from .parser import ZeroDOMParser, compact_line, find_nodes
-from .playwright_wrapper import serialize_async
+from .frames import locate
+from .parser import compact_line, find_nodes
+from .playwright_wrapper import ZeroDOM
+from .playwright_wrapper import ZeroDOM
 
 mcp = MCPServer("zerodom", version=__version__)
 
@@ -16,7 +18,7 @@ mcp = MCPServer("zerodom", version=__version__)
 # Add a session_id parameter only if concurrent pages are ever needed.
 _session: dict[str, Any] = {
     "pw": None, "browser": None, "page": None,
-    "selectors": {}, "nodes": [], "url": None,
+    "selectors": {}, "nodes": [], "url": None, "frames": False,
 }
 
 
@@ -30,17 +32,61 @@ async def _page() -> Any:
     return _session["page"]
 
 
-def _selector(node_id: str) -> str:
-    """Resolve a node id to its CSS selector — the lookup map the model never sees.
+def _node(node_id: str) -> dict[str, Any]:
+    """Resolve a node id to the node itself — the lookup the model never sees.
 
     Accepts both the bare index the compact graph prints (`[03]` -> "3") and the
-    full "node_03" form used in the JSON graph.
+    full "node_03" form used in the JSON graph. Returns the whole node, not just
+    its selector, because a node inside an iframe also needs its frame chain to
+    be reachable.
     """
     key = node_id if node_id.startswith("node_") else f"node_{node_id.strip('[]').zfill(2)}"
-    selector = _session["selectors"].get(key)
-    if not selector:
-        raise ValueError(f"Unknown node '{node_id}'. Call zerodom_parse_url first.")
-    return selector
+    for node in _session["nodes"]:
+        if node["id"] == key:
+            return node
+    raise ValueError(f"Unknown node '{node_id}'. Call zerodom_parse_url first.")
+
+
+async def _act(node_id: str, verb: str, *args: Any) -> str:
+    """Click or fill a node, retrying once if the browser drops underneath us.
+
+    Chromium crashed on exactly one of fifty benchmarked sites. A crash kills the
+    page but not the session, so a bare retry on a fresh page recovers the run
+    instead of ending it.
+    """
+    node = _node(node_id)
+    for attempt in (1, 2):
+        page = await _page()
+        try:
+            await getattr(locate(page, node), verb)(*args)
+            return ""
+        except Exception as exc:
+            if attempt == 2 or not _is_crash(exc):
+                raise
+            await _restart(page.url)
+            node = _node(node_id)
+    return ""
+
+
+def _is_crash(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "crash" in text or "target closed" in text or "browser has been closed" in text
+
+
+async def _restart(url: str) -> None:
+    """Rebuild the browser after a crash and return to where we were."""
+    for key in ("page", "browser", "pw"):
+        obj = _session.get(key)
+        if obj is not None:
+            try:
+                await (obj.stop() if key == "pw" else obj.close())
+            except Exception:
+                pass
+        _session[key] = None
+    page = await _page()
+    if url and url != "about:blank":
+        await page.goto(url, wait_until="domcontentloaded")
+    await _read()
 
 
 def _identity(node: dict[str, Any]) -> tuple[str, str, str]:
@@ -91,7 +137,7 @@ async def _read(verbose: bool = False, diff: bool = False) -> str:
     page = await _page()
     # A click may still be navigating; content() during that raises.
     await page.wait_for_load_state("domcontentloaded")
-    graph = ZeroDOMParser(await serialize_async(page), page.url).parse()
+    graph = await ZeroDOM.from_page(page, frames=_session["frames"])
     previous, url = _session["nodes"], _session["url"]
     _session.update(
         selectors=graph.selector_map(), nodes=graph["nodes"], url=page.url
@@ -105,13 +151,18 @@ async def _read(verbose: bool = False, diff: bool = False) -> str:
 
 
 @mcp.tool()
-async def zerodom_parse_url(url: str, verbose: bool = False) -> str:
+async def zerodom_parse_url(url: str, verbose: bool = False, frames: bool = False) -> str:
     """Navigate to a URL and return its interaction graph.
 
     Returns the compact text graph: `[03] button 'Sign In'`. CSS selectors are
     kept server-side and resolved by node id, so they never cost context — pass
     verbose=True for the full JSON including selectors.
+
+    Set frames=True when the controls you need are inside an iframe — embedded
+    editors, payment fields, consent gates. Off by default because it costs a
+    read per frame and most frames on a commercial page are advertising.
     """
+    _session["frames"] = frames
     page = await _page()
     await page.goto(url, wait_until="domcontentloaded")
     return await _read(verbose)
@@ -152,9 +203,9 @@ async def zerodom_click_node(node_id: str) -> str:
     A navigation renumbers everything, so that returns the full graph instead.
     """
     page = await _page()
-    selector = _selector(node_id)
     before = page.url
-    await page.click(selector)
+    await _act(node_id, "click")
+    page = await _page()
     graph = await _read(diff=True)
     moved = f" -> {page.url}" if page.url != before else ""
     return f"clicked [{node_id}]{moved}\n\n{graph}"
@@ -167,9 +218,7 @@ async def zerodom_fill_node(node_id: str, text: str) -> str:
     The text is echoed back in the first line; the diff below it reports *structural*
     change — a validation error appearing, an autocomplete list opening.
     """
-    page = await _page()
-    selector = _selector(node_id)
-    await page.fill(selector, text)
+    await _act(node_id, "fill", text)
     return f"filled [{node_id}] with {text!r}\n\n{await _read(diff=True)}"
 
 

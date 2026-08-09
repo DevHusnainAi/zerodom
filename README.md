@@ -32,7 +32,8 @@ to say *which* story to upvote.
 
 ZeroDOM is a third option — a flat list of what the page can do, where every entry
 has a stable id, and the addressing information that makes it clickable never
-enters the context window. About **10 tokens per action, on every page tested**.
+enters the context window. A median of **10.3 tokens per action across 49 live
+sites**, and never more than 21.
 
 **No LLM in the loop.** The parse is deterministic — lxml in, graph out,
 10–30ms, identical output every run. Nothing about your page reaches a model
@@ -132,8 +133,9 @@ cost more than the labels do.
 | en.wikipedia.org article | 37,535 | 17,011 | **2,961** | 54.7% | **92.1%** |
 | news.ycombinator.com | 11,882 | 18,428 | **2,326** | −55.1% | **80.4%** |
 
-**Mean 93.1%. Worst page 80.4%.** Parsing runs in 10–30ms; a synthetic
-5,000-node page parses in ~24ms.
+**Mean 93.1% across these five. Over 49 live sites the median is 97.9% and the
+worst is 64.1%** — see below. Parsing runs in 10–30ms on a typical page; a
+synthetic 5,000-node page parses in ~24ms.
 
 Read the JSON column as the argument for compact mode. Savings come from bloat,
 so JSON wins big on app shells full of inline CSS and hydration payloads, and
@@ -190,10 +192,36 @@ per action:
 
 *tokens per actionable node*
 
-**~10 tokens per action, flat across every page**, against 23–70 and wildly
+**A median of ~10 tokens per action**, against ARIA's 23–70 and wildly
 variable. Context cost scales with what a page can *do*, not with how it was
 built — a budget you can plan around before you know which page the agent lands
 on. There is no page in this set where ZeroDOM costs more per action.
+
+## Measured across 49 live sites
+
+`benchmarks/benchmark_sites.py` drives ZeroDOM over 50 real pages — static,
+SPA, shadow-DOM component libraries, iframe editors, canvas apps, e-commerce,
+government, and login walls — then verifies **every selector against the live
+browser**:
+
+| | |
+|---|---|
+| nodes audited | **4,754** |
+| resolve to exactly one element | **4,754 (100.00%)** |
+| ambiguous — match more than one | **0** |
+| dead — match nothing | **0** |
+| unlabelled | 33 (0.69%) |
+| tokens per node | median **10.3**, range 8.3–20.8 |
+| saving vs raw HTML | median **97.9%**, worst **64.1%** |
+| parse time | median **33ms**, p90 218ms |
+
+Zero ambiguous selectors is the number that matters: an ambiguous selector is a
+silent wrong click. 695 of those selectors needed shadow-root scoping — 121 of
+129 on shoelace.style, 85 of 95 on vercel.com — and all of them resolve.
+
+The floor is lean, link-dense pages with nothing to strip: danluu.com saves
+64.1%, archive.org 66.6%. The ceiling is app shells — cloudflare.com goes from
+687,807 tokens to 466.
 
 ## Claude MCP setup
 

@@ -198,7 +198,20 @@ class ZeroDOMParser:
         """Is this something an agent can act on?"""
         if el.tag in INTERACTIVE_TAGS:
             # A bare <a> with no href is a named anchor, not something to click.
-            return el.tag != "a" or "href" in el.attrib or "onclick" in el.attrib
+            if el.tag == "a" and not ("href" in el.attrib or "onclick" in el.attrib):
+                return False
+            # Nor is `<a href="#section" id="section"></a>` — the empty fragment
+            # anchors GitHub-rendered markdown scatters through a page are link
+            # *destinations*. Clicking one does nothing, and PyPI's project page
+            # alone contributes nine of them.
+            if (
+                el.tag == "a"
+                and el.get("href", "").startswith("#")
+                and len(el) == 0
+                and not (el.text or "").strip()
+            ):
+                return False
+            return True
         if el.get("role") in INTERACTIVE_ROLES:
             return True
         return "onclick" in el.attrib or "tabindex" in el.attrib
@@ -431,14 +444,42 @@ class ZeroDOMParser:
                 node["action"] = "click"
             self.nodes.append(node)
 
-        return InteractionGraph(
-            nodes=self.nodes,
-            metadata={
-                "page_title": title or "Untitled",
-                "url": self.url,
-                "total_interactive_nodes": len(self.nodes),
-                "parsing_latency_ms": round((time.perf_counter() - start) * 1000, 2),
-            },
+        meta = {
+            "page_title": title or "Untitled",
+            "url": self.url,
+            "total_interactive_nodes": len(self.nodes),
+            "parsing_latency_ms": round((time.perf_counter() - start) * 1000, 2),
+        }
+        if warning := self._empty_page_warning(len(self.raw_html)):
+            meta["warning"] = warning
+        return InteractionGraph(nodes=self.nodes, metadata=meta)
+
+    def _empty_page_warning(self, html_bytes: int) -> str | None:
+        """Say *why* the graph looks empty, when it does.
+
+        A bot wall, an open modal and a genuinely bare page all return almost
+        nothing, and the caller cannot tell them apart from the node list. Every
+        such case in a 49-site benchmark was one of these three, and each was
+        reported as "ZeroDOM found nothing" until someone looked at the page.
+        """
+        if len(self.nodes) > 2:
+            return None
+        if html_bytes < 4000:
+            return (
+                "Almost no interactive nodes, and the page is tiny — this is "
+                "usually a bot wall or an error page, not the site you wanted."
+            )
+        inert = self.root.xpath('//*[@aria-hidden="true" or @inert]//a')
+        if inert:
+            return (
+                f"Almost no interactive nodes, but {len(inert)} links sit under "
+                'aria-hidden/inert — a modal or overlay is open. Dismiss it and '
+                "re-read."
+            )
+        return (
+            "Almost no interactive nodes on a large page — the content is "
+            "probably in an iframe (not traversed), a closed shadow root, or "
+            "rendered to canvas. See Limitations."
         )
 
 

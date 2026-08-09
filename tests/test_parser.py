@@ -503,3 +503,84 @@ def test_browser_marked_hidden_node_is_dropped():
         "<input data-zerodom-hidden name='ghost'>"
     )
     assert [n["label"] for n in graph["nodes"]] == ["Real"]
+
+
+def test_empty_fragment_anchors_are_not_controls():
+    """`<a href="#x" id="x"></a>` is a link destination, not a link.
+
+    GitHub-rendered markdown emits one per heading; nine of them showed up on
+    PyPI's own project page, all unlabelled and all unclickable.
+    """
+    graph = parse_html(
+        '<a href="#install" id="user-content-install"></a>'
+        '<a href="#install">Install</a>'
+    )
+    assert [n["label"] for n in graph["nodes"]] == ["Install"]
+
+
+def test_fragment_anchor_with_content_is_still_a_control():
+    """A fragment link the user can actually see and click must survive."""
+    graph = parse_html('<a href="#top"><img src="up.png" alt="Back to top"></a>')
+    assert [n["label"] for n in graph["nodes"]] == ["Back to top"]
+
+
+def test_svg_title_labels_an_icon_button():
+    graph = parse_html('<button><svg><title>Delete row</title></svg></button>')
+    assert graph["nodes"][0]["label"] == "Delete row"
+
+
+def test_tooltip_attribute_labels_an_icon_link():
+    """jsfiddle's toolbar: the caption lives only in the tooltip library's attr."""
+    graph = parse_html(
+        '<a id="save" href="" data-tippy-simple-content="Save fiddle"><svg></svg></a>'
+    )
+    assert graph["nodes"][0]["label"] == "Save fiddle"
+
+
+def test_bot_wall_is_reported_not_silently_empty():
+    """A blocked page and a bare page look identical in the node list."""
+    graph = parse_html("<html><body></body></html>", "https://etsy.com")
+    assert graph["nodes"] == []
+    assert "bot wall" in graph["metadata"]["warning"]
+
+
+def test_open_modal_is_named_as_the_reason():
+    """Airbnb: 255 of 257 controls under aria-hidden because a modal is open."""
+    html = (
+        "<html><body>"
+        "<div aria-hidden='true'>" + "<a href='/x'>hidden</a>" * 40 + "</div>"
+        "<div role='dialog'><button>Got it</button></div>"
+        "</body></html>"
+    )
+    graph = parse_html(html + "<!--" + "p" * 5000 + "-->")
+    assert [n["label"] for n in graph["nodes"]] == ["Got it"]
+    assert "modal or overlay is open" in graph["metadata"]["warning"]
+
+
+def test_healthy_page_carries_no_warning():
+    graph = parse_html("<a href='/a'>A</a><a href='/b'>B</a><a href='/c'>C</a>")
+    assert "warning" not in graph["metadata"]
+
+
+def test_handler_name_labels_a_bare_icon_div():
+    """jsfiddle's ad-close button: an SVG path in a div, named only by its handler."""
+    graph = parse_html(
+        """<div onclick="_bsa.close('_stickybox_')" tabindex="0"><svg><path d="M7 4"/></svg></div>"""
+    )
+    assert graph["nodes"][0]["label"] == "close"
+
+
+def test_handler_label_splits_camel_case():
+    graph = parse_html('<div onclick="toggleSidebarMenu()" tabindex="0"></div>')
+    assert graph["nodes"][0]["label"] == "toggle sidebar menu"
+
+
+def test_handler_label_refuses_plumbing():
+    for js in ("return false", "event.preventDefault()", "setTimeout(f, 10)"):
+        graph = parse_html(f'<div onclick="{js}" tabindex="0"></div>')
+        assert graph["nodes"][0]["label"] == "Unlabelled Element", js
+
+
+def test_real_text_still_beats_the_handler_name():
+    graph = parse_html('<button onclick="doStuff()">Save changes</button>')
+    assert graph["nodes"][0]["label"] == "Save changes"
