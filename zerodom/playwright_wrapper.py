@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Any
 
@@ -146,28 +147,46 @@ def _merge_frames(page: Any, graph: InteractionGraph) -> InteractionGraph:
     return _finish(graph, added, skipped)
 
 
+async def _read_frame(frame: Any) -> list | None:
+    """One frame's nodes, `[]` if not worth reading, `None` if it refused.
+
+    Every failure is swallowed here so that `gather` below never has to care:
+    one hostile advertisement must not cost the caller the rest of the page.
+    """
+    if not await is_worth_reading_async(frame):
+        return []
+    chain = await frame_chain_async(frame)
+    if chain is None:
+        return None
+    try:
+        html = await frame.evaluate(SERIALIZE) or await frame.content()
+        sub = ZeroDOMParser(html, frame.url).parse()
+    except Exception:
+        return None
+    for node in sub["nodes"]:
+        node["frame"] = chain
+        node["frame_url"] = frame.url
+    return sub["nodes"]
+
+
 async def _merge_frames_async(page: Any, graph: InteractionGraph) -> InteractionGraph:
-    """`_merge_frames` for async pages, nesting included."""
-    added, skipped = [], 0
-    for frame in page.frames:
-        if frame is page.main_frame:
-            continue
-        if not await is_worth_reading_async(frame):
-            continue
-        chain = await frame_chain_async(frame)
-        if chain is None:
+    """`_merge_frames` for async pages, concurrently.
+
+    Frames are independent documents, so reading them serially just adds up
+    round trips. `gather` preserves order, which matters: node ids are assigned
+    in document order and must stay stable between reads.
+    """
+    children = [f for f in page.frames if f is not page.main_frame]
+    results = await asyncio.gather(
+        *(_read_frame(f) for f in children), return_exceptions=True
+    )
+    added: list = []
+    skipped = 0
+    for result in results:
+        if isinstance(result, BaseException) or result is None:
             skipped += 1
-            continue
-        try:
-            html = await frame.evaluate(SERIALIZE) or await frame.content()
-            sub = ZeroDOMParser(html, frame.url).parse()
-        except Exception:
-            skipped += 1
-            continue
-        for node in sub["nodes"]:
-            node["frame"] = chain
-            node["frame_url"] = frame.url
-        added += sub["nodes"]
+        else:
+            added += result
     return _finish(graph, added, skipped)
 
 

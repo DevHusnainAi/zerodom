@@ -11,7 +11,7 @@ the buttons, inputs and links an agent can actually act on, and nothing else.
 
 [![PyPI version](https://img.shields.io/pypi/v/zerodom)](https://pypi.org/project/zerodom/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/zerodom/)
-[![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![CI](https://github.com/DevHusnainAi/zerodom/actions/workflows/ci.yml/badge.svg)](https://github.com/DevHusnainAi/zerodom/actions/workflows/ci.yml)
 [![Claude MCP](https://img.shields.io/badge/Claude-MCP%20server-8A63D2.svg)](#claude-mcp-setup)
 
@@ -544,6 +544,5 @@ Threat model, reporting process and the rest: [SECURITY.md](SECURITY.md).
 
 ## License
 
-Business Source License 1.1 — see [LICENSE](LICENSE). Free to use, including in
-production; you may not offer ZeroDOM itself as a hosted service. Converts to
-Apache 2.0 on 2030-08-09.
+Apache 2.0 — see [LICENSE](LICENSE). Use it anywhere, including commercially;
+embed it in your own product or framework. ZeroDOM is a trademark of Vexra Labs.

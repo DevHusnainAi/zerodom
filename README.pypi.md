@@ -164,7 +164,6 @@ guess whether the page or the parser was at fault.
 - **Source, full README and benchmarks:**
   https://github.com/DevHusnainAi/zerodom
 - **Issues:** https://github.com/DevHusnainAi/zerodom/issues
-- **License:** Business Source License 1.1 — free to use, including in
-  production; you may not offer ZeroDOM itself as a hosted service. Converts to
-  Apache 2.0 on 2030-08-09.
+- **License:** Apache 2.0 — use it anywhere, including commercially, and embed
+  it in your own product or framework.
 

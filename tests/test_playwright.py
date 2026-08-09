@@ -392,3 +392,48 @@ def test_script_injected_head_content_does_not_shift_body_indexes(browser):
     assert p.locator(node["selector"]).count() == 1
     assert graph["metadata"]["page_title"] == "T"
     p.close()
+
+
+def test_async_page_reads_nested_frames_concurrently():
+    """The async path is a separate implementation and shipped a one-level
+    shortcut once already. Drive it for real: a frame inside a frame, read
+    through asyncio.gather, with every node still clickable."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from playwright.async_api import async_playwright
+
+    from zerodom.frames import locate
+
+    inner = "<button>Deep</button>"
+    middle = f'<button>Middle</button><iframe width=300 height=150 srcdoc="{inner}"></iframe>'
+    outer = (
+        "<html><body><button>Top</button>"
+        f"<iframe width=500 height=300 srcdoc='{middle}'></iframe></body></html>"
+    )
+
+    async def run():
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(outer)
+            await page.wait_for_timeout(300)
+            graph = await ZeroDOM.from_page(page, frames=True)
+            counts = [await locate(page, n).count() for n in graph["nodes"]]
+            out = (
+                [n["label"] for n in graph["nodes"]],
+                counts,
+                [len(n.get("frame") or ()) for n in graph["nodes"]],
+            )
+            await browser.close()
+            return out
+
+    # On its own thread: the sync `browser` fixture has already installed
+    # Playwright's greenlet loop in the main one, and asyncio.run cannot share it.
+    with ThreadPoolExecutor(1) as pool:
+        labels, counts, depths = pool.submit(lambda: asyncio.run(run())).result()
+
+    assert labels == ["Top", "Middle", "Deep"]
+    assert counts == [1, 1, 1]
+    # "Deep" lives two frames down — the bug this test exists for.
+    assert depths == [0, 1, 2]
