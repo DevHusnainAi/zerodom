@@ -5,6 +5,10 @@ __pycache__/
 dist/
 *.egg-info/
 
+# Decision log and strategy notes. Deliberately not published: they name
+# prospects, price thinking and launch timing.
+docs/
+
 # session transcripts and scratch captures — local only
 *-this-session-is-being-continued-from-a-previous-c.txt
 assets/screenshot.png
