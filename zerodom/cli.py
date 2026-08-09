@@ -140,6 +140,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zerodom", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    aud = sub.add_parser(
+        "audit", help="check an existing test suite's selectors against a live page"
+    )
+    aud.add_argument("path", help="file or directory of tests to read selectors from")
+    aud.add_argument("--url", required=True, help="the running app to resolve them against")
+    aud.add_argument(
+        "--fail-on-ambiguous",
+        action="store_true",
+        help="exit non-zero if any selector matches more than one element (for CI)",
+    )
+
     insp = sub.add_parser("inspect", help="parse a URL and report token savings")
     insp.add_argument("url")
     insp.add_argument(
@@ -175,13 +186,20 @@ def main(argv: list[str] | None = None) -> int:
         help="write a self-contained HTML report: graph beside the annotated page",
     )
 
-    # `inspect` is the only verb, so requiring it is pure ceremony: `zerodom <url>`
+    # `inspect` is the common verb, so requiring it is ceremony: `zerodom <url>`
     # works, and the explicit form keeps working for anyone who learned it.
     argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] not in {"inspect", "-h", "--help"} and not argv[0].startswith("-"):
+    if argv and argv[0] not in {"inspect", "audit", "-h", "--help"} and not argv[0].startswith("-"):
         argv = ["inspect", *argv]
 
     args = parser.parse_args(argv)
+    if args.command == "audit":
+        from .audit import run
+
+        ambiguous, text = run(args.path, args.url)
+        print(text)
+        return 1 if (ambiguous and args.fail_on_ambiguous) else 0
+
     return inspect(
         args.url, args.render, args.as_json, args.screenshot,
         args.html_path, args.find, args.frames,

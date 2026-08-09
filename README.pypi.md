@@ -24,16 +24,16 @@ dashboards, commerce, government, forms, login walls:
 
 | | |
 |---|---|
-| nodes audited | **10,382** |
-| resolved to exactly one live element | **98.97%** |
-| **ambiguous — matched more than one** | **0.02%** (2 nodes) |
+| nodes audited | **10,756** |
+| resolved to exactly one live element | **99.00%** |
+| **ambiguous — matched more than one** | **0.03%** (3 nodes) |
 | invalid selectors | **0** |
-| actionable to Playwright (sampled) | 96.1% of 1,201 |
+| actionable to Playwright (sampled) | 95.6% of 1,215 |
 
-695 of those selectors had to be scoped against open shadow roots — 121 of 129 on
+1,334 of those selectors had to be scoped against open shadow roots — 121 of 129 on
 shoelace.style — and every one resolves uniquely. It is also small: a median of
 **10.2 tokens per action** against the accessibility tree's 23–70, **98.9%**
-smaller than raw HTML, parsed in a median 39ms with no model in the loop.
+smaller than raw HTML, parsed in a median 55ms with no model in the loop.
 
 - **No LLM in the loop.** lxml in, graph out, identical output every run.
 - **Selectors never enter the context window.** The model sees `[03]`; the CSS
@@ -100,9 +100,9 @@ Mean 71.0% fewer tokens than the snapshot a model actually gets.
 
 Across **111 live sites** (static, SPA, shadow DOM, iframe, canvas, commerce,
 government, forms, login walls), `benchmarks/benchmark_sites.py` measured
-**10,382 nodes: 98.97% resolved to exactly one live element, 0.02% ambiguous,
-0 invalid**, and 96.1% of a sampled 1,201 were actionable to Playwright. Median
-saving vs raw HTML 98.9%, worst case 64.1%. Parse: median 39ms, p90 214ms.
+**10,756 nodes: 99.00% resolved to exactly one live element, 3 ambiguous,
+0 invalid**, and 95.6% of a sampled 1,215 were actionable to Playwright. Median
+saving vs raw HTML 98.9%, worst case 64.1%. Parse: median 55ms.
 
 The residual misses are almost all timing, not addressing: a page that is still
 hydrating, or a third-party script inserting a wrapper `<div>`, shifts the
@@ -147,6 +147,20 @@ zerodom https://example.com --json            # full JSON graph, selectors inclu
 zerodom https://example.com --frames          # also read inside iframes
 zerodom https://example.com --html out.html   # graph beside an annotated screenshot
 ```
+
+## `zerodom audit`
+
+Check the selectors in a test suite you already have — no ZeroDOM required in
+the tests. A selector matching two elements passes, clicks the wrong one, and
+flakes one run in twenty.
+
+```bash
+zerodom audit tests/ --url http://localhost:3000
+```
+
+Reads Playwright, Puppeteer, Cypress and Selenium call sites and reports which
+selectors are ambiguous, dead or invalid against the running app.
+`--fail-on-ambiguous` makes CI red when a new one appears.
 
 ## Limitations
 

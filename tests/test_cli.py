@@ -69,3 +69,13 @@ def test_a_local_path_is_accepted_as_a_target(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "[01] a 'View cart'" in out
     assert page.as_uri() in out
+
+
+def test_audit_is_a_first_class_verb():
+    """`zerodom audit` must not be swallowed by the bare-URL shorthand."""
+    import pytest
+
+    from zerodom import cli
+
+    with pytest.raises(SystemExit):
+        cli.main(["audit", "--help"])

@@ -45,20 +45,20 @@ canvas apps, dashboards, commerce, government, forms and login walls:
 
 | | |
 |---|---|
-| nodes audited | **10,382** |
-| resolved to exactly one live element | **98.97%** |
-| **ambiguous — matched more than one** | **0.02%** (2 nodes) |
+| nodes audited | **10,756** |
+| resolved to exactly one live element | **99.00%** |
+| **ambiguous — matched more than one** | **0.03%** (3 nodes) |
 | invalid selectors | **0** |
-| actionable to Playwright (sampled) | 96.1% of 1,201 |
-| unlabelled | 0.67% |
+| actionable to Playwright (sampled) | 95.6% of 1,215 |
+| unlabelled | 0.65% |
 
-Two ambiguous nodes in ten thousand, and both on a page that rewrites itself
-while you read it. Re-tested on a settled DOM they resolve cleanly, as do the
+3 ambiguous nodes in ten thousand, all on pages that rewrite themselves
+while you read them. Re-tested on a settled DOM they resolve cleanly, as do the
 residual misses — bbc.co.uk goes from 180 to 0, surveymonkey.com from 94 to 0.
 **A graph is a snapshot; re-read after each action and the MCP server does that
 for you.**
 
-**The hard cases are the point.** 695 selectors across 11 sites had to be scoped
+**The hard cases are the point.** 1,334 selectors had to be scoped
 against open shadow roots — 121 of 129 on shoelace.style, 85 of 95 on
 vercel.com — and every one of them resolves uniquely. Playwright's CSS engine
 pierces shadow boundaries, so a light-DOM path like `#host > button` will quietly
@@ -236,18 +236,18 @@ and re-parses each page to confirm the output is stable:
 
 | | |
 |---|---|
-| nodes audited | **10,382** |
-| resolve to exactly one element | **10,275 (98.97%)** |
-| ambiguous — match more than one | **2 (0.02%)** |
+| nodes audited | **10,756** |
+| resolve to exactly one element | **10,648 (99.00%)** |
+| ambiguous — match more than one | **3 (0.03%)** |
 | invalid selectors | **0** |
-| actionable to Playwright | 1,154 of 1,201 sampled (96.1%) |
-| unlabelled | 70 (0.67%) |
+| actionable to Playwright | 1,161 of 1,215 sampled (95.6%) |
+| unlabelled | 70 (0.65%) |
 | tokens per node | median **10.2**, range 8.3–20.8 |
 | saving vs raw HTML | median **98.9%**, worst **64.1%** |
-| parse time | median **39ms**, p90 214ms |
+| parse time | median **55ms**, p90 214ms |
 
-Two ambiguous selectors in ten thousand is the number that matters: an ambiguous
-selector is a silent wrong click. 695 of these needed shadow-root scoping — 121
+3 ambiguous selectors in ten thousand is the number that matters: an ambiguous
+selector is a silent wrong click. 1,334 of these needed shadow-root scoping — 121
 of 129 on shoelace.style, 85 of 95 on vercel.com — and all of them resolve.
 
 **The residual 1% is timing, not addressing.** Third-party scripts insert wrapper
@@ -261,6 +261,40 @@ graph as a snapshot and re-read after each action.
 The floor for token saving is lean, link-dense pages with nothing to strip:
 danluu.com saves 64.1%, archive.org 66.6%. The ceiling is app shells —
 cloudflare.com goes from 687,807 tokens to 466.
+
+## `zerodom audit` — check the selectors you already have
+
+The failure that costs a QA team real money is not a selector that breaks. It is
+a selector that matches **two** elements: the test passes, acts on whichever the
+engine reached first, and fails one run in twenty for reasons nobody can
+reproduce.
+
+Point this at a test suite you already have. It changes nothing and requires
+nothing of ZeroDOM in the tests themselves — it reads the selectors already
+written, resolves each against your running app, and reports.
+
+```bash
+zerodom audit tests/ --url http://localhost:3000
+```
+
+```text
+AMBIGUOUS  2 match more than one element — a click may hit the wrong one
+  .btn  (3 matches)
+      tests/checkout.spec.ts:41
+  nav a  (2 matches)
+      tests/nav.spec.ts:12
+
+DEAD  1 match nothing on this page
+  #gone
+      tests/legacy.spec.ts:88
+
+ambiguous 2 · dead 1 · invalid 1 · ok 214
+```
+
+It reads Playwright, Puppeteer, Cypress and Selenium call sites —
+`locator()`, `query_selector()`, `wait_for_selector()`, `cy.get()`,
+`By.CSS_SELECTOR` and `page.click()` — in `.py`, `.js`, `.ts`, `.jsx` and
+`.tsx`. Add `--fail-on-ambiguous` to make CI red when a new one appears.
 
 ## Claude MCP setup
 
