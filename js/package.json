@@ -1,6 +1,6 @@
 {
   "name": "@vexralabs/zerodom",
-  "version": "0.0.2",
+  "version": "0.0.5",
   "description": "DOM-to-Interaction-Graph middleware for AI web agents (TypeScript port)",
   "license": "Apache-2.0",
   "type": "module",
