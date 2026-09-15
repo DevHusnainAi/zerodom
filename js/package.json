@@ -1,0 +1,41 @@
+{
+  "name": "@vexralabs/zerodom",
+  "version": "0.0.2",
+  "description": "DOM-to-Interaction-Graph middleware for AI web agents (TypeScript port)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "keywords": ["dom", "llm", "agent", "playwright", "browser-automation", "tokens", "mcp"],
+  "author": {
+    "name": "Syed Husnain Khalid",
+    "email": "contact@vexralabs.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DevHusnainAi/zerodom.git",
+    "directory": "js"
+  },
+  "homepage": "https://github.com/DevHusnainAi/zerodom/tree/main/js#readme",
+  "bugs": "https://github.com/DevHusnainAi/zerodom/issues",
+  "scripts": {
+    "build": "tsc",
+    "prepare": "tsc",
+    "pretest": "tsc",
+    "test": "node --test --experimental-strip-types test/*.test.ts"
+  },
+  "dependencies": {
+    "linkedom": "^0.18.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.3"
+  }
+}

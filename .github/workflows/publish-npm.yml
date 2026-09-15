@@ -1,0 +1,30 @@
+name: Publish npm
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC — no npm token needed
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Tag matches package.json version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          got=$(grep -m1 '"version"' package.json | cut -d'"' -f4)
+          [ "$want" = "$got" ] || { echo "tag $want != package.json $got"; exit 1; }
+      - run: npm ci
+      - run: npm run build
+      - run: npm publish --provenance --access public
