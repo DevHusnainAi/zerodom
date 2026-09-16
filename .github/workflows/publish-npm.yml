@@ -30,4 +30,8 @@ jobs:
           [ "$want" = "$got" ] || { echo "tag $want != package.json $got"; exit 1; }
       - run: npm ci
       - run: npm run build
+      # OIDC trusted publishing needs npm >= 11.5.1; Node 22's bundled npm (10.x)
+      # silently skips the OIDC flow and attempts an unauthenticated publish,
+      # which the registry 404s instead of clearly rejecting.
+      - run: npm install -g npm@latest
       - run: npm publish --provenance --access public
