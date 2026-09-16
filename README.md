@@ -2,6 +2,8 @@
 
 <img src="assets/banner.png" alt="ZeroDOM — the visual action layer for AI web agents. See the page. Know exactly what to click." width="100%">
 
+<br/>
+
 [![PyPI version](https://img.shields.io/pypi/v/zerodom)](https://pypi.org/project/zerodom/)
 [![npm version](https://img.shields.io/npm/v/%40vexralabs%2Fzerodom)](https://www.npmjs.com/package/@vexralabs/zerodom)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/zerodom/)
