@@ -1,10 +1,8 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="88" height="88" alt="">
+<img src="assets/banner.png" alt="ZeroDOM — the visual action layer for AI web agents. See the page. Know exactly what to click." width="100%">
 
-# ZeroDOM
-
-### The visual action layer for AI web agents. See the page. Know exactly what to click.
+<br/>
 
 [![PyPI version](https://img.shields.io/pypi/v/zerodom)](https://pypi.org/project/zerodom/)
 [![npm version](https://img.shields.io/npm/v/%40vexralabs%2Fzerodom)](https://www.npmjs.com/package/@vexralabs/zerodom)
@@ -16,7 +14,7 @@
 
 </div>
 
-<img src="assets/hero.png" alt="ZeroDOM report: numbered green badges [31], [45] overlaid on a live page alongside the compact interaction graph — the agent sees click [45], ZeroDOM resolves it to the exact DOM element">
+<img src="assets/hero.png" alt="ZeroDOM report: numbered cyan badges [31], [45] overlaid on a live page alongside the compact interaction graph — the agent sees click [45], ZeroDOM resolves it to the exact DOM element">
 
 ---
 
@@ -28,7 +26,15 @@ When Hacker News has 30 identical `link "upvote"` pairs, accessibility trees fai
 assigns 1:1 deterministic handles, resolving `[45]` to the exact DOM element while keeping
 structural CSS selectors entirely out of the context window.
 
-[Site](https://zerodom.vexralabs.com) · [Docs](https://zerodom.vexralabs.com/docs) · [vs. ARIA snapshots](https://zerodom.vexralabs.com/compare) · [Benchmarks](#benchmarks) · [npm](https://www.npmjs.com/package/@vexralabs/zerodom) · [PyPI](https://pypi.org/project/zerodom/)
+<p align="center">
+  <b><a href="https://zerodom.vexralabs.com">Site</a></b>
+  &nbsp;·&nbsp;
+  <b><a href="https://zerodom.vexralabs.com/docs">Docs</a></b>
+  &nbsp;·&nbsp;
+  <b><a href="https://zerodom.vexralabs.com/compare">vs. ARIA snapshots</a></b>
+  &nbsp;·&nbsp;
+  <b><a href="#benchmarks">Benchmarks</a></b>
+</p>
 
 ---
 

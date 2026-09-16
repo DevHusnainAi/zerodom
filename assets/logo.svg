@@ -1,22 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
      role="img" aria-label="zerodom">
   <title>zerodom</title>
+  <!-- Own background chip, not transparent: the accent cyan measures ~1.65:1 against
+       a white README, effectively invisible without a dark backing of its own. -->
+  <rect width="64" height="64" rx="14" fill="#080b16"/>
   <!-- The DOM: many undifferentiated nodes, thinning out. -->
-  <g fill="#8b949e">
-    <circle cx="10" cy="10" r="3"/><circle cx="22" cy="10" r="3"/>
-    <circle cx="34" cy="10" r="3"/><circle cx="46" cy="10" r="3"/>
-    <circle cx="10" cy="22" r="3"/><circle cx="22" cy="22" r="3"/>
-    <circle cx="34" cy="22" r="3"/>
-    <circle cx="10" cy="34" r="3"/><circle cx="22" cy="34" r="3"/>
-    <circle cx="10" cy="46" r="3"/>
+  <g fill="#3e5098">
+    <circle cx="14" cy="14" r="2.6"/><circle cx="25" cy="14" r="2.6" opacity=".8"/>
+    <circle cx="36" cy="14" r="2.6" opacity=".6"/>
+    <circle cx="14" cy="25" r="2.6" opacity=".8"/><circle cx="25" cy="25" r="2.6" opacity=".6"/>
+    <circle cx="14" cy="36" r="2.6" opacity=".6"/>
   </g>
   <!-- The interaction graph: what is left once the rest is pruned. -->
-  <g fill="none" stroke="#16a34a" stroke-width="3" stroke-linecap="round">
-    <path d="M34 46 L52 34 M34 46 L52 56"/>
+  <g fill="none" stroke="#22e0d8" stroke-width="3" stroke-linecap="round">
+    <path d="M31 43 L47 33 M31 43 L47 52"/>
   </g>
-  <g fill="#16a34a">
-    <circle cx="34" cy="46" r="5.5"/>
-    <circle cx="53" cy="33" r="4.5"/>
-    <circle cx="53" cy="57" r="4.5"/>
+  <g fill="#22e0d8">
+    <circle cx="31" cy="43" r="5"/>
+    <circle cx="48" cy="32" r="4"/>
+    <circle cx="48" cy="53" r="4"/>
   </g>
 </svg>
