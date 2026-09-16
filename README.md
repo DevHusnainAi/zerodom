@@ -1,10 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="88" height="88" alt="">
-
-# ZeroDOM
-
-### The visual action layer for AI web agents. See the page. Know exactly what to click.
+<img src="assets/banner.png" alt="ZeroDOM — the visual action layer for AI web agents. See the page. Know exactly what to click." width="100%">
 
 [![PyPI version](https://img.shields.io/pypi/v/zerodom)](https://pypi.org/project/zerodom/)
 [![npm version](https://img.shields.io/npm/v/%40vexralabs%2Fzerodom)](https://www.npmjs.com/package/@vexralabs/zerodom)
@@ -16,7 +12,7 @@
 
 </div>
 
-<img src="assets/hero.png" alt="ZeroDOM report: numbered green badges [31], [45] overlaid on a live page alongside the compact interaction graph — the agent sees click [45], ZeroDOM resolves it to the exact DOM element">
+<img src="assets/hero.png" alt="ZeroDOM report: numbered cyan badges [31], [45] overlaid on a live page alongside the compact interaction graph — the agent sees click [45], ZeroDOM resolves it to the exact DOM element">
 
 ---
 

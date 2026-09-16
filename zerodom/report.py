@@ -12,7 +12,7 @@ from collections import Counter
 from string import Template
 from typing import Any
 
-BADGE_COLOR = "#16a34a"
+BADGE_COLOR = "#22e0d8"
 FILL_COLOR = "#3b82f6"  # report only: separates "type here" from "click here"
 LAYER_ID = "__zerodom_layer"
 
