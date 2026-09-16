@@ -34,4 +34,7 @@ jobs:
       # silently skips the OIDC flow and attempts an unauthenticated publish,
       # which the registry 404s instead of clearly rejecting.
       - run: npm install -g npm@latest
-      - run: npm publish --provenance --access public
+      # --provenance requires a public source repo (npm verifies the sigstore
+      # bundle against it) — this repo is still private pre-launch. Add it back
+      # once DevHusnainAi/zerodom goes public.
+      - run: npm publish --access public
