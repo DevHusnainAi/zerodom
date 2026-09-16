@@ -42,6 +42,10 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # codeql-action/analyze calls the "get workflow run" REST API for its own
+      # telemetry; without this it 403s on that call every run (harmless, but
+      # noisy — "Resource not accessible by integration" in the log).
+      actions: read
     strategy:
       matrix:
         language: ["python", "javascript-typescript"]
