@@ -28,7 +28,7 @@ When Hacker News has 30 identical `link "upvote"` pairs, accessibility trees fai
 assigns 1:1 deterministic handles, resolving `[45]` to the exact DOM element while keeping
 structural CSS selectors entirely out of the context window.
 
-[Live Report](https://zerodom.vexralabs.com) · [Benchmarks](#benchmarks) · [Docs](https://github.com/DevHusnainAi/zerodom/tree/main/js#readme) · [Playground](https://zerodom.vexralabs.com) · [npm](https://www.npmjs.com/package/@vexralabs/zerodom) · [PyPI](https://pypi.org/project/zerodom/)
+[Site](https://zerodom.vexralabs.com) · [Docs](https://zerodom.vexralabs.com/docs) · [vs. ARIA snapshots](https://zerodom.vexralabs.com/compare) · [Benchmarks](#benchmarks) · [npm](https://www.npmjs.com/package/@vexralabs/zerodom) · [PyPI](https://pypi.org/project/zerodom/)
 
 ---
 
