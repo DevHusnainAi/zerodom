@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 dist/
 *.egg-info/
+node_modules/
 
 # Decision log and strategy notes. Deliberately not published: they name
 # prospects, price thinking and launch timing.
