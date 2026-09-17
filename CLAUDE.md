@@ -21,17 +21,30 @@ uv run python benchmarks/benchmark_tokens.py   # token-savings report (tiktoken,
 uv build                             # wheel + sdist into dist/
 ```
 
+There is a parallel TypeScript port under `js/` (`@vexralabs/zerodom` on npm) that mirrors
+the Python module-for-module (`parser.ts`, `labelLinker.ts`, `playwright.ts`, `frames.ts`).
+It has its own toolchain and test suite — changes to selector/label logic in Python have
+no effect on it and need the equivalent edit made by hand:
+
+```bash
+cd js && npm install
+npm run build                        # tsc
+npm test                             # vitest, mirrors tests/test_parser.py's cases
+```
+
 CI (`.github/workflows/`) runs `uv sync && uv run playwright install --with-deps chromium && uv run pytest`
 on Python 3.10 and 3.12.
 
 `tests/test_playwright.py` is skipped automatically when Chromium isn't installed
-(`pytestmark = pytest.mark.skipif(...)` at the top of the file) — `test_parser.py` and
-`test_mcp.py` (which uses a `FakePage`) don't need a real browser at all.
+(`pytestmark = pytest.mark.skipif(...)` at the top of the file) — `test_parser.py`,
+`test_mcp.py` (which uses a `FakePage`), and `test_audit.py`/`test_cli.py` don't need a
+real browser at all.
 
 ## Architecture
 
-Five modules, each independent and named for its FR (functional requirement) in its
-docstring — read the module docstring first, it states the design constraint:
+Seven modules, each independent and (for the FR-numbered ones) named for its functional
+requirement in its docstring — read the module docstring first, it states the design
+constraint:
 
 - **`parser.py`** (FR-1) — the core engine. `ZeroDOMParser(html, url).parse()` does one
   DFS pass (`_walk`) that prunes non-content subtrees (`script`/`style`/hidden/etc.) and
@@ -65,6 +78,19 @@ docstring — read the module docstring first, it states the design constraint:
   numbered badges over every node). Imported lazily from `parser.py`
   (`InteractionGraph.to_html_report`) specifically to keep `parser.py` free of a
   Playwright dependency for callers that only need the deterministic parse.
+- **`frames.py`** — iframe traversal, opt-in (`frames=True`) since ads/trackers/consent
+  gates are iframes too. `frame_chain()` records the per-node chain of
+  `iframe >> nth=N` selectors from the top document down, indexed rather than named
+  because most iframes have no stable id/class. `about:blank` is deliberately not
+  skip-listed — `srcdoc`/`document.write` frames (CodePen result panels, "run it"
+  sandboxes) keep that URL and are exactly the content an agent came for; a frame is
+  judged by size/content, not its URL.
+- **`audit.py`** — `zerodom audit <dir> --url <url>`, no ZeroDOM required in the suite
+  being audited. Regexes (`CALL_PATTERNS`) pull selectors out of existing Playwright/
+  Puppeteer/Cypress/Selenium test code, then resolves each against a live page and
+  reports `ok`/`dead`/`ambiguous`/`invalid` — the same "matches more than one element"
+  failure mode `_selector()` in `parser.py` is built to avoid, but for selectors a human
+  already wrote.
 - **`cli.py`** — `zerodom inspect <url>` (entry point `zerodom`). `capture()` shares one
   Playwright browser session across screenshot + HTML report generation since both need
   the same live page.
@@ -89,3 +115,9 @@ Import order in `__init__.py` matters for avoiding circular imports:
   deterministic and dependency-free of a browser. Browser-only code lives in
   `playwright_wrapper.py`, `report.py`, `mcp_server.py`, or the `--render`/`capture` path
   of `cli.py`.
+- `__init__.py`'s version comes from `importlib.metadata.version("zerodom")`, reading
+  `pyproject.toml` — never hardcode a version string elsewhere in the Python package.
+- Selector/label logic is duplicated by hand in `js/src/` (TypeScript, no shared source
+  of truth). A fix to an edge case in `parser.py`/`label_linker.py` isn't done until the
+  same fix is made in `js/src/parser.ts`/`labelLinker.ts` and `js/test/parser.test.ts`
+  covers it.
