@@ -486,7 +486,13 @@ def test_image_link_without_alt_falls_back_to_href():
 
 
 def test_href_fallback_skips_uninformative_targets():
-    for href in ("#", "javascript:void(0)"):
+    for href in (
+        "#",
+        "javascript:void(0)",
+        "JavaScript:void(0)",  # scheme check must be case-insensitive
+        "data:text/html,<script>alert(1)</script>",
+        "vbscript:msgbox(1)",
+    ):
         graph = parse_html(f'<a href="{href}"><img src="i.png"></a>')
         assert graph["nodes"][0]["label"] == "Unlabelled Element", href
 

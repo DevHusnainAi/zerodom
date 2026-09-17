@@ -90,7 +90,7 @@ def _href_label(href: str) -> str:
     fragments say nothing about where the link goes, so they stay unlabelled.
     """
     href = href.strip()
-    if href.startswith(("javascript:", "#")) or not href:
+    if href.lower().startswith(("javascript:", "data:", "vbscript:", "#")) or not href:
         return ""
     # Drop scheme and www so "https://news.ycombinator.com/" reads as the site.
     trimmed = re.sub(r"^[a-z][a-z0-9+.-]*://(www\.)?", "", href, flags=re.I)

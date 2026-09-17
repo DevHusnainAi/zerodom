@@ -19,8 +19,17 @@ const BUTTON_INPUT_TYPES = new Set(["submit", "button", "reset", "image"]);
 
 const MAX_LABEL_LEN = 80;
 
-// Trailing punctuation on a caption: "Search:" -> "Search".
-const CAPTION_STRIP = /[ \t\n :*>\-–—]+$/;
+// Trailing punctuation on a caption: "Search:" -> "Search". A plain character
+// set walked from the end, not a regex: `/[...]+$/` backtracks on an unanchored
+// search — a run of the strip chars not right at the string's end forces a retry
+// from every position in that run, O(n^2) on adversarial input. This is O(n).
+const CAPTION_STRIP_CHARS = new Set([" ", "\t", "\n", ":", "*", ">", "-", "–", "—"]);
+
+function stripCaptionPunctuation(s: string): string {
+  let end = s.length;
+  while (end > 0 && CAPTION_STRIP_CHARS.has(s[end - 1])) end--;
+  return s.slice(0, end);
+}
 
 export function textOf(el: Element): string {
   return collapse(el.textContent ?? "").slice(0, MAX_LABEL_LEN);
@@ -54,7 +63,7 @@ export function adjacentText(el: Element): string {
   if (!parent) return "";
   const previous = el.previousElementSibling;
   const source = textBetween(previous, parent, el);
-  const caption = collapse(source).replace(CAPTION_STRIP, "");
+  const caption = stripCaptionPunctuation(collapse(source));
   if (!caption) return "";
   return caption.split(" ").slice(-6).join(" ").slice(0, MAX_LABEL_LEN);
 }
@@ -94,7 +103,8 @@ function handlerLabel(onclick: string): string {
  */
 function hrefLabel(href: string): string {
   const trimmed0 = href.trim();
-  if (trimmed0.startsWith("javascript:") || trimmed0.startsWith("#") || !trimmed0) return "";
+  const lower = trimmed0.toLowerCase();
+  if (lower.startsWith("javascript:") || lower.startsWith("data:") || lower.startsWith("vbscript:") || lower.startsWith("#") || !trimmed0) return "";
   // Drop scheme and www so "https://news.ycombinator.com/" reads as the site.
   const trimmed = trimmed0.replace(/^[a-z][a-z0-9+.-]*:\/\/(www\.)?/i, "");
   return trimmed.replace(/\/+$/, "").slice(0, MAX_LABEL_LEN);
