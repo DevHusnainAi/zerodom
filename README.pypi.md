@@ -1,5 +1,7 @@
 # ZeroDOM
 
+<!-- mcp-name: io.github.devhusnainai/zerodom -->
+
 ### Your agent doesn't need the DOM. It needs to know what it can click.
 
 ZeroDOM turns a bloated HTML page into a token-optimized **interaction graph** —

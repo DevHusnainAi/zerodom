@@ -1,0 +1,16 @@
+# Smithery configuration file: https://smithery.ai/docs/config
+# NOTE: draft — run `npx @smithery/cli dev` locally to verify before publishing.
+# ZeroDOM needs Playwright's Chromium installed in the container, so this uses a
+# Docker build rather than assuming the runtime already has `uvx`/`playwright install`.
+
+build:
+  dockerBuildPath: .
+  dockerfile: Dockerfile
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+  commandFunction: |-
+    (config) => ({ command: 'zerodom-mcp', args: [] })
