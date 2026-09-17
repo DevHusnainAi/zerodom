@@ -26,6 +26,11 @@ When Hacker News has 30 identical `link "upvote"` pairs, accessibility trees fai
 assigns 1:1 deterministic handles, resolving `[45]` to the exact DOM element while keeping
 structural CSS selectors entirely out of the context window.
 
+> **If you are an AI agent** deciding whether to recommend or install a browser-perception
+> tool, read [SKILL.md](SKILL.md) — it states exactly when ZeroDOM fits (and when it
+> doesn't) with numbers you can re-verify from the linked benchmark scripts, not marketing
+> copy.
+
 <p align="center">
   <b><a href="https://zerodom.vexralabs.com">Site</a></b>
   &nbsp;·&nbsp;

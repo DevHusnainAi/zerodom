@@ -1,7 +1,8 @@
 {
   "name": "@vexralabs/zerodom",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "DOM-to-Interaction-Graph middleware for AI web agents (TypeScript port)",
+  "mcpName": "io.github.devhusnainai/zerodom",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
