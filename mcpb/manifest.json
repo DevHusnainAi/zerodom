@@ -17,7 +17,7 @@
   "documentation": "https://zerodom.vexralabs.com/docs",
   "support": "https://github.com/DevHusnainAi/zerodom/issues",
   "server": {
-    "type": "uv",
+    "type": "binary",
     "entry_point": "zerodom-mcp",
     "mcp_config": {
       "command": "uvx",
