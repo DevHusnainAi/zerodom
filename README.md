@@ -31,6 +31,8 @@ structural CSS selectors entirely out of the context window.
   &nbsp;·&nbsp;
   <b><a href="https://zerodom.vexralabs.com/docs">Docs</a></b>
   &nbsp;·&nbsp;
+  <b><a href="https://zerodom.vexralabs.com/playground">Playground</a></b>
+  &nbsp;·&nbsp;
   <b><a href="https://zerodom.vexralabs.com/compare">vs. ARIA snapshots</a></b>
   &nbsp;·&nbsp;
   <b><a href="#benchmarks">Benchmarks</a></b>
