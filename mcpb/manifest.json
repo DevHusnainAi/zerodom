@@ -1,0 +1,35 @@
+{
+  "manifest_version": "0.4",
+  "name": "zerodom",
+  "display_name": "ZeroDOM",
+  "version": "0.0.6",
+  "description": "Token-optimized interaction graph for AI browser agents — 71% fewer tokens than ARIA snapshots.",
+  "long_description": "ZeroDOM parses a live page into a flat, addressable list of clickable/fillable nodes (`[03] button 'Sign In'`) instead of an accessibility tree or raw DOM dump. Every CSS selector it returns is checked for actual document-wide uniqueness before being trusted, not assumed from an attribute — 99.00% of 10,756 audited selectors across 111 real sites resolve to exactly one element. Requires Playwright's Chromium to be installed once (`uvx --from zerodom playwright install chromium`) before first use.",
+  "author": {
+    "name": "Syed Husnain Khalid",
+    "url": "https://github.com/DevHusnainAi"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DevHusnainAi/zerodom.git"
+  },
+  "homepage": "https://zerodom.vexralabs.com",
+  "documentation": "https://zerodom.vexralabs.com/docs",
+  "support": "https://github.com/DevHusnainAi/zerodom/issues",
+  "server": {
+    "type": "uv",
+    "entry_point": "zerodom-mcp",
+    "mcp_config": {
+      "command": "uvx",
+      "args": ["--from", "zerodom==0.0.6", "zerodom-mcp"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  },
+  "keywords": ["browser-automation", "mcp", "dom", "playwright", "web-scraping", "ai-agents"],
+  "license": "Apache-2.0"
+}
