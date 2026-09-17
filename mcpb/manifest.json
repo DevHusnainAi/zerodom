@@ -24,6 +24,28 @@
       "args": ["--from", "zerodom==0.0.6", "zerodom-mcp"]
     }
   },
+  "tools": [
+    {
+      "name": "zerodom_parse_url",
+      "description": "Navigate to a URL and return its interaction graph — a compact text list like `[03] button 'Sign In'`. CSS selectors stay server-side, never entering the context window."
+    },
+    {
+      "name": "zerodom_read_page",
+      "description": "Re-read the current page without navigating, so typed form state and scroll position survive. Use after an action changed the page."
+    },
+    {
+      "name": "zerodom_find",
+      "description": "Search the current page's graph for nodes matching a phrase — cheaper than re-reading the whole graph when you already know what you're looking for."
+    },
+    {
+      "name": "zerodom_click_node",
+      "description": "Click a node by id and return a diff of what changed on the page (+ appeared, - gone, ~ value changed), not the whole graph again."
+    },
+    {
+      "name": "zerodom_fill_node",
+      "description": "Type text into a node by id and return a diff of what changed — e.g. a validation error appearing or an autocomplete list opening."
+    }
+  ],
   "compatibility": {
     "platforms": ["darwin", "linux", "win32"],
     "runtimes": {
