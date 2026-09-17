@@ -122,6 +122,31 @@ test("an unlabelled div with onclick falls back to the handler's name", () => {
   assert.equal(graph.nodes[0].label, "close modal");
 });
 
+test("href fallback skips javascript:/data:/vbscript: targets, case-insensitively", () => {
+  for (const href of [
+    "#",
+    "javascript:void(0)",
+    "JavaScript:void(0)",
+    "data:text/html,<script>alert(1)</script>",
+    "vbscript:msgbox(1)",
+  ]) {
+    const graph = parseHtml(`<a href="${href}"><img src="i.png"></a>`);
+    assert.equal(graph.nodes[0].label, "Unlabelled Element", href);
+  }
+});
+
+test("caption stripping stays fast on an adversarial run of strip characters", () => {
+  // Regression for a ReDoS in the old /[ \t\n :*>\-–—]+$/ regex: an unanchored
+  // search retries from every position in a long run of strip chars that isn't
+  // right at the string's end, O(n^2). 50k tabs followed by non-matching text
+  // used to hang; the linear rewrite finishes in milliseconds either way.
+  const adversarial = "\t".repeat(50_000) + "x";
+  const start = performance.now();
+  const graph = parseHtml(`${adversarial}<input>`);
+  assert.ok(performance.now() - start < 1000, "caption stripping should stay linear");
+  assert.equal(graph.nodes.length, 1);
+});
+
 test("a near-empty small page warns it's probably a bot wall", () => {
   const graph = parseHtml("<p>blocked</p>");
   assert.ok(graph.metadata.warning?.includes("bot wall"));
