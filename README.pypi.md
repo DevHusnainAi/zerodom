@@ -1,6 +1,6 @@
 # ZeroDOM
 
-<!-- mcp-name: io.github.devhusnainai/zerodom -->
+<!-- mcp-name: io.github.DevHusnainAi/zerodom -->
 
 ### Your agent doesn't need the DOM. It needs to know what it can click.
 

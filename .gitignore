@@ -16,3 +16,4 @@ assets/screenshot.png
 # regenerable: `zerodom inspect --render --screenshot ... --html ... demo/demo-page.html`
 demo/report.html
 demo/annotated.png
+.playwright-mcp/
