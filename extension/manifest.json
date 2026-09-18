@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "zerodom",
+  "version": "0.1.0",
+  "description": "Let Claude drive this browser through zerodom's compact, verified-unique interaction graph — real session, no bot-detection wall.",
+  "permissions": ["debugger", "tabs", "storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "zerodom — connect to a relay"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

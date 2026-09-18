@@ -29,6 +29,10 @@ dependencies = [
     "tiktoken",
     "mcp[cli]",
     "playwright",
+    # Only for `zerodom relay` (zerodom/relay.py) — the local WS bridge between
+    # our own connect_over_cdp and Microsoft's Playwright extension. See
+    # docs/DECISIONS.md D11.
+    "websockets",
 ]
 
 [project.urls]

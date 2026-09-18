@@ -32,6 +32,14 @@ class FakeLocator:
         await self.page.fill(self.selector, text)
 
 
+class FakeMouse:
+    def __init__(self, page):
+        self.page = page
+
+    async def wheel(self, dx, dy):
+        self.page.calls.append(("wheel", dx, dy))
+
+
 class FakePage:
     """Stands in for a Playwright page so MCP tools are testable without a browser."""
 
@@ -40,6 +48,7 @@ class FakePage:
         self.url = "https://example.com/"
         self.html = PAGE
         self.typed: dict[str, str] = {}
+        self.mouse = FakeMouse(self)
 
     async def goto(self, url, **kw):
         self.calls.append(("goto", url))
@@ -117,6 +126,19 @@ def test_click_and_fill_resolve_node_ids(page):
     asyncio.run(mcp_server.zerodom_click_node("node_02"))
     assert ("fill", "#q", "zerodom") in page.calls
     assert ("click", "#go") in page.calls
+
+
+def test_scroll_dispatches_a_wheel_event_and_returns_a_diff(page):
+    asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
+    out = asyncio.run(mcp_server.zerodom_scroll())
+    assert ("wheel", 0, 800) in page.calls
+    assert out == "no structural change"
+
+
+def test_scroll_up_uses_a_negative_delta(page):
+    asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
+    asyncio.run(mcp_server.zerodom_scroll(direction="up", amount=400))
+    assert ("wheel", 0, -400) in page.calls
 
 
 def test_read_page_does_not_navigate(page):

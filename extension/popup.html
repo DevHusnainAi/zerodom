@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 300px;
+      font: 13px/1.5 ui-monospace, Menlo, monospace;
+      background: #17181b;
+      color: #e8eaed;
+      margin: 0;
+      padding: 14px;
+    }
+    h1 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #e8a33d;
+      margin: 0 0 10px;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      background: #0e0f11;
+      border: 1px solid #2a2c30;
+      border-radius: 6px;
+      color: #e8eaed;
+      padding: 7px 8px;
+      font: inherit;
+      margin-bottom: 8px;
+    }
+    button {
+      width: 100%;
+      background: #e8a33d;
+      color: #17181b;
+      border: none;
+      border-radius: 6px;
+      padding: 8px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.disconnect {
+      background: #2a2c30;
+      color: #e8eaed;
+    }
+    #status {
+      margin-top: 10px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #6b6f76;
+    }
+    .dot.connected { background: #4fbf7f; }
+    .dot.connecting { background: #e8a33d; }
+  </style>
+</head>
+<body>
+  <h1>zerodom</h1>
+  <input id="url" type="text" placeholder="ws://127.0.0.1:PORT/extension/ID">
+  <button id="action">Connect</button>
+  <div id="status"><span class="dot"></span><span id="status-text">disconnected</span></div>
+  <script src="popup.js"></script>
+</body>
+</html>

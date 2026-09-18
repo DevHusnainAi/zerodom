@@ -151,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
         help="exit non-zero if any selector matches more than one element (for CI)",
     )
 
+    sub.add_parser(
+        "relay",
+        help="bridge Claude to your real, logged-in Chrome via zerodom's own extension",
+    )
+
     insp = sub.add_parser("inspect", help="parse a URL and report token savings")
     insp.add_argument("url")
     insp.add_argument(
@@ -189,7 +194,11 @@ def main(argv: list[str] | None = None) -> int:
     # `inspect` is the common verb, so requiring it is ceremony: `zerodom <url>`
     # works, and the explicit form keeps working for anyone who learned it.
     argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] not in {"inspect", "audit", "-h", "--help"} and not argv[0].startswith("-"):
+    if (
+        argv
+        and argv[0] not in {"inspect", "audit", "relay", "-h", "--help"}
+        and not argv[0].startswith("-")
+    ):
         argv = ["inspect", *argv]
 
     args = parser.parse_args(argv)
@@ -199,6 +208,12 @@ def main(argv: list[str] | None = None) -> int:
         ambiguous, text = run(args.path, args.url)
         print(text)
         return 1 if (ambiguous and args.fail_on_ambiguous) else 0
+
+    if args.command == "relay":
+        from .relay import main as relay_main
+
+        relay_main()
+        return 0
 
     return inspect(
         args.url, args.render, args.as_json, args.screenshot,
