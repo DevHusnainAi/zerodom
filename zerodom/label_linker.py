@@ -33,10 +33,51 @@ MAX_LABEL_LEN = 80
 # Trailing punctuation on a caption: "Search:" -> "Search".
 CAPTION_STRIP = " \t\n\xa0:*>-–—"
 
+# el.text_content() concatenates a <script>/<style> descendant's raw source
+# right along with real visible text — it has no notion that those tags
+# aren't "content". Real example: google.com/maps' <body> falling through
+# to text_of() picked up an inline <script>'s JS source
+# ("tick('b0');if (window.devicePixelRatio > 1)...") as its "label".
+_NO_TEXT_TAGS = {"script", "style"}
+
+# HTML comments — <!-- ... --> — are invisible by definition, never rendered
+# by any browser, yet lxml's Comment nodes carry their text on `.text` just
+# like a real element and get walked right along with everything else. Real
+# example: reddit.com's Lit-based web components leave declarative-shadow-DOM
+# hydration marker comments (`<!--?lit$438023304$-->`) sitting in the DOM,
+# and they concatenated straight into button labels ("?lit$438023304$Join").
+# Not Lit-specific either — a *plain* `<!-- normal comment -->` leaks the
+# exact same way, confirmed with a synthetic case; this was never
+# comment-aware at all. lxml represents a Comment's `.tag` as a callable
+# (lxml.etree.Comment), never a plain string the way every real element's
+# tag always is — that's the one honest way to tell them apart here.
+
+# Icon fonts render a glyph at a Private Use Area codepoint (U+E000-F8FF) —
+# real example, google.com/maps buttons whose text_content() came back as
+# "Restaurants", "Get app": the icon's codepoint concatenated
+# straight into the real word with no separator. Never real, readable text,
+# so it's stripped rather than merely whitespace-collapsed around.
+_PUA_RE = re.compile(f"[{chr(0xE000)}-{chr(0xF8FF)}]")
+
+
+def _text_content_excluding(el: HtmlElement) -> str:
+    """el.text_content(), but skipping a _NO_TEXT_TAGS subtree or a comment
+    node entirely — its own text is excluded, but a sibling's/its own tail
+    text right after it isn't (that's real, visible content)."""
+    parts = [el.text or ""]
+    for child in el:
+        if not isinstance(child.tag, str) or child.tag in _NO_TEXT_TAGS:
+            parts.append(child.tail or "")
+            continue
+        parts.append(_text_content_excluding(child))
+        parts.append(child.tail or "")
+    return "".join(parts)
+
 
 def text_of(el: HtmlElement) -> str:
     """Visible text of an element, whitespace-collapsed and length-capped."""
-    return " ".join(el.text_content().split())[:MAX_LABEL_LEN]
+    text = _PUA_RE.sub("", _text_content_excluding(el))
+    return " ".join(text.split())[:MAX_LABEL_LEN]
 
 
 def adjacent_text(el: HtmlElement) -> str:

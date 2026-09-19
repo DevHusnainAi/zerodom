@@ -39,7 +39,17 @@ SERIALIZE = """() => {
       // optimisation for offscreen content, not a way to hide it. Counting it
       // as hidden deletes everything below the fold — on vercel.com that was
       // 129 of 177 controls, an agent blinded to most of the page.
-      if (!el.checkVisibility({ visibilityProperty: true })) {
+      //
+      // NOT display:contents either, and for a related-but-distinct reason:
+      // that element generates no box of its own (checkVisibility() correctly,
+      // per spec, says "no" for it — getBoundingClientRect() is 0x0), but its
+      // children render completely normally, real boxes and all. reddit.com
+      // wraps its entire post feed in one (an i18n passthrough div,
+      // `id="i18n-shreddit-feed-content"`) — marking it hidden deleted all 27
+      // real, visible posts underneath in one shot, since a hidden subtree is
+      // pruned outright rather than inspected further.
+      const display = getComputedStyle(el).display;
+      if (display !== 'contents' && !el.checkVisibility({ visibilityProperty: true })) {
         el.setAttribute('data-zerodom-hidden', '');
         marked.push(el);
       }

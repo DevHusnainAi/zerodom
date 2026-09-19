@@ -184,6 +184,37 @@ playwright install chromium
 | `zerodom_find(query)` | return only the nodes matching a phrase |
 | `zerodom_click_node(node_id)` | click, then return **what changed** |
 | `zerodom_fill_node(node_id, text)` | type, then return what changed |
+| `zerodom_hover(node_id)` | hover, revealing hover-triggered menus/tooltips |
+| `zerodom_press_key(node_id, key)` | press a key on a focused node (Enter, Escape, Tab, ...) |
+| `zerodom_upload_file(node_id, path)` | set a file input's value to a local path |
+| `zerodom_drag(source_node_id, target_node_id)` | drag one node onto another |
+| `zerodom_scroll(direction, amount=800)` | scroll, return what's newly visible |
+| `zerodom_new_tab(url=None)` | open a tab and make it active |
+| `zerodom_list_tabs()` | list every open tab, marking the active one |
+| `zerodom_switch_tab(tab_id)` | make another open tab active |
+| `zerodom_close_tab(tab_id=None)` | close a tab (the active one by default) |
+| `zerodom_screenshot(path=None)` | full-page screenshot of the active tab, saved to disk |
+| `zerodom_set_viewport(width, height)` | resize the viewport for responsive-design testing |
+| `zerodom_get_styles(node_id)` | curated computed styles + box model for a node — design/CSS review |
+| `zerodom_network_log(clear=False)` | recent requests/responses the active tab has made |
+| `zerodom_status()` | diagnose the connection: relay/extension reachability, active tab, recent relay log |
+| `zerodom_eval_js(code)` ⚠️ | run arbitrary JS in the real page, return the result |
+| `zerodom_get_cookies()` ⚠️ | list cookies for the active tab, **including `httpOnly` ones** |
+
+**In an attached (real-browser) session, zerodom locks the tab while it's driving.** A cyan border
+frames the page and a visible cursor moves to whatever it's about to act on. Real clicks/scrolling
+from you are blocked at the browser level (`Input.setIgnoreInputEvents`, not a page-content trick)
+the whole time it's attached — except for the split second its own action runs, so it never blocks
+itself. A small "zerodom is driving this tab" banner marks why. See `docs/DECISIONS.md` D15.
+
+⚠️ **`zerodom_eval_js` and `zerodom_get_cookies` are real power, not a toy.** Both go through
+the same `chrome.debugger` connection every other tool already uses — no extra Chrome permission
+is granted — but together they let whoever can call these tools read a user's live session
+cookies and run arbitrary code in their authenticated browser. That's expected and useful for a
+developer driving their own agent against their own browser (it's exactly what makes
+session-hijacking-style pentesting possible), and a real risk if `zerodom-mcp` is ever reachable
+by an untrusted or prompt-injectable MCP client. Nothing here gates that — it's a documented
+boundary, not an enforced one. See `docs/DECISIONS.md` D14.
 
 **An agent loop shouldn't re-read the page it already has.** Two tools exist so it
 doesn't have to. `zerodom_find` answers "where's the dispatch button?" with one

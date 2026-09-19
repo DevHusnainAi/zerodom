@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
@@ -15,12 +23,37 @@ from .playwright_wrapper import ZeroDOM
 
 mcp = MCPServer("zerodom", version=__version__)
 
-# ponytail: one global browser session — the MCP server drives a single agent.
-# Add a session_id parameter only if concurrent pages are ever needed.
+# ponytail: one global browser *connection* — the MCP server drives a single
+# agent — but multiple tabs within it (zerodom_new_tab/switch_tab/close_tab).
+# `pages` maps a tab id to its Playwright Page; `active` is the one every
+# other tool (_page(), click, fill, read, ...) acts on until switched.
 _session: dict[str, Any] = {
-    "pw": None, "browser": None, "page": None, "attached": False,
-    "selectors": {}, "nodes": [], "url": None, "frames": False,
+    "pw": None, "browser": None, "pages": {}, "active": None, "_next_tab": 0,
+    "attached": False, "selectors": {}, "nodes": [], "url": None, "frames": False,
+    "network_log": {},  # tab_key -> list of {"type": "request"|"response", ...}
+    "cdp_sessions": {},  # tab_key -> CDPSession, cached by _set_input_ignored
 }
+
+
+def _wire_network_log(page: Any, tab_key: str) -> None:
+    """Passive request/response visibility for zerodom_network_log — not
+    interception or modification (that's page.route(), a bigger, stateful
+    feature not built until something actually needs it). Capped at the most
+    recent 200 entries per tab so a long session doesn't grow unbounded.
+    """
+    log: list[dict[str, Any]] = []
+    _session["network_log"][tab_key] = log
+
+    def on_request(request: Any) -> None:
+        log.append({"type": "request", "method": request.method, "url": request.url})
+        del log[:-200]
+
+    def on_response(response: Any) -> None:
+        log.append({"type": "response", "status": response.status, "url": response.url})
+        del log[:-200]
+
+    page.on("request", on_request)
+    page.on("response", on_response)
 
 
 def _cdp_endpoint() -> str | None:
@@ -37,22 +70,104 @@ def _cdp_endpoint() -> str | None:
     return os.environ.get("ZERODOM_CDP_ENDPOINT") or None
 
 
-async def _page() -> Any:
-    if _session["page"] is None:
-        from playwright.async_api import async_playwright
+def _relay_port_open(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.2)
+        return s.connect_ex((host, port)) == 0
 
-        pw = await async_playwright().start()
-        endpoint = _cdp_endpoint()
-        if endpoint:
-            # Fail closed: a configured-but-unreachable endpoint is an error, not
-            # a reason to silently fall back to a fresh, unauthenticated browser.
-            browser = await pw.chromium.connect_over_cdp(endpoint)
-            page = browser.contexts[0].pages[0] if browser.contexts[0].pages else await browser.contexts[0].new_page()
-            _session.update(pw=pw, browser=browser, page=page, attached=True)
-        else:
-            browser = await pw.chromium.launch()
-            _session.update(pw=pw, browser=browser, page=await browser.new_page(), attached=False)
-    return _session["page"]
+
+# Piping the auto-spawned relay's output to DEVNULL made a real bug (a stuck
+# extension handshake) take a hand-rolled WebSocket probe script and manual
+# process surgery to diagnose. A persistent, append-mode log file costs
+# nothing and means `zerodom_status` — or a human with `tail` — can just look.
+_RELAY_LOG_PATH = Path.home() / ".zerodom" / "relay.log"
+
+
+def _ensure_relay_running() -> None:
+    """Auto-starts `zerodom relay` in the background so a fresh install needs
+    neither a second terminal nor ZERODOM_CDP_ENDPOINT set by hand — the relay
+    is ours (D11/D12), so the MCP server can just bring it up itself. A no-op
+    if the user already set ZERODOM_CDP_ENDPOINT (explicit config always wins)
+    or something's already listening on the fixed port — another zerodom-mcp
+    instance, or a manually-run `zerodom relay` — reused rather than duplicated.
+    """
+    if os.environ.get("ZERODOM_CDP_ENDPOINT"):
+        return
+    from .relay import DEFAULT_PORT
+
+    host = "127.0.0.1"
+    if not _relay_port_open(host, DEFAULT_PORT):
+        _RELAY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(_RELAY_LOG_PATH, "a")
+        subprocess.Popen(
+            [sys.executable, "-m", "zerodom.relay"],
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+        )
+        for _ in range(25):  # ~5s
+            if _relay_port_open(host, DEFAULT_PORT):
+                break
+            time.sleep(0.2)
+    if _relay_port_open(host, DEFAULT_PORT):
+        os.environ["ZERODOM_CDP_ENDPOINT"] = f"ws://{host}:{DEFAULT_PORT}/cdp/local"
+
+
+async def _page() -> Any:
+    """The active tab's page, bootstrapping the browser and its first tab
+    (id "0") on first call. Every tool goes through this rather than reading
+    _session["pages"] directly, so zerodom_switch_tab transparently redirects
+    every other tool at whichever tab is now active."""
+    active = _session["active"]
+    if active is not None and active in _session["pages"]:
+        return _session["pages"][active]
+    from playwright.async_api import async_playwright
+
+    pw = await async_playwright().start()
+    endpoint = _cdp_endpoint()
+    if endpoint:
+        # Fail closed: a configured-but-unreachable endpoint is an error, not
+        # a reason to silently fall back to a fresh, unauthenticated browser.
+        browser = await pw.chromium.connect_over_cdp(endpoint)
+        page = browser.contexts[0].pages[0] if browser.contexts[0].pages else await browser.contexts[0].new_page()
+        attached = True
+    else:
+        browser = await pw.chromium.launch()
+        page = await browser.new_page()
+        attached = False
+    tab_key = str(_session["_next_tab"])
+    _session["_next_tab"] += 1
+    _session["pages"][tab_key] = page  # merge, not replace: other tabs may still be open
+    _session.update(pw=pw, browser=browser, attached=attached, active=tab_key)
+    _wire_network_log(page, tab_key)
+    return page
+
+
+async def _goto(page: Any, url: str) -> None:
+    """Navigate, then give a client-hydrated SPA a bounded chance to finish
+    mounting its real UI before the first parse.
+
+    domcontentloaded alone isn't enough: it fires on the initial HTML parse,
+    before frameworks that hydrate after load have rendered anything real.
+    Confirmed on google.com/maps — the first parse (domcontentloaded only)
+    found 10 nodes; the exact same unreloaded page, given a few seconds,
+    had 39 (every category pill, zoom control, Layers, Menu/Saved/Recents —
+    all mounted after domcontentloaded already fired). `networkidle` alone
+    is not a safe default here, though — a page with a persistent
+    websocket/poll (chat apps, live dashboards) never goes idle and would
+    hang the whole call — so this waits for it only as a bounded, best-effort
+    top-up, not a requirement: on timeout, proceed with whatever's there.
+
+    Only used for a *fresh* navigation. _read()'s reload-free re-check stays
+    on domcontentloaded-only deliberately — a click may still be mid-navigation
+    when it runs, and networkidle there risks a much longer, avoidable wait on
+    every single action instead of once per navigation.
+    """
+    await page.goto(url, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_load_state("networkidle", timeout=2000)
+    except Exception:
+        pass
 
 
 def _node(node_id: str) -> dict[str, Any]:
@@ -70,14 +185,17 @@ def _node(node_id: str) -> dict[str, Any]:
     raise ValueError(f"Unknown node '{node_id}'. Call zerodom_parse_url first.")
 
 
-# Amber matches the Vexra Labs accent used elsewhere (vexralabs-com,
-# zerodom's own report.py badges) — a deliberate, not arbitrary, color.
+# Cyan is zerodom's actual brand color — report.py's own BADGE_COLOR is
+# #22e0d8, the same used for the "zerodom" tab group and the logo. (An
+# earlier version of this comment claimed amber matched report.py's badges;
+# it didn't — report.py's badges were always cyan. Corrected here, not
+# preserved as-is.)
 _HIGHLIGHT_JS = """(el) => {
   const r = el.getBoundingClientRect();
   const box = document.createElement('div');
   box.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;` +
-    `width:${r.width}px;height:${r.height}px;border:3px solid #e8a33d;` +
-    `border-radius:4px;box-shadow:0 0 0 4px rgba(232,163,61,0.35);` +
+    `width:${r.width}px;height:${r.height}px;border:3px solid #22e0d8;` +
+    `border-radius:4px;box-shadow:0 0 0 4px rgba(34,224,216,0.35);` +
     `pointer-events:none;z-index:2147483647;transition:opacity .25s ease;`;
   document.body.appendChild(box);
   setTimeout(() => { box.style.opacity = '0'; }, 250);
@@ -148,6 +266,106 @@ async def _log_action(page: Any, text: str) -> None:
         pass
 
 
+# Purely cosmetic now — the real user-input block is _set_input_ignored()
+# below, at the browser/CDP level, not here. A page-injected pointer-events
+# overlay can't tell a real click apart from a chrome.debugger-dispatched
+# one (both are trusted DOM events), so it can only ever swallow both or
+# neither; Input.setIgnoreInputEvents is what actually distinguishes them.
+# This just draws the full-viewport border + banner, matching the visible
+# "an agent is driving this tab" framing browser-extension agents use —
+# idempotent, shown once and left up rather than toggled per action, since
+# it no longer has any bearing on whether input gets through.
+_DRIVING_UI_JS = """() => {
+  if (document.getElementById('zerodom-driving-border')) return;
+  const border = document.createElement('div');
+  border.id = 'zerodom-driving-border';
+  border.style.cssText = 'position:fixed;inset:0;z-index:2147483646;' +
+    'border:4px solid #22e0d8;box-shadow:inset 0 0 24px rgba(34,224,216,0.25);' +
+    'pointer-events:none;';
+  document.body.appendChild(border);
+
+  const banner = document.createElement('div');
+  banner.textContent = 'zerodom is driving this tab';
+  banner.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);' +
+    'background:rgba(8,11,22,.92);color:#22e0d8;font:12px/1.5 ui-monospace,Menlo,monospace;' +
+    'padding:4px 10px;border-radius:6px;border:1px solid rgba(34,224,216,.4);' +
+    'pointer-events:none;z-index:2147483646;';
+  document.body.appendChild(banner);
+
+  const cursor = document.createElement('div');
+  cursor.id = 'zerodom-cursor';
+  cursor.style.cssText = 'position:fixed;left:-100px;top:-100px;width:0;height:0;' +
+    'border-left:7px solid transparent;border-right:7px solid transparent;' +
+    'border-top:13px solid #22e0d8;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5));' +
+    'transition:left .15s ease,top .15s ease;pointer-events:none;z-index:2147483647;';
+  document.body.appendChild(cursor);
+}"""
+
+_MOVE_CURSOR_JS = """(el) => {
+  const cursor = document.getElementById('zerodom-cursor');
+  if (!cursor) return;
+  const r = el.getBoundingClientRect();
+  cursor.style.left = (r.left + r.width / 2) + 'px';
+  cursor.style.top = (r.top + r.height / 2) + 'px';
+}"""
+
+
+async def _set_input_ignored(page: Any, ignored: bool) -> None:
+    """The actual "a real user can't click" block: Chrome's own input
+    pipeline (Input.setIgnoreInputEvents over a raw CDP session), not a
+    page-injected DOM trick — enforced by the browser before the page's own
+    JS or any content it controls ever sees the event. Real, OS-originated
+    input is what this flag exists to ignore; chrome.debugger-dispatched
+    input (what zerodom's own actions use) is unaffected by it, which is the
+    documented purpose of this specific CDP method — but it's still toggled
+    around each action in _unlocked_input rather than set once and left on,
+    as a defensive measure in case that isn't as absolute as documented.
+    Cosmetic-adjacent: a failure here must never block the real action.
+    """
+    try:
+        active = _session["active"]
+        cdp = _session["cdp_sessions"].get(active)
+        if cdp is None:
+            cdp = await page.context.new_cdp_session(page)
+            _session["cdp_sessions"][active] = cdp
+        await cdp.send("Input.setIgnoreInputEvents", {"ignore": ignored})
+    except Exception:
+        pass
+
+
+async def _show_driving(locator: Any) -> None:
+    """Shows the driving border/banner (idempotent, stays up), moves the
+    visible cursor to the element about to be acted on, ensures real input
+    is ignored, then pulses the highlight — the full "an agent is driving
+    this" visual, run before every real action on an attached session.
+    Cosmetic, so failures never block the real action.
+    """
+    try:
+        page = locator.page
+        await page.evaluate(_DRIVING_UI_JS)
+        await locator.evaluate(_MOVE_CURSOR_JS)
+        await _set_input_ignored(page, True)
+    except Exception:
+        pass
+    await _highlight(locator)
+
+
+@asynccontextmanager
+async def _unlocked_input(page: Any):
+    """The one moment real input is allowed through: while zerodom's own
+    chrome.debugger-dispatched action is actually running. Real user
+    clicks/scroll stay blocked every other moment. A no-op for launched
+    (headless, unwatched) sessions — there's no one to block input from.
+    """
+    if _session["attached"]:
+        await _set_input_ignored(page, False)
+    try:
+        yield
+    finally:
+        if _session["attached"]:
+            await _set_input_ignored(page, True)
+
+
 async def _act(node_id: str, verb: str, *args: Any) -> str:
     """Click or fill a node, retrying once if the browser drops underneath us.
 
@@ -161,10 +379,14 @@ async def _act(node_id: str, verb: str, *args: Any) -> str:
         try:
             locator = locate(page, node)
             if _session["attached"]:
-                await _highlight(locator)
-            await getattr(locator, verb)(*args)
+                await _show_driving(locator)
+            async with _unlocked_input(page):
+                await getattr(locator, verb)(*args)
             if _session["attached"]:
-                verb_past = {"click": "clicked", "fill": "filled"}.get(verb, verb)
+                verb_past = {
+                    "click": "clicked", "fill": "filled", "hover": "hovered",
+                    "press": "pressed", "set_input_files": "uploaded",
+                }.get(verb, verb)
                 detail = f" = {args[0]!r}" if args else ""
                 await _log_action(page, f"{verb_past} {compact_line(node)}{detail}")
             return ""
@@ -173,6 +395,34 @@ async def _act(node_id: str, verb: str, *args: Any) -> str:
                 raise
             await _restart(page.url)
             node = _node(node_id)
+    return ""
+
+
+async def _act_drag(source_id: str, target_id: str) -> str:
+    """Drag source onto target — same retry-on-crash shape as _act(), but
+    _act() can't fit this: it resolves one node into one locator, drag needs
+    two. Only the source gets highlighted (that's the element actually moving).
+    """
+    source_node, target_node = _node(source_id), _node(target_id)
+    for attempt in (1, 2):
+        page = await _page()
+        try:
+            source_loc = locate(page, source_node)
+            target_loc = locate(page, target_node)
+            if _session["attached"]:
+                await _show_driving(source_loc)
+            async with _unlocked_input(page):
+                await source_loc.drag_to(target_loc)
+            if _session["attached"]:
+                await _log_action(
+                    page, f"dragged {compact_line(source_node)} -> {compact_line(target_node)}"
+                )
+            return ""
+        except Exception as exc:
+            if attempt == 2 or not _is_crash(exc):
+                raise
+            await _restart(page.url)
+            source_node, target_node = _node(source_id), _node(target_id)
     return ""
 
 
@@ -189,20 +439,35 @@ async def _restart(url: str) -> None:
     every crash-recovery, not just detach from it, so only pw.stop() runs and the
     page/browser handles are dropped without .close() for that case; _page()
     reconnects to the still-live endpoint on the next call.
+
+    Only the crashed (active) tab is torn down — a crash on one tab doesn't
+    take down every other tab zerodom_new_tab opened.
     """
     attached = _session.get("attached")
-    for key in ("page", "browser", "pw"):
-        obj = _session.get(key)
-        if obj is not None and not (attached and key in ("page", "browser")):
-            try:
-                await (obj.stop() if key == "pw" else obj.close())
-            except Exception:
-                pass
-        _session[key] = None
+    active = _session.get("active")
+    crashed_page = _session["pages"].pop(active, None) if active is not None else None
+    if active is not None:
+        _session["cdp_sessions"].pop(active, None)
+    pw, browser = _session.get("pw"), _session.get("browser")
+    if pw is not None:
+        try:
+            await pw.stop()
+        except Exception:
+            pass
+    if not attached:
+        for obj in (crashed_page, browser):
+            if obj is not None:
+                try:
+                    await obj.close()
+                except Exception:
+                    pass
+    _session["pw"] = None
+    _session["browser"] = None
     _session["attached"] = False
+    _session["active"] = None
     page = await _page()
     if url and url != "about:blank":
-        await page.goto(url, wait_until="domcontentloaded")
+        await _goto(page, url)
     await _read()
 
 
@@ -281,7 +546,7 @@ async def zerodom_parse_url(url: str, verbose: bool = False, frames: bool = Fals
     """
     _session["frames"] = frames
     page = await _page()
-    await page.goto(url, wait_until="domcontentloaded")
+    await _goto(page, url)
     return await _read(verbose)
 
 
@@ -340,6 +605,53 @@ async def zerodom_fill_node(node_id: str, text: str) -> str:
 
 
 @mcp.tool()
+async def zerodom_hover(node_id: str) -> str:
+    """Hover over a node and return what changed on the page.
+
+    Reveals hover-triggered menus and tooltips — content that a click alone
+    would never surface, and that isn't in the graph until this fires.
+    """
+    await _act(node_id, "hover")
+    return f"hovered [{node_id}]\n\n{await _read(diff=True)}"
+
+
+@mcp.tool()
+async def zerodom_press_key(node_id: str, key: str) -> str:
+    """Press a key while a node is focused and return what changed.
+
+    key uses Playwright's key names ("Enter", "Escape", "Tab", "ArrowDown",
+    ...). For "press Enter to submit" forms, "Escape to close a modal", and
+    keyboard-only widgets a click/fill can't drive.
+    """
+    await _act(node_id, "press", key)
+    return f"pressed {key!r} on [{node_id}]\n\n{await _read(diff=True)}"
+
+
+@mcp.tool()
+async def zerodom_upload_file(node_id: str, path: str) -> str:
+    """Set a file input's value to a local file path and return what changed.
+
+    path is resolved on the machine driving the browser — the same trust
+    boundary as zerodom_eval_js, not a new one.
+    """
+    await _act(node_id, "set_input_files", path)
+    return f"uploaded {path!r} to [{node_id}]\n\n{await _read(diff=True)}"
+
+
+@mcp.tool()
+async def zerodom_drag(source_node_id: str, target_node_id: str) -> str:
+    """Drag source onto target and return what changed.
+
+    Drag-to-reorder lists, drag-and-drop upload zones, sliders — anything a
+    click/fill pair can't express because the gesture itself is the input.
+    """
+    await _act_drag(source_node_id, target_node_id)
+    return (
+        f"dragged [{source_node_id}] -> [{target_node_id}]\n\n{await _read(diff=True)}"
+    )
+
+
+@mcp.tool()
 async def zerodom_scroll(direction: str = "down", amount: int = 800) -> str:
     """Scroll the page and return what's newly visible.
 
@@ -351,13 +663,265 @@ async def zerodom_scroll(direction: str = "down", amount: int = 800) -> str:
     """
     page = await _page()
     delta = amount if direction == "down" else -amount
-    await page.mouse.wheel(0, delta)
+    async with _unlocked_input(page):
+        await page.mouse.wheel(0, delta)
     if _session["attached"]:
         await _log_action(page, f"scrolled {direction} {amount}px")
     return await _read(diff=True)
 
 
+@mcp.tool()
+async def zerodom_new_tab(url: str | None = None) -> str:
+    """Open a new tab and make it the active one — every other tool (read,
+    click, fill, scroll) then acts on it until you zerodom_switch_tab away.
+
+    In an attached (real-browser) session the new tab lands in the same
+    "zerodom" tab group as every other tab this session touches.
+    """
+    await _page()  # ensure the browser and its first tab exist
+    browser = _session["browser"]
+    page = await browser.contexts[0].new_page()
+    tab_key = str(_session["_next_tab"])
+    _session["_next_tab"] += 1
+    _session["pages"][tab_key] = page
+    _session["active"] = tab_key
+    _wire_network_log(page, tab_key)
+    if url:
+        await _goto(page, url)
+    return f"[tab {tab_key}]\n{await _read()}"
+
+
+@mcp.tool()
+async def zerodom_list_tabs() -> str:
+    """List every open tab, marking the active one with `*`."""
+    await _page()  # ensure at least the first tab exists
+    lines = [
+        f"{'*' if key == _session['active'] else ' '} [tab {key}] {page.url}"
+        for key, page in _session["pages"].items()
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def zerodom_switch_tab(tab_id: str) -> str:
+    """Make another open tab active and return its interaction graph.
+
+    Node ids are per-tab, so re-read (this returns the graph already) before
+    clicking or filling anything on the tab you just switched to.
+    """
+    if tab_id not in _session["pages"]:
+        raise ValueError(f"Unknown tab '{tab_id}'. Call zerodom_list_tabs first.")
+    _session["active"] = tab_id
+    return f"[tab {tab_id}]\n{await _read()}"
+
+
+@mcp.tool()
+async def zerodom_close_tab(tab_id: str | None = None) -> str:
+    """Close a tab — the active one by default. Refuses to close the last tab."""
+    key = tab_id or _session["active"]
+    if key not in _session["pages"]:
+        raise ValueError(f"Unknown tab '{key}'. Call zerodom_list_tabs first.")
+    if len(_session["pages"]) == 1:
+        raise ValueError("Can't close the only open tab.")
+    page = _session["pages"].pop(key)
+    _session["cdp_sessions"].pop(key, None)
+    _session["network_log"].pop(key, None)
+    await page.close()
+    if _session["active"] == key:
+        _session["active"] = next(iter(_session["pages"]))
+        await _read()
+    return f"closed [tab {key}]\n\n{await zerodom_list_tabs()}"
+
+
+@mcp.tool()
+async def zerodom_screenshot(path: str | None = None) -> str:
+    """Full-page screenshot of the active tab, saved to disk; returns the path.
+
+    report.py has a screenshot path already, but it's wired to the CLI's own
+    throwaway sync browser (playwright_wrapper.py's sync/async split), not
+    this attached async session — this is that same capability for here.
+    Pass `path` to choose where it's saved; omitted, a temp file is used.
+    """
+    page = await _page()
+    if path is None:
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="zerodom-")
+        os.close(fd)
+    await page.screenshot(path=path, full_page=True)
+    return f"saved to {path}"
+
+
+@mcp.tool()
+async def zerodom_set_viewport(width: int, height: int) -> str:
+    """Resize the active tab's viewport for responsive-design testing.
+
+    This is not the real browser window — chrome.debugger has no browser-level
+    window-management grant for that (docs/DECISIONS.md, "hard limits") — but
+    Emulation.setDeviceMetricsOverride, which is what actually answers "how
+    does this render at width X": the page's own layout, not the chrome around it.
+    """
+    page = await _page()
+    await page.set_viewport_size({"width": width, "height": height})
+    return await _read(diff=True)
+
+
+# A curated subset of what getComputedStyle() returns (~300 properties) —
+# the ones an actual design/CSS review asks about (layout, spacing, color,
+# typography), not a full property dump most of which is irrelevant noise
+# for any single element.
+_COMPUTED_STYLE_JS = """(el) => {
+  const cs = getComputedStyle(el);
+  const r = el.getBoundingClientRect();
+  const props = [
+    'display', 'position', 'color', 'background-color', 'font-family',
+    'font-size', 'font-weight', 'line-height', 'letter-spacing',
+    'width', 'height', 'margin', 'padding', 'border', 'border-radius',
+    'box-shadow', 'flex-direction', 'justify-content', 'align-items', 'gap',
+    'z-index', 'opacity', 'visibility', 'overflow', 'text-align',
+  ];
+  const styles = {};
+  for (const p of props) styles[p] = cs.getPropertyValue(p);
+  return { box: { x: r.left, y: r.top, width: r.width, height: r.height }, styles };
+}"""
+
+
+@mcp.tool()
+async def zerodom_get_styles(node_id: str) -> str:
+    """Computed styles and box-model dimensions for a node — for design/CSS
+    review, not just interaction.
+
+    Runs getComputedStyle() in the real page over the same chrome.debugger
+    connection everything else here uses (also reachable ad hoc via
+    zerodom_eval_js; this is the purpose-built version with a curated
+    property list instead of getComputedStyle()'s full ~300-property dump).
+    """
+    node = _node(node_id)
+    page = await _page()
+    locator = locate(page, node)
+    result = await locator.evaluate(_COMPUTED_STYLE_JS)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def zerodom_get_cookies() -> str:
+    """List cookies visible to the active tab's origin.
+
+    Reads via CDP's Network domain (Playwright's context.cookies()), which
+    sees httpOnly cookies too — unlike a content script's document.cookie,
+    which httpOnly exists specifically to hide them from.
+    """
+    page = await _page()
+    cookies = await page.context.cookies()
+    if not cookies:
+        return "No cookies."
+    return "\n".join(
+        f"{c['name']}={c['value']}  domain={c['domain']}  "
+        f"httpOnly={c.get('httpOnly', False)}  secure={c.get('secure', False)}"
+        for c in cookies
+    )
+
+
+@mcp.tool()
+async def zerodom_eval_js(code: str) -> str:
+    """Run arbitrary JavaScript in the active tab's real page context and
+    return the result — Runtime.evaluate over the same chrome.debugger
+    connection everything else here uses, the same power as typing into
+    DevTools' own console.
+    """
+    page = await _page()
+    result = await page.evaluate(code)
+    try:
+        return json.dumps(result)
+    except TypeError:
+        return str(result)
+
+
+@mcp.tool()
+async def zerodom_network_log(clear: bool = False) -> str:
+    """Requests/responses the active tab has made since it opened (or since
+    this was last called with clear=True) — method or status, and URL.
+
+    Passive visibility only, capped at the most recent 200 entries — not
+    interception or modification of traffic (that needs page.route(), a
+    bigger, stateful feature; zerodom_eval_js can already override
+    window.fetch/XMLHttpRequest from the page side for ad hoc cases).
+    """
+    await _page()  # ensure bootstrapped
+    log = _session["network_log"].get(_session["active"], [])
+    if not log:
+        return "No requests captured yet."
+    lines = [f"{e['type']:8} {e.get('method') or e.get('status')}  {e['url']}" for e in log]
+    result = "\n".join(lines)
+    if clear:
+        _session["network_log"][_session["active"]] = []
+    return result
+
+
+async def _probe_relay_liveness(timeout: float = 3.0) -> str:
+    """Bypasses Playwright and _page() entirely for a bounded-time answer to
+    "is the extension actually connected" — the exact manual WebSocket probe
+    that diagnosed a stuck extension handshake during development, where
+    going through connect_over_cdp instead hung for 90+ seconds before it was
+    interrupted. Opens and closes its own throwaway CDP connection, so it
+    never disturbs an already-attached session.
+    """
+    import websockets
+
+    from .relay import DEFAULT_PORT
+
+    try:
+        async with websockets.connect(f"ws://127.0.0.1:{DEFAULT_PORT}/cdp/local") as ws:
+            await ws.send(json.dumps({"id": 0, "method": "Browser.getVersion", "params": {}}))
+            await asyncio.wait_for(ws.recv(), timeout=timeout)
+        return "extension connected, handshake OK"
+    except asyncio.TimeoutError:
+        return (
+            "relay reachable but the extension handshake isn't completing — "
+            "is the extension loaded and connected in the browser?"
+        )
+    except Exception as exc:
+        return f"probe error: {exc}"
+
+
+@mcp.tool()
+async def zerodom_status() -> str:
+    """Diagnose the current connection: relay reachability, whether a browser
+    session is attached yet, which tab is active, and the tail of the relay's
+    own log — the single-call version of the manual WebSocket-probing and log-
+    tailing this project's own debugging needed before this tool existed.
+    """
+    from .relay import DEFAULT_PORT
+
+    host = "127.0.0.1"
+    relay_up = _relay_port_open(host, DEFAULT_PORT)
+    lines = [
+        f"relay:    {'reachable on ' + str(DEFAULT_PORT) if relay_up else 'NOT reachable'}",
+        f"endpoint: {_cdp_endpoint() or '(not set)'}",
+    ]
+
+    active = _session["active"]
+    if active is not None:
+        page = _session["pages"][active]
+        lines.append(
+            f"session:  attached={_session['attached']}, active tab=[{active}], "
+            f"open tabs={len(_session['pages'])}"
+        )
+        lines.append(f"active url: {page.url}")
+    elif relay_up:
+        lines.append(f"session:  not yet connected — {await _probe_relay_liveness()}")
+    else:
+        lines.append("session:  not yet connected")
+
+    if _RELAY_LOG_PATH.exists():
+        tail = _RELAY_LOG_PATH.read_text().splitlines()[-10:]
+        if tail:
+            lines.append("recent relay log:")
+            lines.extend(f"  {line}" for line in tail)
+
+    return "\n".join(lines)
+
+
 def main() -> None:
+    _ensure_relay_running()
     mcp.run()
 
 

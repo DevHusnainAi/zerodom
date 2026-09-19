@@ -3,10 +3,22 @@
   "name": "zerodom",
   "version": "0.1.0",
   "description": "Let Claude drive this browser through zerodom's compact, verified-unique interaction graph — real session, no bot-detection wall.",
-  "permissions": ["debugger", "tabs", "storage"],
+  "permissions": ["debugger", "tabs", "tabGroups", "storage", "alarms"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "zerodom — connect to a relay"
+    "default_title": "zerodom",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "background": {
     "service_worker": "background.js"

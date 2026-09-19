@@ -590,3 +590,96 @@ def test_handler_label_refuses_plumbing():
 def test_real_text_still_beats_the_handler_name():
     graph = parse_html('<button onclick="doStuff()">Save changes</button>')
     assert graph["nodes"][0]["label"] == "Save changes"
+
+
+def test_tabindex_negative_one_is_not_interactive():
+    """tabindex="-1" means "focusable via .focus() only, not part of the
+    keyboard tab order" per the HTML spec — a standard focus-management
+    pattern (modals, route-change targets), never a real control. Confirmed
+    live on google.com/maps: <body tabindex="-1"> was misclassified as a
+    clickable node this way, with its label falling through to raw
+    <script> text (see the label_linker test below)."""
+    graph = parse_html('<div tabindex="-1">Not a real control</div>')
+    assert graph["nodes"] == []
+
+
+def test_tabindex_zero_and_positive_are_still_interactive():
+    for value in ("0", "1", "5"):
+        graph = parse_html(f'<div tabindex="{value}">Real control</div>')
+        assert len(graph["nodes"]) == 1, value
+        assert graph["nodes"][0]["label"] == "Real control"
+
+
+def test_tabindex_garbage_value_is_not_interactive():
+    graph = parse_html('<div tabindex="not-a-number">Junk</div>')
+    assert graph["nodes"] == []
+
+
+def test_tabindex_negative_one_wrapper_does_not_shadow_its_real_children():
+    """The exact google.com/maps shape: a tabindex="-1" wrapper around
+    several real buttons used to show up as its own node with all its
+    children's text mashed together, on top of the (correct) individual
+    button nodes."""
+    graph = parse_html(
+        '<div tabindex="-1">'
+        '<button>Restaurants</button><button>Hotels</button>'
+        "</div>"
+    )
+    labels = [n["label"] for n in graph["nodes"]]
+    assert labels == ["Restaurants", "Hotels"]
+
+
+def test_label_never_picks_up_a_nested_scripts_source_as_text():
+    """el.text_content() concatenates a <script> descendant's raw JS right
+    along with real visible text — confirmed live on google.com/maps, where
+    a real onclick button whose fallback label came from text_of() picked up
+    an inline <script>'s source instead of anything a person would read."""
+    graph = parse_html(
+        '<button onclick="f()">Real label'
+        '<script>tick(\'b0\');if (x > 1) { y() }</script>'
+        "</button>"
+    )
+    assert graph["nodes"][0]["label"] == "Real label"
+
+
+def test_label_never_picks_up_a_nested_styles_source_as_text():
+    graph = parse_html(
+        '<button onclick="f()">Real label<style>.x{color:red}</style></button>'
+    )
+    assert graph["nodes"][0]["label"] == "Real label"
+
+
+def test_label_strips_icon_font_private_use_area_glyphs():
+    """Icon fonts render a glyph at a Private Use Area codepoint
+    (U+E000-F8FF) glued directly onto the real word with no separator —
+    confirmed live on google.com/maps: text_content() on a "Restaurants"
+    button came back as the icon codepoint immediately followed by the word."""
+    icon = chr(0xE56C)
+    graph = parse_html(f'<button onclick="f()">{icon}Restaurants</button>')
+    assert graph["nodes"][0]["label"] == "Restaurants"
+
+
+def test_label_never_picks_up_an_ordinary_html_comment_as_text():
+    """HTML comments are invisible by definition — no browser ever renders
+    one — but lxml's Comment nodes carry their text on `.text` like a real
+    element, so a naive text_content()-style walk concatenates it right in.
+    Not framework-specific: a plain `<!-- normal comment -->` leaks the
+    exact same way."""
+    graph = parse_html('<button onclick="f()"><!-- normal comment -->Join</button>')
+    assert graph["nodes"][0]["label"] == "Join"
+
+
+def test_label_never_picks_up_a_lit_hydration_marker_comment_as_text():
+    """Confirmed live on reddit.com: Lit-based shreddit-* web components
+    leave declarative-shadow-DOM hydration marker comments
+    (<!--?lit$438023304$-->) in the DOM, and they concatenated straight
+    into real button labels ("?lit$438023304$Join")."""
+    graph = parse_html('<button onclick="f()"><!--?lit$438023304$-->Join</button>')
+    assert graph["nodes"][0]["label"] == "Join"
+
+
+def test_label_keeps_real_text_immediately_after_a_comment():
+    """The fix must skip only the comment's own text, not the real text
+    node that follows it in the same parent."""
+    graph = parse_html('<button onclick="f()">Real<!-- marker --> Label</button>')
+    assert graph["nodes"][0]["label"] == "Real Label"

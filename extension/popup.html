@@ -17,16 +17,9 @@
       color: #e8a33d;
       margin: 0 0 10px;
     }
-    input {
-      width: 100%;
-      box-sizing: border-box;
-      background: #0e0f11;
-      border: 1px solid #2a2c30;
-      border-radius: 6px;
-      color: #e8eaed;
-      padding: 7px 8px;
-      font: inherit;
-      margin-bottom: 8px;
+    p {
+      margin: 0 0 10px;
+      color: #9a9ea6;
     }
     button {
       width: 100%;
@@ -62,8 +55,8 @@
 </head>
 <body>
   <h1>zerodom</h1>
-  <input id="url" type="text" placeholder="ws://127.0.0.1:PORT/extension/ID">
-  <button id="action">Connect</button>
+  <p>Auto-connects to any local zerodom relay — nothing to set up here.</p>
+  <button id="action">Disconnect</button>
   <div id="status"><span class="dot"></span><span id="status-text">disconnected</span></div>
   <script src="popup.js"></script>
 </body>

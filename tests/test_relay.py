@@ -183,6 +183,47 @@ def test_create_target_creates_and_attaches_a_new_tab(rig):
     assert any(c[0] == "chrome.tabs.create" for c in ext.calls)
 
 
+def test_create_target_does_not_double_attach_a_racing_tab_created_event():
+    # Real Chrome fires chrome.tabs.onCreated for a tab create_target() just
+    # made itself, independently of create_target()'s own _attach_tab() call
+    # — a genuine race the fixture's synchronous FakeExtension can't expose,
+    # so this test wires in an artificial delay on chrome.debugger.attach to
+    # open the same window a real async extension round-trip does.
+    ext = FakeExtension()
+    cdp = FakeCDPClient()
+    attach_started = asyncio.Event()
+    real_send = ext.send
+
+    async def send_with_delay(method, params):
+        if method == "chrome.debugger.attach":
+            attach_started.set()
+            await asyncio.sleep(0.01)
+        return await real_send(method, params)
+
+    model = BrowserModel(send_with_delay)
+    model.connect_cdp_client(cdp.send)
+
+    async def run():
+        await model.enable_auto_attach()  # no tabs known yet; sets _auto_attach = True
+        create_task = asyncio.create_task(model.create_target("https://new.example/"))
+        await attach_started.wait()
+        model.on_tab_created({"id": 100, "url": "https://new.example/"})  # races the attach above
+        await asyncio.sleep(0.05)  # let that racing auto-attach task run to completion too
+        await create_task
+
+    asyncio.run(run())
+
+    attach_calls = [c for c in ext.calls if c[0] == "chrome.debugger.attach"]
+    assert len(attach_calls) == 1
+    # The bug that actually crashed Playwright's driver against a real
+    # extension: even once chrome.debugger.attach itself was de-duplicated,
+    # the losing racer's cache-hit fallback still re-emitted
+    # Target.attachedToTarget for a targetId the client already had —
+    # "Duplicate target", fatal to Playwright's Node-side connection.
+    attached_events = [m for m in cdp.sent if m["method"] == "Target.attachedToTarget"]
+    assert len(attached_events) == 1
+
+
 def test_close_target_removes_the_matching_tab(rig):
     model, ext, cdp = rig
     asyncio.run(model.create_target("https://new.example/"))
@@ -312,3 +353,31 @@ def test_unrecognized_command_with_a_session_forwards_as_a_tab_command(rig):
 
     call = [c for c in ext.calls if c[0] == "chrome.debugger.sendCommand"][-1]
     assert call[1][0] == {"tabId": 1}
+
+
+def test_attach_to_target_returns_the_existing_session_for_a_known_target(rig):
+    """What context.new_cdp_session(page) needs to work at all against this
+    relay — it's the only way Playwright reaches a CDP method with no
+    high-level wrapper (e.g. Input.setIgnoreInputEvents)."""
+    model, ext, cdp = rig
+    model.on_tab_created({"id": 1, "url": "https://example.com/"})
+    asyncio.run(model.enable_auto_attach())
+    tab_session = model._tab_sessions[1]
+
+    result = asyncio.run(
+        handle_cdp_command(
+            model, "Target.attachToTarget",
+            {"targetId": tab_session.target_info["targetId"]}, None,
+        )
+    )
+
+    assert result == {"sessionId": tab_session.session_id}
+
+
+def test_attach_to_target_raises_for_an_unknown_target_id(rig):
+    model, ext, cdp = rig
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            handle_cdp_command(model, "Target.attachToTarget", {"targetId": "no-such-target"}, None)
+        )

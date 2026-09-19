@@ -83,9 +83,9 @@ class FakePage:
 @pytest.fixture
 def page(monkeypatch):
     fake = FakePage()
-    mcp_server._session.update(page=fake, selectors={}, nodes=[], url=None)
+    mcp_server._session.update(pages={"0": fake}, active="0", selectors={}, nodes=[], url=None)
     yield fake
-    mcp_server._session.update(page=None, selectors={}, nodes=[], url=None)
+    mcp_server._session.update(pages={}, active=None, selectors={}, nodes=[], url=None)
 
 
 def test_tools_are_registered():

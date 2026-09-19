@@ -40,6 +40,16 @@ class TabSession:
     # Child CDP sessions (workers, oopifs) belonging to this tab, tracked via
     # Target.attachedToTarget / Target.detachedFromTarget events on it.
     child_sessions: set[str] = field(default_factory=set)
+    # Which BrowserModel._cdp_generation last got Target.attachedToTarget for
+    # this tab (0 = none yet). Lets _attach_tab tell apart the two cache-hit
+    # cases that look identical but need opposite handling: a genuinely new
+    # CDP client replaying an already-attached tab (must re-emit, or that
+    # client sees zero tabs) vs. two racing attachers *within* the same
+    # client's session for a brand-new tab (must NOT re-emit — the client
+    # already got Target.attachedToTarget once, and a second one for the
+    # same targetId is a protocol violation Playwright's driver kills the
+    # connection over).
+    announced_generation: int = 0
 
 
 class BrowserModel:
@@ -56,9 +66,21 @@ class BrowserModel:
         self._tab_sessions: dict[int, TabSession] = {}
         self._auto_attach = False
         self._next_session_id = 1
+        # create_target() attaches the tab it just created directly, but that
+        # same chrome.tabs.create *also* fires a real chrome.tabs.onCreated
+        # event, which independently schedules on_tab_created()'s own
+        # auto-attach for the identical tab_id — both see no existing
+        # TabSession yet (chrome.debugger.attach is a real round-trip to the
+        # extension, wide enough to race) and both send chrome.debugger.attach,
+        # the second of which Chrome rejects with "Another debugger is
+        # already attached". One lock per tab_id serializes the two callers
+        # so the second sees the first's now-populated TabSession instead.
+        self._attach_locks: dict[int, asyncio.Lock] = {}
+        self._cdp_generation = 0
 
     def connect_cdp_client(self, send_to_cdp_client: SendToCDPClient) -> None:
         self._send_to_cdp_client = send_to_cdp_client
+        self._cdp_generation += 1
 
     def _emit(self, message: dict[str, Any]) -> None:
         if self._send_to_cdp_client is not None:
@@ -173,23 +195,31 @@ class BrowserModel:
         # whichever client was first) even though chrome.debugger was still
         # genuinely attached — real Target semantics replay attachedToTarget
         # for every live target on each new setAutoAttach, so this does too.
-        existing = self._tab_sessions.get(tab_id)
-        if existing is not None:
-            self._emit_attached(existing)
-            return existing
-        await self._send_to_extension("chrome.debugger.attach", [{"tabId": tab_id}, "1.3"])
-        result = await self._send_to_extension(
-            "chrome.debugger.sendCommand", [{"tabId": tab_id}, "Target.getTargetInfo"]
-        )
-        target_info = (result or {}).get("targetInfo")
-        session_id = f"pw-tab-{self._next_session_id}"
-        self._next_session_id += 1
-        tab_session = TabSession(tab_id=tab_id, session_id=session_id, target_info=target_info)
-        self._tab_sessions[tab_id] = tab_session
-        self._emit_attached(tab_session)
-        return tab_session
+        # Gated on announced_generation (see TabSession) so a same-client race
+        # on this same tab_id (two callers hitting this cache-hit branch
+        # before the winner's own attach even finished) doesn't double-emit
+        # to a client that already got the event once.
+        lock = self._attach_locks.setdefault(tab_id, asyncio.Lock())
+        async with lock:
+            existing = self._tab_sessions.get(tab_id)
+            if existing is not None:
+                if existing.announced_generation != self._cdp_generation:
+                    self._emit_attached(existing)
+                return existing
+            await self._send_to_extension("chrome.debugger.attach", [{"tabId": tab_id}, "1.3"])
+            result = await self._send_to_extension(
+                "chrome.debugger.sendCommand", [{"tabId": tab_id}, "Target.getTargetInfo"]
+            )
+            target_info = (result or {}).get("targetInfo")
+            session_id = f"pw-tab-{self._next_session_id}"
+            self._next_session_id += 1
+            tab_session = TabSession(tab_id=tab_id, session_id=session_id, target_info=target_info)
+            self._tab_sessions[tab_id] = tab_session
+            self._emit_attached(tab_session)
+            return tab_session
 
     def _emit_attached(self, tab_session: TabSession) -> None:
+        tab_session.announced_generation = self._cdp_generation
         self._emit({
             "method": "Target.attachedToTarget",
             "params": {
@@ -244,6 +274,23 @@ async def handle_cdp_command(
         return await model.close_target((params or {}).get("targetId"))
     if method == "Target.getTargetInfo":
         return model.get_target_info(session_id)
+    if method == "Target.attachToTarget":
+        # Needed for Playwright's context.new_cdp_session(page) — its only
+        # way to reach a CDP method with no high-level wrapper (e.g.
+        # Input.setIgnoreInputEvents). Real CDP would open a genuinely new
+        # session; this relay only ever tracks one session per tab, so it
+        # hands back the *existing* one for a tab already known here rather
+        # than pretending to create a second. Good enough for what
+        # new_cdp_session's caller actually wants: a session_id it can send
+        # more commands through — those still route through the normal
+        # session_id-keyed fallback below, unchanged.
+        target_id = (params or {}).get("targetId")
+        tab_session = model._find_tab_session(
+            lambda s: (s.target_info or {}).get("targetId") == target_id
+        )
+        if tab_session is None:
+            raise RuntimeError(f"Target.attachToTarget: unknown targetId {target_id!r}")
+        return {"sessionId": tab_session.session_id}
     if session_id:
         return await model.send_command(session_id, method, params)
     return await model.send_browser_command(method, params)

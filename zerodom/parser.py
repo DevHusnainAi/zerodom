@@ -214,7 +214,25 @@ class ZeroDOMParser:
             return True
         if el.get("role") in INTERACTIVE_ROLES:
             return True
-        return "onclick" in el.attrib or "tabindex" in el.attrib
+        if "onclick" in el.attrib:
+            return True
+        # tabindex="-1" means "focusable via .focus() only, not part of the
+        # keyboard tab order" — a standard pattern for focus-management
+        # wrappers (modals, route-change targets), never a real control.
+        # Confirmed on google.com/maps: both <body tabindex="-1"> and a
+        # tabindex="-1" div wrapping 7 real, separately-interactive buttons
+        # were misclassified as their own clickable nodes this way — the
+        # body's "label" fell through to its raw <script> text (see
+        # label_linker.text_of), and the wrapper duplicated its own
+        # children's content into one incoherent node. Only tabindex >= 0
+        # is a real interactivity signal.
+        tabindex = el.get("tabindex")
+        if tabindex is not None:
+            try:
+                return int(tabindex) >= 0
+            except ValueError:
+                return False
+        return False
 
     @staticmethod
     def _role(el: HtmlElement) -> str:

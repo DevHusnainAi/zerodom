@@ -1,9 +1,8 @@
-const urlInput = document.getElementById("url");
 const actionBtn = document.getElementById("action");
 const dot = document.querySelector(".dot");
 const statusText = document.getElementById("status-text");
 
-const STORAGE_KEY = "zerodom-relay-url";
+const DEFAULT_RELAY_URL = "ws://127.0.0.1:8765/extension/local";
 
 function render(status) {
   statusText.textContent = status;
@@ -17,10 +16,6 @@ function render(status) {
   }
 }
 
-chrome.storage.local.get(STORAGE_KEY, (data) => {
-  if (data[STORAGE_KEY]) urlInput.value = data[STORAGE_KEY];
-});
-
 chrome.runtime.sendMessage({ type: "zerodom-get-status" }, (res) => {
   if (res) render(res.status);
 });
@@ -32,10 +27,7 @@ chrome.runtime.onMessage.addListener((message) => {
 actionBtn.addEventListener("click", () => {
   if (actionBtn.textContent === "Disconnect") {
     chrome.runtime.sendMessage({ type: "zerodom-disconnect" });
-    return;
+  } else {
+    chrome.runtime.sendMessage({ type: "zerodom-connect", url: DEFAULT_RELAY_URL });
   }
-  const url = urlInput.value.trim();
-  if (!url) return;
-  chrome.storage.local.set({ [STORAGE_KEY]: url });
-  chrome.runtime.sendMessage({ type: "zerodom-connect", url });
 });
