@@ -32,13 +32,22 @@ const DEFAULT_RELAY_URL = "ws://127.0.0.1:8765/extension/local";
 // silently blocks every future attach on that tab until Chrome fully quits.
 const ATTACHED_KEY = "zerodom-attached-tabs";
 
+// Network log buffer — stores the last MAX_NETWORK_ENTRIES network events
+// from the attached tab. Persisted in chrome.storage.session so it survives
+// worker restarts, but capped to avoid bloat. The popup's Network tab reads
+// this on demand.
+const NETWORK_BUFFER_KEY = "zerodom-network-log";
+const MAX_NETWORK_ENTRIES = 200;
+
 async function markAttached(tabId) {
   const { [ATTACHED_KEY]: ids = [] } = await chrome.storage.session.get(ATTACHED_KEY);
   if (!ids.includes(tabId)) await chrome.storage.session.set({ [ATTACHED_KEY]: [...ids, tabId] });
+  broadcastStatus();
 }
 async function markDetached(tabId) {
   const { [ATTACHED_KEY]: ids = [] } = await chrome.storage.session.get(ATTACHED_KEY);
   await chrome.storage.session.set({ [ATTACHED_KEY]: ids.filter((id) => id !== tabId) });
+  broadcastStatus();
 }
 async function detachStaleTabs() {
   const { [ATTACHED_KEY]: ids = [] } = await chrome.storage.session.get(ATTACHED_KEY);
@@ -46,6 +55,207 @@ async function detachStaleTabs() {
     try { await chrome.debugger.detach({ tabId }); } catch (e) {}
   }
   await chrome.storage.session.set({ [ATTACHED_KEY]: [] });
+}
+
+// ─── Network log buffer ───────────────────────────────────────────────────
+// Captures Network.requestWillBeSent and Network.responseReceived from the
+// attached tab. The popup's Network tab reads this on demand. Capped at
+// MAX_NETWORK_ENTRIES to avoid storage bloat.
+
+async function pushNetworkEntry(entry) {
+  const { [NETWORK_BUFFER_KEY]: entries = [] } = await chrome.storage.session.get(NETWORK_BUFFER_KEY);
+  entries.push(entry);
+  // Trim to cap — drop oldest first
+  if (entries.length > MAX_NETWORK_ENTRIES) {
+    entries.splice(0, entries.length - MAX_NETWORK_ENTRIES);
+  }
+  await chrome.storage.session.set({ [NETWORK_BUFFER_KEY]: entries });
+}
+
+async function getNetworkLog() {
+  const { [NETWORK_BUFFER_KEY]: entries = [] } = await chrome.storage.session.get(NETWORK_BUFFER_KEY);
+  return entries;
+}
+
+async function clearNetworkLog() {
+  await chrome.storage.session.set({ [NETWORK_BUFFER_KEY]: [] });
+}
+
+// ─── Cookies via CDP ──────────────────────────────────────────────────────
+// Uses Network.getCookies — same CDP call Playwright uses for
+// context.cookies(). Returns cookies for the current page URL only,
+// including httpOnly cookies that content scripts cannot see.
+
+async function getCookies() {
+  const tabId = await getAttachedTabId();
+  if (tabId === undefined) return { attached: false, cookies: [] };
+  try {
+    const res = await chrome.debugger.sendCommand(
+      { tabId }, "Network.getCookies"
+    );
+    return { attached: true, cookies: res.cookies || [] };
+  } catch (e) {
+    return { attached: true, cookies: [], error: e.message || String(e) };
+  }
+}
+
+// ─── Graph data from driving tab ──────────────────────────────────────────
+// Reads the interaction graph that mcp_server.py already computed and stored
+// in window.__zerodomNodes. Also reads token comparison stats if available.
+
+const GRAPH_JS = `(() => {
+  const nodes = window.__zerodomNodes || [];
+  const compTokens = window.__zerodomCompTokens || null;
+  const ariaTokens = window.__zerodomAriaTokens || null;
+  return JSON.stringify({ nodes, compTokens, ariaTokens });
+})()`;
+
+async function getGraphData() {
+  const tabId = await getAttachedTabId();
+  if (tabId === undefined) return { attached: false, nodes: [], compTokens: null, ariaTokens: null };
+  try {
+    const res = await chrome.debugger.sendCommand(
+      { tabId }, "Runtime.evaluate", { expression: GRAPH_JS, returnByValue: true }
+    );
+    const parsed = JSON.parse(res.result.value);
+    return { attached: true, ...parsed };
+  } catch (e) {
+    return { attached: true, nodes: [], compTokens: null, ariaTokens: null, error: e.message || String(e) };
+  }
+}
+
+// ─── Page URL + tab actions ───────────────────────────────────────────────
+
+async function getPageUrl() {
+  const tabId = await getAttachedTabId();
+  if (tabId === undefined) return { url: null };
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return { url: tab.url };
+  } catch (e) {
+    return { url: null };
+  }
+}
+
+async function openNewTab(url) {
+  if (!url) return { error: "No URL" };
+  try {
+    const tab = await chrome.tabs.create({ url });
+    return { ok: true, tabId: tab.id };
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+}
+
+async function takeScreenshot() {
+  const tabId = await getAttachedTabId();
+  if (tabId === undefined) return { error: "No attached tab" };
+  try {
+    const res = await chrome.debugger.sendCommand(
+      { tabId }, "Page.captureScreenshot", { format: "png" }
+    );
+    return { data: res.data };
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+}
+
+// Popup features below (live stats, HUD toggle) read/act on the driving
+// tab's own already-rendered bar (mcp_server.py's _DRIVING_UI_JS) through
+// Runtime.evaluate over the *same* chrome.debugger attachment the relay
+// already holds — no new permission, no new server/relay protocol message,
+// just asking the page what it already shows.
+async function getAttachedTabId() {
+  const { [ATTACHED_KEY]: ids = [] } = await chrome.storage.session.get(ATTACHED_KEY);
+  return ids[0]; // ponytail: one global driving session (mcp_server.py), so at most one
+}
+
+const LIVE_STATS_JS = "(() => {" +
+  "const val = (id) => document.getElementById(id)?.textContent || null;" +
+  "return {" +
+    "hasBar: !!document.getElementById('zerodom-driving-bar')," +
+    "target: val('zerodom-bar-target')," +
+    "path: val('zerodom-bar-path')," +
+    "tokens: val('zerodom-bar-tokens')," +
+    "step: val('zerodom-bar-step')," +
+  "};" +
+"})()";
+
+async function getLiveStats() {
+  const tabId = await getAttachedTabId();
+  if (tabId === undefined) return { attached: false };
+  try {
+    const res = await chrome.debugger.sendCommand(
+      { tabId }, "Runtime.evaluate", { expression: LIVE_STATS_JS, returnByValue: true }
+    );
+    return { attached: true, ...res.result.value };
+  } catch (e) {
+    return { attached: true, error: e.message || String(e) };
+  }
+}
+
+// ponytail: toggling only affects the bar already on the page right now --
+// it isn't a stored preference the server re-checks on the next navigation,
+// so the bar comes back on the next page. Upgrade path if that's ever
+// annoying: have mcp_server.py's _DRIVING_UI_JS check a flag (e.g. in
+// localStorage) before drawing itself, set by this same toggle.
+const TOGGLE_HUD_JS = "(() => {" +
+  "const bar = document.getElementById('zerodom-driving-bar');" +
+  "const barHeight = bar ? bar.getBoundingClientRect().height : 0;" +
+  "const hiding = !bar || bar.style.display !== 'none';" +
+  "['zerodom-driving-bar', 'zerodom-driving-border', 'zerodom-log-panel'].forEach((id) => {" +
+    "const el = document.getElementById(id);" +
+    "if (el) el.style.display = hiding ? 'none' : '';" +
+  "});" +
+  "document.body.style.marginTop = hiding ? '0px' : barHeight + 'px';" +
+  "return hiding;" +
+"})()";
+
+async function toggleHud() {
+  const tabId = await getAttachedTabId();
+  if (tabId === undefined) return { attached: false };
+  try {
+    const res = await chrome.debugger.sendCommand(
+      { tabId }, "Runtime.evaluate", { expression: TOGGLE_HUD_JS, returnByValue: true }
+    );
+    return { attached: true, hidden: res.result.value };
+  } catch (e) {
+    return { attached: true, error: e.message || String(e) };
+  }
+}
+
+// Real, honest kill switch, not decoration: the on-page bar can't call
+// chrome.debugger.detach() itself -- it's plain page JS via
+// page.evaluate(), with no chrome.* access -- so the only place a stop
+// control can actually live is here, the extension, which can. Detaching
+// directly from the extension has no dependency on the relay or the MCP
+// server being alive or responsive at all -- the same property Chrome's
+// own native debugging-infobar Cancel button has, and why *that* one still
+// works no matter what's stuck.
+const STOP_INDICATOR_JS = "(() => {" +
+  "const el = document.getElementById('zerodom-bar-active');" +
+  "if (el) el.innerHTML = '<span style=\"width:6px;height:6px;border-radius:50%;" +
+    "background:#e05252;flex:none;\"></span>STOPPED';" +
+  "const bar = document.getElementById('zerodom-driving-bar');" +
+  "if (bar) bar.style.borderBottomColor = 'rgba(224,82,82,.4)';" +
+"})()";
+
+async function emergencyStop() {
+  const tabId = await getAttachedTabId();
+  if (tabId === undefined) return { attached: false };
+  try {
+    // Best-effort cosmetic update -- if the page navigated or the bar
+    // isn't there this just fails quietly, the detach below is what
+    // actually matters and always runs regardless.
+    try {
+      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: STOP_INDICATOR_JS });
+    } catch (e) {}
+    await chrome.debugger.detach({ tabId });
+    await markDetached(tabId);
+    return { attached: true, stopped: true };
+  } catch (e) {
+    return { attached: true, error: e.message || String(e) };
+  }
 }
 
 // One persistent tab group for every tab zerodom touches — matches
@@ -84,8 +294,27 @@ function stopPing() {
   pingTimer = null;
 }
 
-function broadcastStatus() {
-  chrome.runtime.sendMessage({ type: "zerodom-status", status }).catch(() => {});
+// So the popup can show *which* tab zerodom is driving, not just that it's
+// connected -- reads the same ATTACHED_KEY markAttached/markDetached keep
+// current, so this stays right even across a service-worker restart.
+async function getAttachedTabInfo() {
+  const { [ATTACHED_KEY]: ids = [] } = await chrome.storage.session.get(ATTACHED_KEY);
+  const tabs = [];
+  for (const tabId of ids) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      tabs.push({ id: tabId, title: tab.title, url: tab.url });
+    } catch (e) {
+      // Tab closed underneath us; markDetached's onRemoved listener will
+      // clean ATTACHED_KEY up shortly, nothing to report meanwhile.
+    }
+  }
+  return tabs;
+}
+
+async function broadcastStatus() {
+  const tabs = await getAttachedTabInfo();
+  chrome.runtime.sendMessage({ type: "zerodom-status", status, tabs }).catch(() => {});
 }
 
 function setStatus(next) {
@@ -108,6 +337,27 @@ function onTabRemoved(tabId, removeInfo) {
   sendEvent("chrome.tabs.onRemoved", [tabId, removeInfo]);
 }
 function onDebuggerEvent(source, method, params) {
+  // Capture network events for the popup's Network tab — in parallel with
+  // forwarding to the relay. Only captures request/response pairs, not
+  // every CDP event.
+  if (method === "Network.requestWillBeSent") {
+    const req = params.request;
+    pushNetworkEntry({
+      type: "request",
+      method: req.method,
+      url: req.url,
+      timestamp: params.timestamp,
+    });
+  } else if (method === "Network.responseReceived") {
+    const res = params.response;
+    pushNetworkEntry({
+      type: "response",
+      method: res.requestId ? "response" : res.protocol,
+      status: res.status,
+      url: res.url,
+      timestamp: params.timestamp,
+    });
+  }
   sendEvent("chrome.debugger.onEvent", [source, method, params ?? {}]);
 }
 function onDebuggerDetach(source, reason) {
@@ -126,6 +376,14 @@ async function handleCommand(id, method, params) {
         if (params[0].tabId !== undefined) {
           await markAttached(params[0].tabId);
           await ensureGrouped(params[0].tabId);
+          // Enable Network domain so we can capture request/response events
+          // for the popup's Network tab. Best-effort: if this fails the tab
+          // still works, we just won't see network entries.
+          try {
+            await chrome.debugger.sendCommand(
+              { tabId: params[0].tabId }, "Network.enable"
+            );
+          } catch (e) {}
         }
         result = null;
         break;
@@ -145,6 +403,15 @@ async function handleCommand(id, method, params) {
         await chrome.tabs.remove(params[0]);
         result = null;
         break;
+      case "chrome.windows.update": {
+        // Real window resize -- chrome.windows is a plain extension API,
+        // unrelated to chrome.debugger/CDP entirely, so this works despite
+        // chrome.debugger's own window-management limits.
+        const [tabId, updateInfo] = params;
+        const tab = await chrome.tabs.get(tabId);
+        result = await chrome.windows.update(tab.windowId, updateInfo);
+        break;
+      }
       default:
         throw new Error(`unknown method: ${method}`);
     }
@@ -254,7 +521,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     disconnect();
     sendResponse({ ok: true });
   } else if (message.type === "zerodom-get-status") {
-    sendResponse({ status });
+    getAttachedTabInfo().then((tabs) => sendResponse({ status, tabs }));
+  } else if (message.type === "zerodom-get-live-stats") {
+    getLiveStats().then(sendResponse);
+  } else if (message.type === "zerodom-toggle-hud") {
+    toggleHud().then(sendResponse);
+  } else if (message.type === "zerodom-emergency-stop") {
+    emergencyStop().then(sendResponse);
+  } else if (message.type === "zerodom-get-network-log") {
+    getNetworkLog().then(sendResponse);
+  } else if (message.type === "zerodom-get-cookies") {
+    getCookies().then(sendResponse);
+  } else if (message.type === "zerodom-get-graph") {
+    getGraphData().then(sendResponse);
+  } else if (message.type === "zerodom-clear-network-log") {
+    clearNetworkLog().then(() => sendResponse({ ok: true }));
+  } else if (message.type === "zerodom-get-page-url") {
+    getPageUrl().then(sendResponse);
+  } else if (message.type === "zerodom-open-new-tab") {
+    openNewTab(message.url).then(sendResponse);
+  } else if (message.type === "zerodom-screenshot") {
+    takeScreenshot().then(sendResponse);
   }
   return true;
 });

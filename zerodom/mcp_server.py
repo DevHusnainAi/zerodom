@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.server import MCPServer
 
@@ -32,6 +34,9 @@ _session: dict[str, Any] = {
     "attached": False, "selectors": {}, "nodes": [], "url": None, "frames": False,
     "network_log": {},  # tab_key -> list of {"type": "request"|"response", ...}
     "cdp_sessions": {},  # tab_key -> CDPSession, cached by _set_input_ignored
+    "action_count": 0,  # attached-session actions taken, shown as the bar's Step count
+    "aria_cache_url": None,  # sidebar's Playwright-comparison card, cached per URL
+    "aria_cache_tokens": None,  # -- see _read(), aria_snapshot() is too expensive to run on every read
 }
 
 
@@ -185,6 +190,29 @@ def _node(node_id: str) -> dict[str, Any]:
     raise ValueError(f"Unknown node '{node_id}'. Call zerodom_parse_url first.")
 
 
+# Only checked on `fill`, only on attached (real, watched) sessions -- a
+# server-side wall, not the agent's own discipline (the compensating control
+# examples/mcp_agent_system_prompt.md documented as the *only* thing stopping
+# this before now). input_type == "password" is unambiguous; the regex
+# catches text-labeled sensitive fields (card number, CVV, SSN, ...) whose
+# input type is just "text"/"tel". Not exhaustive -- a determined agent
+# ignoring its own system prompt could still work around a label it doesn't
+# recognize, but it closes the gap for the common, honest-mistake case.
+_SENSITIVE_FIELD_RE = re.compile(
+    r"password|passwd|\bpwd\b|card ?number|card ?no\b|\bcvv\b|\bcvc\b|"
+    r"security code|\bssn\b|social security|routing number|account number|"
+    r"\biban\b|sort code",
+    re.IGNORECASE,
+)
+
+
+def _is_sensitive_field(node: dict[str, Any]) -> bool:
+    if node.get("input_type") == "password":
+        return True
+    haystack = f"{node.get('label', '')} {node.get('placeholder', '')}"
+    return bool(_SENSITIVE_FIELD_RE.search(haystack))
+
+
 # Cyan is zerodom's actual brand color — report.py's own BADGE_COLOR is
 # #22e0d8, the same used for the "zerodom" tab group and the logo. (An
 # earlier version of this comment claimed amber matched report.py's badges;
@@ -222,6 +250,10 @@ async def _highlight(locator: Any) -> None:
         pass
 
 
+def _fmt_tokens(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 # A small floating transcript, not a growing wall — panel.children[0] is the
 # title, so the cap keeps at most 6 log lines plus it. Page-level (page.evaluate,
 # not locator.evaluate) because the panel isn't tied to whichever element was
@@ -233,14 +265,15 @@ _LOG_JS = """(text) => {
   if (!panel) {
     panel = document.createElement('div');
     panel.id = 'zerodom-log-panel';
+    panel.setAttribute('aria-hidden', 'true');
     panel.style.cssText = 'position:fixed;bottom:16px;right:16px;max-width:320px;' +
       'max-height:200px;overflow-y:auto;background:rgba(23,24,27,.92);' +
       'color:#e8eaed;font:12px/1.5 ui-monospace,Menlo,monospace;padding:10px 12px;' +
-      'border-radius:8px;border:1px solid rgba(232,163,61,.4);' +
+      'border-radius:8px;border:1px solid rgba(34,224,216,.4);' +
       'box-shadow:0 8px 24px rgba(0,0,0,.35);pointer-events:none;z-index:2147483647;';
     const title = document.createElement('div');
     title.textContent = 'zerodom';
-    title.style.cssText = 'color:#e8a33d;font-weight:600;margin-bottom:4px;';
+    title.style.cssText = 'color:#22e0d8;font-weight:600;margin-bottom:4px;';
     panel.appendChild(title);
     document.body.appendChild(panel);
   }
@@ -254,52 +287,405 @@ _LOG_JS = """(text) => {
 }"""
 
 
+# Updates any subset of the bar's live segments (#zerodom-bar-<key>) by id —
+# a no-op per key until _DRIVING_UI_JS has actually built the bar (first
+# action of the session), same fail-quiet shape as everything else here.
+_BAR_SEGMENTS_JS = """(seg) => {
+  for (const key in seg) {
+    const el = document.getElementById('zerodom-bar-' + key);
+    if (el) el.textContent = seg[key];
+  }
+}"""
+
+# Refreshes the graph sidebar's data (see _DRIVING_UI_JS's sidebar block,
+# which defines window.__zerodomUpdateGraph) -- a no-op until the sidebar
+# exists, same fail-quiet shape as everything else here.
+_SIDEBAR_DATA_JS = """(nodes) => {
+  if (window.__zerodomUpdateGraph) window.__zerodomUpdateGraph(nodes);
+}"""
+
+_SIDEBAR_STATS_JS = """(data) => {
+  const el = document.getElementById('zerodom-sidebar-stats');
+  if (!el) return;
+  el.innerHTML =
+    '<div style="font-size:10px;color:#7dd6d0;letter-spacing:.03em;">' +
+      'vs playwright\\'s own aria snapshot</div>' +
+    '<div style="font-size:22px;font-weight:700;color:#22e0d8;line-height:1.35;">' +
+      data.pct + '</div>' +
+    '<div style="font-size:11px;color:#9199a3;">' + data.detail + '</div>';
+}"""
+
+
 async def _log_action(page: Any, text: str) -> None:
     """Append one line to the on-page activity panel — the audit-trail piece
-    Stage 5b exists for (ROADMAP.md). Same reasoning as `_highlight`: gated to
-    attached sessions in `_act()`, cosmetic only, never allowed to block the
-    real action it's describing.
+    Stage 5b exists for (ROADMAP.md) — and mirror it into the bar's Target
+    segment plus bump the Step counter, so the bar shows live session info
+    rather than a fixed "is driving this tab" string. Same reasoning as
+    `_highlight`: gated to attached sessions in `_act()`, cosmetic only,
+    never allowed to block the real action it's describing.
     """
+    _session["action_count"] += 1
     try:
         await page.evaluate(_LOG_JS, text)
+        await page.evaluate(_BAR_SEGMENTS_JS, {
+            "target": text,
+            "step": f"step {_session['action_count']}",
+        })
     except Exception:
         pass
 
+
+# Real zerodom logo (assets/logo.svg), inlined as literal <svg> markup, not
+# an <img src="data:..."> -- some real sites (confirmed live on iana.org)
+# set a strict img-src CSP with no `data:` scheme, which silently blocks a
+# data-URI <img> even though the extension injected it. CSP's img-src only
+# governs fetched image *resources*; inline SVG markup is just DOM content,
+# so it renders regardless of the page's own CSP.
+_LOGO_SVG_INLINE = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="14" height="14" '
+    'style="display:block;flex:none;border-radius:3px;">'
+    '<rect width="64" height="64" rx="14" fill="#080b16"/>'
+    '<g fill="#3e5098"><circle cx="14" cy="14" r="2.6"/>'
+    '<circle cx="25" cy="14" r="2.6" opacity=".8"/><circle cx="36" cy="14" r="2.6" opacity=".6"/>'
+    '<circle cx="14" cy="25" r="2.6" opacity=".8"/><circle cx="25" cy="25" r="2.6" opacity=".6"/>'
+    '<circle cx="14" cy="36" r="2.6" opacity=".6"/></g>'
+    '<g fill="none" stroke="#22e0d8" stroke-width="3" stroke-linecap="round">'
+    '<path d="M31 43 L47 33 M31 43 L47 52"/></g>'
+    '<g fill="#22e0d8"><circle cx="31" cy="43" r="5"/><circle cx="48" cy="32" r="4"/>'
+    '<circle cx="48" cy="53" r="4"/></g></svg>'
+)
 
 # Purely cosmetic now — the real user-input block is _set_input_ignored()
 # below, at the browser/CDP level, not here. A page-injected pointer-events
 # overlay can't tell a real click apart from a chrome.debugger-dispatched
 # one (both are trusted DOM events), so it can only ever swallow both or
 # neither; Input.setIgnoreInputEvents is what actually distinguishes them.
-# This just draws the full-viewport border + banner, matching the visible
-# "an agent is driving this tab" framing browser-extension agents use —
-# idempotent, shown once and left up rather than toggled per action, since
-# it no longer has any bearing on whether input gets through.
+# This draws a thin action bar with real typographic hierarchy instead of a
+# pipe-divided debug line: sans-serif for the one thing worth actually
+# reading (Target, the live action), a single quiet monospace "stat chip"
+# grouping Path/Tokens/Step (data, not prose), cyan pulled back to just the
+# logo/ACTIVE-dot/CTA rather than smeared across every divider. Segments are
+# updated live and independently by id (#zerodom-bar-target/path/tokens/step)
+# via _BAR_SEGMENTS_JS -- see _log_action (Target, Step) and _read() (Path,
+# Tokens). Deliberately no "Step N/total": the server has no way to know an
+# agent's planned total step count, so it only shows a real, counted-so-far
+# number, never a guessed one. Structure is built once, idempotent.
+# Everything stays pointer-events:none except the waitlist link, a normal
+# fixed-destination anchor — it must never intercept a real click elsewhere.
 _DRIVING_UI_JS = """() => {
   if (document.getElementById('zerodom-driving-border')) return;
+  const BAR_HEIGHT = 36;
+  document.body.style.marginTop = BAR_HEIGHT + 'px';
+
+  // body's margin-top only pushes normal document flow -- a page's own
+  // `position: fixed`/`sticky` navbar is viewport-anchored and ignores it
+  // entirely, so it renders right under our bar (confirmed live: Reddit's
+  // own header). Cheap, targeted fix: find whatever the page actually
+  // renders at a point just below our bar (not a full-DOM scan), walk up
+  // to the nearest fixed/sticky ancestor pinned at the viewport top, and
+  // nudge only that one element's `top` down by BAR_HEIGHT -- for a sticky
+  // element this makes it stick just below our bar instead of at 0, which
+  // is the correct behavior, not a side effect.
+  //
+  // Reddit's own header lives inside a custom element's shadow root
+  // (<reddit-header-large>, open shadow DOM) -- plain elementFromPoint()
+  // and .parentElement both stop at the shadow boundary and return the
+  // host, which is itself just a static wrapper, so the real fixed div
+  // inside never got found. zerodomDeepPoint/zerodomParent pierce shadow
+  // roots on the way down and back up.
+  function zerodomDeepPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    while (el && el.shadowRoot) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+  function zerodomParent(node) {
+    if (node.parentElement) return node.parentElement;
+    const root = node.getRootNode();
+    return root instanceof ShadowRoot ? root.host : null;
+  }
+  function zerodomPushFixedHeader() {
+    let node = zerodomDeepPoint(Math.floor(window.innerWidth / 2), BAR_HEIGHT + 4);
+    let depth = 0;
+    while (node && node !== document.documentElement && depth < 60) {
+      const cs = getComputedStyle(node);
+      if (cs.position === 'fixed' || cs.position === 'sticky') {
+        const rect = node.getBoundingClientRect();
+        if (rect.top <= 4 && rect.top >= -1 && !node.dataset.zerodomPushed) {
+          node.dataset.zerodomPushed = '1';
+          node.style.top = (parseFloat(cs.top) || 0) + BAR_HEIGHT + 'px';
+        }
+        break;
+      }
+      node = zerodomParent(node);
+      depth++;
+    }
+  }
+  zerodomPushFixedHeader();
+
+  // Inline styles can't set ::-webkit-scrollbar (it's a pseudo-element, not
+  // a property) -- a real <style> tag is the only way. Scoped by id so it
+  // never touches the page's own scrollbars.
+  const style = document.createElement('style');
+  style.textContent =
+    '#zerodom-sidebar-list, #zerodom-log-panel { scrollbar-width: thin; ' +
+      'scrollbar-color: rgba(34,224,216,.35) transparent; }' +
+    '#zerodom-sidebar-list::-webkit-scrollbar, #zerodom-log-panel::-webkit-scrollbar ' +
+      '{ width: 8px; }' +
+    '#zerodom-sidebar-list::-webkit-scrollbar-track, ' +
+      '#zerodom-log-panel::-webkit-scrollbar-track { background: transparent; }' +
+    '#zerodom-sidebar-list::-webkit-scrollbar-thumb, ' +
+      '#zerodom-log-panel::-webkit-scrollbar-thumb ' +
+      '{ background: rgba(34,224,216,.3); border-radius: 4px; }' +
+    '#zerodom-sidebar-list::-webkit-scrollbar-thumb:hover, ' +
+      '#zerodom-log-panel::-webkit-scrollbar-thumb:hover ' +
+      '{ background: rgba(34,224,216,.5); }';
+  document.head.appendChild(style);
+
+  const banner = document.createElement('div');
+  banner.id = 'zerodom-driving-bar';
+  // aria-hidden -- parser.py's _is_hidden() prunes this whole subtree, so
+  // the bar's own "Join Waitlist" <a> never shows up as an actionable node
+  // in the graph an agent is driving from.
+  banner.setAttribute('aria-hidden', 'true');
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;height:' + BAR_HEIGHT + 'px;' +
+    'display:flex;align-items:center;padding:0 12px;box-sizing:border-box;' +
+    'background:#0a0b0d;border-bottom:1px solid rgba(255,255,255,.08);' +
+    'font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;' +
+    'color:#e8eaed;pointer-events:none;z-index:2147483646;';
+  const MONO = 'font-family:ui-monospace,"SF Mono",Menlo,monospace;';
+  banner.innerHTML =
+    '<span style="display:flex;align-items:center;gap:6px;flex:none;margin:6px 0;' +
+      'padding:3px 10px;border:1px solid rgba(255,255,255,.14);border-radius:6px;">' +
+      '__LOGO_SVG__' +
+      '<strong style="color:#e8eaed;font-weight:600;">zerodom</strong>' +
+    '</span>' +
+    '<span id="zerodom-bar-active" style="display:flex;align-items:center;gap:5px;' +
+      'flex:none;margin-left:10px;font-size:10px;font-weight:700;letter-spacing:.06em;' +
+      'color:#7d828c;">' +
+      '<span style="width:6px;height:6px;border-radius:50%;background:#4fbf7f;' +
+        'box-shadow:0 0 5px #4fbf7f;flex:none;"></span>ACTIVE</span>' +
+    '<span id="zerodom-bar-target" style="flex:1;min-width:0;margin-left:14px;' +
+      'color:#e8eaed;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+      'watching</span>' +
+    '<span style="flex:none;display:flex;align-items:center;gap:7px;margin-left:12px;' +
+      'padding:4px 10px;border-radius:6px;background:rgba(255,255,255,.05);' +
+      MONO + 'font-size:11px;color:#9199a3;">' +
+      '<span style="color:#5b5f68;">path</span>' +
+      '<span id="zerodom-bar-path" style="max-width:130px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap;"></span>' +
+      '<span style="color:#3d4048;">&middot;</span>' +
+      '<span id="zerodom-bar-tokens"></span>' +
+      '<span style="color:#3d4048;">&middot;</span>' +
+      '<span id="zerodom-bar-step">step 0</span>' +
+    '</span>' +
+    '<a href="https://zerodom.vexralabs.com/#waitlist" target="_blank" rel="noopener" ' +
+      'style="pointer-events:auto;flex:none;margin:6px 0 6px 14px;padding:4px 12px;' +
+      'border-radius:6px;background:#22e0d8;color:#0a0b0d;font-weight:600;font-size:12px;' +
+      'text-decoration:none;white-space:nowrap;">Join Waitlist</a>';
+  document.body.appendChild(banner);
+
+  // ---- Graph sidebar: browse every node zerodom currently sees, click one
+  // to live-check its selector against the real DOM right now (reuses
+  // audit.py's ok/dead/ambiguous classification, just triggered by a human
+  // click here instead of a CLI run). Data comes from _SIDEBAR_DATA_JS,
+  // called by _read() on every attached read -- window.__zerodomUpdateGraph
+  // is how that data lands here. Hidden by default; opens only on the
+  // toggle button's own click, so it never costs anything unopened.
+  const sidebarBtn = document.createElement('button');
+  sidebarBtn.id = 'zerodom-sidebar-toggle';
+  sidebarBtn.type = 'button';
+  sidebarBtn.textContent = '▤';
+  sidebarBtn.style.cssText = 'pointer-events:auto;flex:none;margin:6px 0 6px 10px;' +
+    'width:26px;height:24px;border-radius:6px;border:1px solid rgba(255,255,255,.14);' +
+    'background:transparent;color:#9199a3;font-size:13px;line-height:1;cursor:pointer;';
+  banner.insertBefore(sidebarBtn, banner.lastElementChild);
+
+  const SIDEBAR_WIDTH = 320;
+  const sidebar = document.createElement('div');
+  sidebar.id = 'zerodom-sidebar';
+  sidebar.style.cssText = 'position:fixed;top:' + BAR_HEIGHT + 'px;right:0;bottom:0;' +
+    'width:' + SIDEBAR_WIDTH + 'px;background:#0a0b0d;border-left:1px solid rgba(255,255,255,.1);' +
+    'font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:#e8eaed;' +
+    'z-index:2147483645;display:none;flex-direction:column;';
+  sidebar.innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:space-between;' +
+      'padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.08);flex:none;">' +
+      '<strong id="zerodom-sidebar-count" style="font-size:12px;font-weight:600;">graph</strong>' +
+      '<button id="zerodom-sidebar-close" type="button" style="pointer-events:auto;' +
+        'background:none;border:none;color:#9199a3;font-size:16px;line-height:1;cursor:pointer;' +
+        'padding:2px;">&times;</button>' +
+    '</div>' +
+    '<div id="zerodom-sidebar-stats" style="margin:12px 14px 0;padding:10px 12px;' +
+      'border-radius:8px;background:rgba(34,224,216,.08);border:1px solid rgba(34,224,216,.2);' +
+      MONO + '"></div>' +
+    '<div style="padding:10px 14px 0;flex:none;">' +
+      '<input id="zerodom-sidebar-search" type="text" placeholder="filter by label" ' +
+        'style="pointer-events:auto;width:100%;box-sizing:border-box;' +
+        'background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.14);' +
+        'border-radius:6px;padding:6px 9px;color:#e8eaed;outline:none;font-size:12px;' + MONO + '" />' +
+      '<div id="zerodom-sidebar-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0;"></div>' +
+    '</div>' +
+    '<div id="zerodom-sidebar-list" style="flex:1;overflow-y:auto;padding:2px 10px 10px;' +
+      MONO + '"></div>';
+  document.body.appendChild(sidebar);
+
+  function zerodomOpenSidebar(open) {
+    sidebar.style.display = open ? 'flex' : 'none';
+    sidebarBtn.style.color = open ? '#22e0d8' : '#9199a3';
+    sidebarBtn.style.borderColor = open ? '#22e0d8' : 'rgba(255,255,255,.14)';
+    // Reserves real space like Chrome's own side panel (docked, page
+    // resizes) rather than floating a shadowed overlay on top of content.
+    document.body.style.marginRight = open ? SIDEBAR_WIDTH + 'px' : '';
+  }
+  sidebarBtn.addEventListener('click', () => zerodomOpenSidebar(sidebar.style.display === 'none'));
+  sidebar.querySelector('#zerodom-sidebar-close').addEventListener('click', () => zerodomOpenSidebar(false));
+
+  function zerodomRenderChips() {
+    const counts = {};
+    for (const n of window.__zerodomGraph) counts[n.type] = (counts[n.type] || 0) + 1;
+    const chips = document.getElementById('zerodom-sidebar-chips');
+    const active = chips.dataset.active || 'all';
+    const types = ['all'].concat(Object.keys(counts).sort());
+    chips.innerHTML = types.map((t) => {
+      const n = t === 'all' ? window.__zerodomGraph.length : counts[t];
+      const on = t === active;
+      return '<button type="button" data-type="' + t + '" style="pointer-events:auto;' +
+        'padding:3px 8px;border-radius:12px;font-size:11px;cursor:pointer;' +
+        'border:1px solid ' + (on ? '#22e0d8' : 'rgba(255,255,255,.14)') + ';' +
+        'background:' + (on ? 'rgba(34,224,216,.12)' : 'transparent') + ';' +
+        'color:' + (on ? '#22e0d8' : '#9199a3') + ';">' + t + ' ' + n + '</button>';
+    }).join('');
+    chips.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+      chips.dataset.active = b.dataset.type;
+      zerodomRenderChips();
+      window.__zerodomRenderList();
+    }));
+  }
+
+  window.__zerodomGraph = window.__zerodomGraph || [];
+
+  window.__zerodomRenderList = function () {
+    const list = document.getElementById('zerodom-sidebar-list');
+    const countEl = document.getElementById('zerodom-sidebar-count');
+    const search = document.getElementById('zerodom-sidebar-search');
+    const chips = document.getElementById('zerodom-sidebar-chips');
+    const q = ((search && search.value) || '').toLowerCase();
+    const activeType = (chips && chips.dataset.active) || 'all';
+    const rows = window.__zerodomGraph.filter((n) =>
+      (activeType === 'all' || n.type === activeType) &&
+      (!q || (n.label || '').toLowerCase().includes(q))
+    );
+    countEl.textContent = 'graph · ' + rows.length + '/' + window.__zerodomGraph.length;
+    list.innerHTML = '';
+    for (const n of rows) {
+      const row = document.createElement('div');
+      row.style.cssText = 'pointer-events:auto;display:flex;align-items:center;' +
+        'justify-content:space-between;gap:8px;padding:5px 6px;border-radius:5px;cursor:pointer;';
+      const left = document.createElement('span');
+      left.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;';
+      const idSpan = document.createElement('span');
+      idSpan.style.color = '#22e0d8';
+      idSpan.textContent = '[' + n.id + '] ';
+      const typeSpan = document.createElement('span');
+      typeSpan.style.color = '#9199a3';
+      typeSpan.textContent = n.type + ' ';
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = JSON.stringify(n.label || '');
+      left.append(idSpan, typeSpan, labelSpan);
+      const badge = document.createElement('span');
+      badge.style.cssText = 'flex:none;font-size:10px;';
+      badge.style.color = '#5b5f68';
+      row.append(left, badge);
+      row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,.05)'; });
+      row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
+      row.addEventListener('click', () => {
+        let count;
+        try { count = document.querySelectorAll(n.selector).length; } catch (e) { count = -1; }
+        const verdict = count < 0 ? 'invalid' : count === 0 ? 'dead' : count === 1 ? 'ok' : 'ambiguous';
+        const color = { ok: '#4fbf7f', dead: '#e05252', ambiguous: '#e0a83d', invalid: '#e05252' };
+        badge.textContent = verdict + (count > 1 ? ' (' + count + ')' : '');
+        badge.style.color = color[verdict];
+      });
+      list.appendChild(row);
+    }
+  };
+
+  window.__zerodomUpdateGraph = function (nodes) {
+    window.__zerodomGraph = nodes;
+    zerodomRenderChips();
+    window.__zerodomRenderList();
+  };
+
+  sidebar.querySelector('#zerodom-sidebar-search').addEventListener('input', () => {
+    zerodomRenderChips();
+    window.__zerodomRenderList();
+  });
+
+  // Path is pure URL state -- unlike Target/Tokens/Step (which genuinely
+  // describe zerodom's own last action and should only change when it acts
+  // again), Path can and should track the real address bar even when a
+  // client-side-routed SPA (confirmed live on Reddit) or the user's own
+  // click navigates without zerodom ever re-reading the page.
+  const updateBarPath = () => {
+    const el = document.getElementById('zerodom-bar-path');
+    if (el) el.textContent = location.pathname || '/';
+    zerodomPushFixedHeader();
+  };
+  updateBarPath();
+  const origPushState = history.pushState;
+  history.pushState = function (...args) {
+    origPushState.apply(this, args);
+    updateBarPath();
+  };
+  const origReplaceState = history.replaceState;
+  history.replaceState = function (...args) {
+    origReplaceState.apply(this, args);
+    updateBarPath();
+  };
+  window.addEventListener('popstate', updateBarPath);
+
+  // pushState fires synchronously, often *before* the SPA's router has
+  // actually re-rendered the new header component (confirmed live on
+  // Reddit: the header is a custom element the router recreates, not
+  // reuses, on a route change -- and does so more than once mid-transition,
+  // so even a couple of fixed-delay retries after pushState still missed
+  // it). A MutationObserver reacting to the real DOM change, debounced so
+  // it only actually runs the check once mutations settle for a moment,
+  // handles both an arbitrarily-delayed and a multi-step re-render without
+  // guessing a timeout. zerodomPushFixedHeader() is cheap and idempotent
+  // (the dataset.zerodomPushed guard) even when re-run on every settle.
+  let pushDebounce = null;
+  new MutationObserver(() => {
+    clearTimeout(pushDebounce);
+    pushDebounce = setTimeout(zerodomPushFixedHeader, 120);
+  }).observe(document.body, { childList: true, subtree: true });
+
   const border = document.createElement('div');
   border.id = 'zerodom-driving-border';
-  border.style.cssText = 'position:fixed;inset:0;z-index:2147483646;' +
-    'border:4px solid #22e0d8;box-shadow:inset 0 0 24px rgba(34,224,216,0.25);' +
+  border.setAttribute('aria-hidden', 'true');
+  // Flush with the viewport edges (no inset) -- a pure shadow, no border
+  // line, so it reads as a soft glow rather than a drawn rectangle.
+  border.style.cssText = 'position:fixed;top:' + BAR_HEIGHT + 'px;right:0;bottom:0;left:0;' +
+    'z-index:2147483646;box-shadow:inset 0 0 22px rgba(34,224,216,0.16);' +
     'pointer-events:none;';
   document.body.appendChild(border);
 
-  const banner = document.createElement('div');
-  banner.textContent = 'zerodom is driving this tab';
-  banner.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);' +
-    'background:rgba(8,11,22,.92);color:#22e0d8;font:12px/1.5 ui-monospace,Menlo,monospace;' +
-    'padding:4px 10px;border-radius:6px;border:1px solid rgba(34,224,216,.4);' +
-    'pointer-events:none;z-index:2147483646;';
-  document.body.appendChild(banner);
-
   const cursor = document.createElement('div');
   cursor.id = 'zerodom-cursor';
+  cursor.setAttribute('aria-hidden', 'true');
   cursor.style.cssText = 'position:fixed;left:-100px;top:-100px;width:0;height:0;' +
-    'border-left:7px solid transparent;border-right:7px solid transparent;' +
-    'border-top:13px solid #22e0d8;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5));' +
+    'border-left:10px solid transparent;border-right:10px solid transparent;' +
+    'border-top:18px solid #22e0d8;' +
+    'filter:drop-shadow(0 0 1px rgba(0,0,0,.9)) drop-shadow(0 0 3px rgba(0,0,0,.8))' +
+    ' drop-shadow(0 2px 4px rgba(0,0,0,.6));' +
     'transition:left .15s ease,top .15s ease;pointer-events:none;z-index:2147483647;';
   document.body.appendChild(cursor);
 }"""
+_DRIVING_UI_JS = _DRIVING_UI_JS.replace("__LOGO_SVG__", _LOGO_SVG_INLINE)
 
 _MOVE_CURSOR_JS = """(el) => {
   const cursor = document.getElementById('zerodom-cursor');
@@ -374,6 +760,13 @@ async def _act(node_id: str, verb: str, *args: Any) -> str:
     instead of ending it.
     """
     node = _node(node_id)
+    if verb == "fill" and _session["attached"] and _is_sensitive_field(node):
+        raise PermissionError(
+            f"Refusing to fill {compact_line(node)} — looks like a "
+            "password/payment/SSN field. zerodom won't type into these on "
+            "an attached (real, watched) session. If this is a false "
+            "positive, ask the user to type it themselves."
+        )
     for attempt in (1, 2):
         page = await _page()
         try:
@@ -524,12 +917,90 @@ async def _read(verbose: bool = False, diff: bool = False) -> str:
     _session.update(
         selectors=graph.selector_map(), nodes=graph["nodes"], url=page.url
     )
+    compact = graph.to_compact_text()
+    if _session["attached"]:
+        # Build the driving bar on the first read (parse_url) so the HUD
+        # is visible immediately, not only after the first click/fill.
+        # Idempotent — _DRIVING_UI_JS is a no-op if the bar already exists.
+        try:
+            await page.evaluate(_DRIVING_UI_JS)
+        except Exception:
+            pass
+        # Rough chars/4 estimate, not a tiktoken count (that's benchmark_tokens.py's
+        # job, offline) -- good enough for a live "how much smaller is this graph
+        # than the raw page" bar readout without spending a real token-counting
+        # pass on every read. page.content() here is a second DOM serialization
+        # (from_page() already did one internally) -- an extra cost only paid on
+        # attached, watched sessions, never on a headless/launched one.
+        compact_tokens = max(1, len(compact) // 4)
+        try:
+            html = await page.content()
+            raw_tokens = max(1, len(html) // 4)
+            pct = max(0, round((1 - compact_tokens / raw_tokens) * 100))
+            tokens_label = _fmt_tokens(compact_tokens) + (f" (-{pct}%)" if pct else "")
+            await page.evaluate(_BAR_SEGMENTS_JS, {
+                "path": urlsplit(page.url).path or "/",
+                "tokens": tokens_label,
+            })
+        except Exception:
+            pass
+        try:
+            # A real, live comparison against what Playwright MCP itself
+            # sends a model -- aria_snapshot(mode="ai") is the exact API
+            # Playwright's own browser_snapshot tool calls, not a guess at
+            # its output. No equivalent exists for claude-in-chrome: it's a
+            # separate, closed extension with no API to reproduce its
+            # representation, so it's deliberately not shown here rather
+            # than invented.
+            #
+            # Computing it is genuinely expensive (a full accessibility-tree
+            # pass) -- on a page like Reddit's 500+-node feed, doing this on
+            # *every* read (every click/hover) made every action noticeably
+            # slower for a stat only visible when the sidebar happens to be
+            # open. Cached per URL instead: recomputed only on navigation,
+            # not on every action taken on the same page. The percentage
+            # shown is "as of when this page was last measured," not a
+            # byte-perfect live counter -- an acceptable trade for a human
+            # debug readout, not something a tool result ever returns.
+            if _session["aria_cache_url"] != page.url:
+                aria = await page.aria_snapshot(mode="ai")
+                _session["aria_cache_url"] = page.url
+                _session["aria_cache_tokens"] = max(1, len(aria) // 4)
+            aria_tokens = _session["aria_cache_tokens"]
+            aria_pct = max(0, round((1 - compact_tokens / aria_tokens) * 100))
+            await page.evaluate(_SIDEBAR_STATS_JS, {
+                "pct": f"-{aria_pct}%" if aria_pct else "0%",
+                "detail": f"{_fmt_tokens(compact_tokens)} tok vs {_fmt_tokens(aria_tokens)} tok",
+            })
+        except Exception:
+            pass
+        try:
+            # Selectors reaching the page here is not the same boundary as
+            # selectors reaching the *model*: this data stays inside
+            # page.evaluate()/DOM state for the human-facing sidebar (D15's
+            # HUD) and is never returned through a tool result. zerodom_eval_js
+            # already lets an agent read arbitrary page state (D14's
+            # trust-boundary note), so this isn't a new hole -- and a human
+            # driving their own tab already has full devtools access to the
+            # same selectors anyway.
+            sidebar_nodes = [
+                {
+                    "id": n["id"].removeprefix("node_"),
+                    "type": n["type"],
+                    "label": n.get("label", ""),
+                    "selector": n["selector"],
+                }
+                for n in graph["nodes"]
+            ]
+            await page.evaluate(_SIDEBAR_DATA_JS, sidebar_nodes)
+        except Exception:
+            pass
     if verbose:
         return graph.to_json()
     # A navigation invalidates every id, so a diff against the old page is noise.
     if diff and previous and url == page.url and (delta := _diff(previous, graph["nodes"])):
         return delta
-    return graph.to_compact_text()
+    return compact
 
 
 @mcp.tool()
@@ -752,16 +1223,52 @@ async def zerodom_screenshot(path: str | None = None) -> str:
 
 @mcp.tool()
 async def zerodom_set_viewport(width: int, height: int) -> str:
-    """Resize the active tab's viewport for responsive-design testing.
+    """Resize the active tab's *viewport* for responsive-design testing.
 
-    This is not the real browser window — chrome.debugger has no browser-level
-    window-management grant for that (docs/DECISIONS.md, "hard limits") — but
-    Emulation.setDeviceMetricsOverride, which is what actually answers "how
-    does this render at width X": the page's own layout, not the chrome around it.
+    Not the real browser window — that's zerodom_resize_window. This is
+    Emulation.setDeviceMetricsOverride: the page's own rendered layout at a
+    given width, without touching the chrome around it. Use this one for
+    "how does this render at width X"; use zerodom_resize_window for an
+    actually different-sized window on screen.
     """
     page = await _page()
     await page.set_viewport_size({"width": width, "height": height})
     return await _read(diff=True)
+
+
+@mcp.tool()
+async def zerodom_resize_window(width: int, height: int) -> str:
+    """Resize the real browser window (not just the page's viewport).
+
+    chrome.debugger's CDP surface has no browser-level window-management
+    grant, but chrome.windows.update is a plain extension API, entirely
+    unrelated to chrome.debugger — so this genuinely works despite that.
+    Sent as Browser.setWindowBounds (a real CDP method name Playwright's own
+    driver will actually transmit — a made-up method name gets rejected
+    client-side before reaching the relay at all) and repurposed server-side;
+    see docs/DECISIONS.md D16. Only meaningful for an attached (real-browser)
+    session; a launched headless session has no window to resize.
+
+    On a tiling window manager (i3/sway/Hyprland/bspwm-style setups), this
+    call succeeds but the window won't visibly move or resize — on Wayland
+    compositors specifically this isn't a WM being uncooperative, it's the
+    protocol itself: clients are deliberately not allowed to force their own
+    geometry. Works normally on a floating window. Confirmed live on
+    Hyprland.
+    """
+    page = await _page()
+    active = _session["active"]
+    cdp = _session["cdp_sessions"].get(active)
+    if cdp is None:
+        cdp = await page.context.new_cdp_session(page)
+        _session["cdp_sessions"][active] = cdp
+    # state: "normal" is required, not decorative — Chrome silently ignores
+    # width/height in chrome.windows.update() while the window is maximized
+    # (the common default), so a resize call would "succeed" and visibly do
+    # nothing without this (confirmed live).
+    bounds = {"width": width, "height": height, "state": "normal"}
+    await cdp.send("Browser.setWindowBounds", {"windowId": 0, "bounds": bounds})
+    return f"resized window to {width}x{height}"
 
 
 # A curated subset of what getComputedStyle() returns (~300 properties) —
@@ -815,7 +1322,8 @@ async def zerodom_get_cookies() -> str:
         return "No cookies."
     return "\n".join(
         f"{c['name']}={c['value']}  domain={c['domain']}  "
-        f"httpOnly={c.get('httpOnly', False)}  secure={c.get('secure', False)}"
+        f"httpOnly={c.get('httpOnly', False)}  secure={c.get('secure', False)}  "
+        f"sameSite={c.get('sameSite', 'unspecified')}"
         for c in cookies
     )
 
