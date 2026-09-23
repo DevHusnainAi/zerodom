@@ -50,6 +50,74 @@ test("hidden subtrees are pruned, including their interactive children", () => {
   assert.equal(graph.nodes[0].label, "visible");
 });
 
+test("hidden inputs are collected, not pruned, and stay out of the graph", () => {
+  const html =
+    "<form>" +
+    '<input type="hidden" name="csrf_token" value="abc123">' +
+    '<input type="hidden" id="draft_id" value="42">' +
+    '<input name="q"><button>Submit</button>' +
+    "</form>";
+  const graph = parseHtml(html);
+  assert.deepEqual(graph.nodes.map((n) => n.type), ["input", "button"]);
+  assert.equal(graph.metadata.hidden_field_count, 2);
+  assert.deepEqual(graph.metadata.hidden_fields, [
+    { name: "csrf_token", value: "abc123", selector: "input[name='csrf_token']" },
+    { name: "", value: "42", selector: "#draft_id", id: "draft_id" },
+  ]);
+  // Values must never leak into compact text (they cost context at graph time).
+  assert.ok(!graph.toCompactText().includes("abc123"));
+  assert.ok(!graph.toCompactText().includes("42"));
+});
+
+test("data-zerodom-offscreen node is dropped only when viewportOnly is requested", () => {
+  const html = "<button>Onscreen</button><button data-zerodom-offscreen>Below fold</button>";
+  assert.deepEqual(parseHtml(html).nodes.map((n) => n.label), ["Onscreen", "Below fold"]);
+  const graph = parseHtml(html, "about:blank", true);
+  assert.deepEqual(graph.nodes.map((n) => n.label), ["Onscreen"]);
+  assert.equal(graph.metadata.offscreen_skipped, 1);
+  assert.ok(graph.toCompactText().includes("1 more nodes offscreen"));
+});
+
+test("data-zerodom-occluded node is dropped only when checkOcclusion is requested", () => {
+  const html = "<button>Reachable</button><button data-zerodom-occluded>Behind modal</button>";
+  assert.deepEqual(parseHtml(html).nodes.map((n) => n.label), ["Reachable", "Behind modal"]);
+  const graph = parseHtml(html, "about:blank", false, true);
+  assert.deepEqual(graph.nodes.map((n) => n.label), ["Reachable"]);
+  assert.equal(graph.metadata.occluded_skipped, 1);
+  assert.ok(graph.toCompactText().includes("1 nodes hidden behind an overlay"));
+});
+
+test("repeated card items group ambiguous duplicate labels; a single-control card doesn't", () => {
+  // Real Hacker News markup: the vote link carries no visible text (its arrow
+  // is a CSS-styled <div>, not text) — only the title link does.
+  const html =
+    "<table>" +
+    "<tr><td><a href='/vote?id=1' title='upvote'><div class='votearrow'></div></a></td>" +
+    "<td><a href='/story?id=1'>Ask Academic mobile app</a></td></tr>" +
+    "<tr><td><a href='/vote?id=2' title='upvote'><div class='votearrow'></div></a></td>" +
+    "<td><a href='/story?id=2'>Recommended image viewer for Arch</a></td></tr>" +
+    "</table>";
+  const graph = parseHtml(html);
+  assert.deepEqual(graph.nodes.map((n) => n.card), [
+    "Ask Academic mobile app", "Ask Academic mobile app",
+    "Recommended image viewer for Arch", "Recommended image viewer for Arch",
+  ]);
+  const text = graph.toCompactText();
+  assert.ok(text.includes('@card "Ask Academic mobile app":\n  [01] a "upvote"'));
+
+  const single = parseHtml("<table><tr><td><a href='/x'>Story number 0</a></td></tr></table>");
+  assert.equal(single.nodes[0].card, undefined);
+  assert.ok(!single.toCompactText().includes("@card"));
+});
+
+test("contenteditable div is a fillable node; contenteditable=false is not interactive", () => {
+  const graph = parseHtml('<div contenteditable="true" id="composer">Type here</div>');
+  assert.equal(graph.nodes[0].action, "fill");
+  assert.equal(graph.nodes[0].role, "textbox");
+  assert.equal(graph.nodes[0].content_editable, true);
+  assert.equal(parseHtml('<div contenteditable="false">static</div>').nodes.length, 0);
+});
+
 test("label priority: for= beats wrapping label beats placeholder beats adjacent text", () => {
   const graph = parseHtml(`
     <label for="e">Email</label>
@@ -157,4 +225,33 @@ test("latency is well under the 50ms budget on a few thousand nodes", () => {
   const graph = parseHtml(`<table>${rows}</table>`);
   assert.equal(graph.nodes.length, 3000);
   assert.ok(graph.metadata.parsing_latency_ms < 200, `took ${graph.metadata.parsing_latency_ms}ms`);
+});
+
+// Mirrors test_collapsing_duplicates_keeps_document_order in tests/test_parser.py.
+// collapseDuplicates used to rebuild the list by walking the (type, role, label)
+// groups, emitting every same-labelled node together — which fragmented the
+// @card runs in toCompactText() and reordered the graph away from the page.
+test("collapsing duplicates keeps document order", () => {
+  const html = "<body>" + [1, 2, 3].map((i) =>
+    `<li><a href="/p${i}">Post ${i}</a><a href="/like/${i}">Like</a><a href="/share/${i}">Share</a></li>`
+  ).join("") + "</body>";
+
+  const graph = parseHtml(html, "https://e.com", false, false, true);
+  assert.deepEqual(graph.nodes.map((n: any) => n.label), [
+    "Post 1", "Like", "Share",
+    "Post 2", "Like", "Share",
+    "Post 3", "Like", "Share",
+  ]);
+
+  const cards = graph.toCompactText().split("\n").filter((l: string) => l.startsWith("@card"));
+  assert.equal(cards.length, 3);
+  assert.equal(new Set(cards).size, 3);
+});
+
+test("collapsing duplicates still collapses undifferentiated repeats", () => {
+  const html = "<body>" + "<div><button>More actions</button></div>".repeat(5) + "</body>";
+  const graph = parseHtml(html, "https://e.com", false, false, true);
+  assert.equal(graph.nodes.length, 1);
+  assert.equal((graph.nodes[0] as any).count, 5);
+  assert.equal(graph.metadata.duplicates_collapsed, 4);
 });

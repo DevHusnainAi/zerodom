@@ -32,6 +32,14 @@ class FakeLocator:
         await self.page.fill(self.selector, text)
 
 
+class FakeMouse:
+    def __init__(self, page):
+        self.page = page
+
+    async def wheel(self, dx, dy):
+        self.page.calls.append(("wheel", dx, dy))
+
+
 class FakePage:
     """Stands in for a Playwright page so MCP tools are testable without a browser."""
 
@@ -40,6 +48,8 @@ class FakePage:
         self.url = "https://example.com/"
         self.html = PAGE
         self.typed: dict[str, str] = {}
+        self.mouse = FakeMouse(self)
+        self.sidebar_eval = None
 
     async def goto(self, url, **kw):
         self.calls.append(("goto", url))
@@ -48,8 +58,17 @@ class FakePage:
     async def content(self):
         return self.html
 
-    async def evaluate(self, script):
-        return None  # no shadow roots, so the serializer falls back to content()
+    async def evaluate(self, script, arg=None):
+        # The SERIALIZE shadow-root probe should stay a wash (fall back to
+        # content()); the framework-root hydration probe answers yes so the
+        # post-navigation "handler may not have finished attaching" hint in
+        # zerodom_click_node is genuinely exercised rather than silently dead.
+        if "hydrationPending" in script:
+            return {"hydrationPending": True}
+        if "__zerodomNodes" in script:
+            self.sidebar_eval = arg
+            return None
+        return None
 
     def locator(self, selector):
         return FakeLocator(self, selector)
@@ -74,9 +93,9 @@ class FakePage:
 @pytest.fixture
 def page(monkeypatch):
     fake = FakePage()
-    mcp_server._session.update(page=fake, selectors={}, nodes=[], url=None)
+    mcp_server._session.update(pages={"0": fake}, active="0", selectors={}, nodes=[], url=None)
     yield fake
-    mcp_server._session.update(page=None, selectors={}, nodes=[], url=None)
+    mcp_server._session.update(pages={}, active=None, selectors={}, nodes=[], url=None)
 
 
 def test_tools_are_registered():
@@ -117,6 +136,19 @@ def test_click_and_fill_resolve_node_ids(page):
     asyncio.run(mcp_server.zerodom_click_node("node_02"))
     assert ("fill", "#q", "zerodom") in page.calls
     assert ("click", "#go") in page.calls
+
+
+def test_scroll_dispatches_a_wheel_event_and_returns_a_diff(page):
+    asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
+    out = asyncio.run(mcp_server.zerodom_scroll())
+    assert ("wheel", 0, 800) in page.calls
+    assert out == "no structural change"
+
+
+def test_scroll_up_uses_a_negative_delta(page):
+    asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
+    asyncio.run(mcp_server.zerodom_scroll(direction="up", amount=400))
+    assert ("wheel", 0, -400) in page.calls
 
 
 def test_read_page_does_not_navigate(page):
@@ -197,6 +229,79 @@ def test_find_before_any_page_is_loaded(page):
     assert "No page loaded" in asyncio.run(mcp_server.zerodom_find("x"))
 
 
+HIDDEN_HTML = """
+<html><body>
+  <form>
+    <input type="hidden" name="csrf_token" value="abc123">
+    <input type="hidden" id="draft_id" value="42">
+    <input id="q" aria-label="Search">
+    <button id="go">Go</button>
+  </form>
+</body></html>
+"""
+
+
+def test_hidden_fields_do_not_become_graph_nodes(page):
+    """A hidden input isn't clickable or fillable, so it must not be a node."""
+    page.html = HIDDEN_HTML
+    asyncio.run(mcp_server._read())
+    labels = [n["label"] for n in mcp_server._session["nodes"]]
+    assert "csrf_token" not in labels and "draft_id" not in labels
+    assert mcp_server._session["hidden_fields"] == [
+        {"name": "csrf_token", "value": "abc123", "selector": "input[name='csrf_token']"},
+        {"name": "", "value": "42", "selector": "#draft_id", "id": "draft_id"},
+    ]
+
+
+def test_hidden_fields_listed_by_the_tool_with_selectors(page):
+    page.html = HIDDEN_HTML
+    asyncio.run(mcp_server._read())
+    out = asyncio.run(mcp_server.zerodom_hidden_fields())
+    assert out == (
+        "csrf_token: abc123  (selector: input[name='csrf_token'])\n"
+        "draft_id: 42  (selector: #draft_id)"
+    )
+
+
+def test_hidden_fields_empty_on_a_page_without_them(page):
+    asyncio.run(mcp_server._read())
+    out = asyncio.run(mcp_server.zerodom_hidden_fields())
+    assert out == "No hidden fields on the current page."
+
+
+LINK_HTML = """
+<html><body>
+  <a href="javascript:alert(1)" id="js">Run</a>
+  <a href="data:text/html,<x>" id="dh">Raw</a>
+  <a href="/normal" id="ok">Normal</a>
+</body></html>
+"""
+
+
+def test_sidebar_payload_carries_href_for_xss_surface_flags(page):
+    """F12's javascript:/data: href flags in the popup are driven by this page
+    data. If the field stops flowing into the sidebar, the severity badges go
+    quiet — this guards the pipeline, not just the parser."""
+    page.html = LINK_HTML
+    # Sidebar payload is gated on _session["attached"] and FakePage.goto
+    # resets html to PAGE — stub both to keep the content we just set.
+    async def keep_html(url, **kw):
+        page.calls.append(("goto", url))
+        page.url = url
+        page.typed = {}
+    page.goto = keep_html
+    mcp_server._session["attached"] = True
+    try:
+        asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
+        assert page.sidebar_eval is not None
+        by_id = {n["id"]: n for n in page.sidebar_eval}
+        assert by_id["01"]["href"] == "javascript:alert(1)"
+        assert by_id["02"]["href"].startswith("data:text/html")
+        assert by_id["03"]["href"] == "/normal"
+    finally:
+        mcp_server._session["attached"] = False
+
+
 def test_click_in_place_returns_a_diff_not_the_whole_page(page):
     """A menu opening should cost one line, not a re-listing of every node."""
     asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
@@ -218,7 +323,41 @@ def test_navigation_falls_back_to_the_full_graph(page):
 
 
 def test_a_click_that_changes_nothing_says_so(page):
+    """Shortly after navigation, a no-op click also gets the hydration hint
+    — see test_a_click_that_changes_nothing_is_plain_once_grace_expires for
+    the baseline (no hint) case."""
     asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
     asyncio.run(mcp_server.zerodom_click_node("03"))
     out = asyncio.run(mcp_server.zerodom_click_node("03"))
+    assert out.splitlines()[2] == "no structural change"
+    assert "handler may not have finished attaching" in out
+
+
+def test_a_click_that_changes_nothing_is_plain_once_grace_expires(page):
+    asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
+    mcp_server._session["navigated_at"] -= mcp_server._HYDRATION_GRACE_S + 1
+    asyncio.run(mcp_server.zerodom_click_node("03"))
+    out = asyncio.run(mcp_server.zerodom_click_node("03"))
     assert out.splitlines()[-1] == "no structural change"
+
+
+def test_hydration_hint_suppressed_when_the_click_fired_a_request(monkeypatch, page):
+    """A no-op-looking click that actually triggered a fetch/GraphQL mutation
+    still pending isn't a hydration miss — it's evidence the handler *did*
+    run, just hasn't resolved yet (real auth actions routinely take 800ms-2s)."""
+    asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
+    asyncio.run(mcp_server.zerodom_click_node("03"))  # opens the menu -- a real diff
+    tab_key = mcp_server._session["active"]
+    mcp_server._session["network_log"].setdefault(tab_key, [])
+    real_act = mcp_server._act
+
+    async def act_and_fire_a_request(node_id, verb, *args):
+        mcp_server._session["network_log"][tab_key].append(
+            {"type": "request", "method": "POST", "url": "https://example.com/api"}
+        )
+        return await real_act(node_id, verb, *args)
+
+    monkeypatch.setattr(mcp_server, "_act", act_and_fire_a_request)
+    out = asyncio.run(mcp_server.zerodom_click_node("03"))  # no further DOM diff
+    assert out.splitlines()[2] == "no structural change"
+    assert "handler may not have finished attaching" not in out

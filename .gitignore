@@ -12,8 +12,19 @@ docs/
 
 # session transcripts and scratch captures — local only
 *-this-session-is-being-continued-from-a-previous-c.txt
+session-to-continue.txt
 assets/screenshot.png
 # regenerable: `zerodom inspect --render --screenshot ... --html ... demo/demo-page.html`
 demo/report.html
 demo/annotated.png
 .playwright-mcp/
+
+# Local-only: Vercel link IDs, per-machine MCP config, internal roadmap, session captures
+.vercel/
+opencode.json
+.mcp.json
+ROADMAP.md
+leasteqqq.txt
+session*.md
+*session*.txt
+soc2_pitch.md

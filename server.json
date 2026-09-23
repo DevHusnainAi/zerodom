@@ -1,20 +1,20 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.DevHusnainAi/zerodom",
-  "description": "Token-optimized interaction graph for AI browser agents — 71% fewer tokens than ARIA snapshots.",
+  "description": "Deterministic DOM perception for AppSec red teams and AI agents: live Chrome, attack-surface scans.",
   "title": "ZeroDOM",
   "websiteUrl": "https://zerodom.vexralabs.com",
   "repository": {
     "url": "https://github.com/DevHusnainAi/zerodom",
     "source": "github"
   },
-  "version": "0.0.7",
+  "version": "0.0.8",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "zerodom",
-      "version": "0.0.7",
+      "version": "0.0.8",
       "transport": {
         "type": "stdio"
       },
@@ -25,7 +25,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@vexralabs/zerodom",
-      "version": "0.0.7",
+      "version": "0.0.8",
       "transport": {
         "type": "stdio"
       }

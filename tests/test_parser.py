@@ -52,11 +52,34 @@ def by_label(graph):
 
 def test_bloat_and_hidden_nodes_are_pruned(graph):
     dumped = graph.to_json()
-    for junk in ("csrf123", "stylesheet", "var x=1", "M0 0", "enable js"):
+    for junk in ("stylesheet", "var x=1", "M0 0", "enable js"):
         assert junk not in dumped
     labels = {n["label"] for n in graph["nodes"]}
     assert not labels & {"Buried", "Hidden link"}
     assert not any(n["selector"] in {"#ghost", "#buried"} for n in graph["nodes"])
+    # #token is a hidden input: its payload is captured separately (F10), kept
+    # out of compact text, and not allowed to become a clickable node.
+    assert not any(n["id"] == "node_??" and n["selector"] == "#token" for n in graph["nodes"])
+    assert "csrf123" not in graph.to_compact_text()
+
+
+def test_hidden_inputs_are_collected_not_pruned():
+    html = (
+        '<form><input type="hidden" name="csrf_token" value="abc123">'
+        '<input type="hidden" id="draft_id" value="42">'
+        '<input name="q"><button>Submit</button></form>'
+    )
+    graph = parse_html(html)
+    # Not nodes — they're not clickable — but their payload survives for forms.
+    assert [n["type"] for n in graph["nodes"]] == ["input", "button"]
+    assert graph["metadata"]["hidden_field_count"] == 2
+    assert graph["metadata"]["hidden_fields"] == [
+        {"name": "csrf_token", "value": "abc123", "selector": "input[name='csrf_token']"},
+        {"name": "", "value": "42", "selector": "#draft_id", "id": "draft_id"},
+    ]
+    # Values must never leak into the token-dense context an agent reads.
+    compact = graph.to_compact_text()
+    assert "abc123" not in compact and "42" not in compact
 
 
 def test_controls_misparsed_into_head_are_still_found():
@@ -511,6 +534,133 @@ def test_browser_marked_hidden_node_is_dropped():
     assert [n["label"] for n in graph["nodes"]] == ["Real"]
 
 
+def test_contenteditable_div_is_a_fillable_node():
+    """Rich-text editors (Notion, Slack, Discord, Jira) edit through a
+    <div contenteditable>, not an <input>/<textarea>."""
+    graph = parse_html('<div contenteditable="true" id="composer">Type here</div>')
+    node = graph["nodes"][0]
+    assert node["action"] == "fill"
+    assert node["role"] == "textbox"
+    assert node["content_editable"] is True
+
+
+def test_contenteditable_false_is_not_interactive():
+    """`contenteditable="false"` carves an inert island — a mention chip
+    inside an editable region — out, not a control in its own right."""
+    graph = parse_html('<div contenteditable="false">static</div>')
+    assert graph["nodes"] == []
+
+
+def test_repeated_card_items_group_ambiguous_duplicate_labels():
+    """Twenty identical 'Upvote' buttons are meaningless without knowing which
+    story each belongs to — a <tr> (Hacker News's actual row markup: vote
+    link + title link sharing one row) with 2+ controls gets a @card header
+    naming it, so the model can tell them apart."""
+    # Real Hacker News markup: the vote link carries no visible text (its
+    # arrow is a CSS-styled <div>, not text) — only the title link does.
+    html = (
+        "<table>"
+        "<tr><td><a href='/vote?id=1' title='upvote'><div class='votearrow'></div></a></td>"
+        "<td><a href='/story?id=1'>Ask Academic mobile app</a></td></tr>"
+        "<tr><td><a href='/vote?id=2' title='upvote'><div class='votearrow'></div></a></td>"
+        "<td><a href='/story?id=2'>Recommended image viewer for Arch</a></td></tr>"
+        "</table>"
+    )
+    graph = parse_html(html)
+    assert [n.get("card") for n in graph["nodes"]] == [
+        "Ask Academic mobile app", "Ask Academic mobile app",
+        "Recommended image viewer for Arch", "Recommended image viewer for Arch",
+    ]
+    text = graph.to_compact_text()
+    assert "@card 'Ask Academic mobile app':\n  [01] a 'upvote'" in text
+    assert "@card 'Recommended image viewer for Arch':\n  [03] a 'upvote'" in text
+
+
+def test_card_with_only_one_control_is_not_grouped():
+    """Nothing to disambiguate with a single control in the row — grouping it
+    anyway is a header with no payoff (caught live: it doubled the line count
+    on a 200-row single-link-per-row benchmark fixture for zero benefit)."""
+    graph = parse_html("<table><tr><td><a href='/x'>Story number 0</a></td></tr></table>")
+    assert graph["nodes"][0].get("card") is None
+    assert "@card" not in graph.to_compact_text()
+
+
+def test_untitled_card_falls_back_to_positional_numbering():
+    """No heading, no link text, no visible text anywhere in the row (icon-only
+    buttons labelled via aria-label) — nothing to name the card after."""
+    html = (
+        "<table><tr><button aria-label='A'></button><button aria-label='B'></button></tr>"
+        "<tr><button aria-label='C'></button><button aria-label='D'></button></tr></table>"
+    )
+    graph = parse_html(html)
+    assert [n["card"] for n in graph["nodes"]] == ["card 1", "card 1", "card 2", "card 2"]
+
+
+def test_shadcn_style_div_cards_group_via_structural_sibling_match():
+    """Component-library dashboards (Salesforce, Jira-style admin UIs,
+    Shadcn/Radix/Tailwind) build repeating cards as plain <div>s with no
+    semantic tag or role — three-plus siblings sharing tag+class is the
+    fallback signal."""
+    card = (
+        "<div class='rounded-lg border bg-card p-6'>"
+        "<h3>{title}</h3><button>Edit</button><button>Delete</button></div>"
+    )
+    html = "<div>" + "".join(card.format(title=f"Widget {i}") for i in range(3)) + "</div>"
+    graph = parse_html(html)
+    assert [n["card"] for n in graph["nodes"]] == [
+        "Widget 0", "Widget 0", "Widget 1", "Widget 1", "Widget 2", "Widget 2",
+    ]
+
+
+def test_two_similar_divs_are_not_enough_to_count_as_structural_siblings():
+    """Below the 3-sibling threshold, a div/class match alone isn't a strong
+    enough signal — real pages have all kinds of paired layout divs that
+    aren't repeated-item cards."""
+    card = "<div class='card'><button>A</button><button>B</button></div>"
+    html = card + card
+    graph = parse_html(html)
+    assert all(n.get("card") is None for n in graph["nodes"])
+
+
+def test_card_title_is_clamped_tighter_than_a_node_labels_max_length():
+    """A card title is repeated overhead (one line per card), so it gets a
+    tighter cap than a node label's own 80-char MAX_LABEL_LEN."""
+    long_heading = "This heading is way too long to repeat as a header on every single row " * 2
+    html = (
+        f"<table><tr><td><h3>{long_heading}</h3></td>"
+        "<td><button>A</button><button>B</button></td></tr>"
+        f"<tr><td><h3>{long_heading}</h3></td>"
+        "<td><button>C</button><button>D</button></td></tr></table>"
+    )
+    graph = parse_html(html)
+    title = graph["nodes"][0]["card"]
+    assert len(title) <= 40
+    assert title.endswith("…")
+
+
+def test_browser_marked_offscreen_node_is_dropped_only_when_requested():
+    """viewport_only=True drops what the serializer marked off-screen; off by
+    default so a page's node count never changes unless a caller opts in."""
+    html = "<button>Onscreen</button><button data-zerodom-offscreen>Below fold</button>"
+    assert [n["label"] for n in parse_html(html)["nodes"]] == ["Onscreen", "Below fold"]
+    graph = parse_html(html, viewport_only=True)
+    assert [n["label"] for n in graph["nodes"]] == ["Onscreen"]
+    assert graph["metadata"]["offscreen_skipped"] == 1
+    assert "1 more nodes offscreen" in graph.to_compact_text()
+
+
+def test_browser_marked_occluded_node_is_dropped_only_when_requested():
+    """check_occlusion=True drops what the serializer marked as covered by
+    something else (a modal backdrop, an open dropdown); off by default —
+    an elementFromPoint() hit-test per node is real, unmeasured cost."""
+    html = "<button>Reachable</button><button data-zerodom-occluded>Behind modal</button>"
+    assert [n["label"] for n in parse_html(html)["nodes"]] == ["Reachable", "Behind modal"]
+    graph = parse_html(html, check_occlusion=True)
+    assert [n["label"] for n in graph["nodes"]] == ["Reachable"]
+    assert graph["metadata"]["occluded_skipped"] == 1
+    assert "1 nodes hidden behind an overlay" in graph.to_compact_text()
+
+
 def test_empty_fragment_anchors_are_not_controls():
     """`<a href="#x" id="x"></a>` is a link destination, not a link.
 
@@ -590,3 +740,150 @@ def test_handler_label_refuses_plumbing():
 def test_real_text_still_beats_the_handler_name():
     graph = parse_html('<button onclick="doStuff()">Save changes</button>')
     assert graph["nodes"][0]["label"] == "Save changes"
+
+
+def test_tabindex_negative_one_is_not_interactive():
+    """tabindex="-1" means "focusable via .focus() only, not part of the
+    keyboard tab order" per the HTML spec — a standard focus-management
+    pattern (modals, route-change targets), never a real control. Confirmed
+    live on google.com/maps: <body tabindex="-1"> was misclassified as a
+    clickable node this way, with its label falling through to raw
+    <script> text (see the label_linker test below)."""
+    graph = parse_html('<div tabindex="-1">Not a real control</div>')
+    assert graph["nodes"] == []
+
+
+def test_tabindex_zero_and_positive_are_still_interactive():
+    for value in ("0", "1", "5"):
+        graph = parse_html(f'<div tabindex="{value}">Real control</div>')
+        assert len(graph["nodes"]) == 1, value
+        assert graph["nodes"][0]["label"] == "Real control"
+
+
+def test_tabindex_garbage_value_is_not_interactive():
+    graph = parse_html('<div tabindex="not-a-number">Junk</div>')
+    assert graph["nodes"] == []
+
+
+def test_tabindex_negative_one_wrapper_does_not_shadow_its_real_children():
+    """The exact google.com/maps shape: a tabindex="-1" wrapper around
+    several real buttons used to show up as its own node with all its
+    children's text mashed together, on top of the (correct) individual
+    button nodes."""
+    graph = parse_html(
+        '<div tabindex="-1">'
+        '<button>Restaurants</button><button>Hotels</button>'
+        "</div>"
+    )
+    labels = [n["label"] for n in graph["nodes"]]
+    assert labels == ["Restaurants", "Hotels"]
+
+
+def test_label_never_picks_up_a_nested_scripts_source_as_text():
+    """el.text_content() concatenates a <script> descendant's raw JS right
+    along with real visible text — confirmed live on google.com/maps, where
+    a real onclick button whose fallback label came from text_of() picked up
+    an inline <script>'s source instead of anything a person would read."""
+    graph = parse_html(
+        '<button onclick="f()">Real label'
+        '<script>tick(\'b0\');if (x > 1) { y() }</script>'
+        "</button>"
+    )
+    assert graph["nodes"][0]["label"] == "Real label"
+
+
+def test_label_never_picks_up_a_nested_styles_source_as_text():
+    graph = parse_html(
+        '<button onclick="f()">Real label<style>.x{color:red}</style></button>'
+    )
+    assert graph["nodes"][0]["label"] == "Real label"
+
+
+def test_label_strips_icon_font_private_use_area_glyphs():
+    """Icon fonts render a glyph at a Private Use Area codepoint
+    (U+E000-F8FF) glued directly onto the real word with no separator —
+    confirmed live on google.com/maps: text_content() on a "Restaurants"
+    button came back as the icon codepoint immediately followed by the word."""
+    icon = chr(0xE56C)
+    graph = parse_html(f'<button onclick="f()">{icon}Restaurants</button>')
+    assert graph["nodes"][0]["label"] == "Restaurants"
+
+
+def test_label_never_picks_up_an_ordinary_html_comment_as_text():
+    """HTML comments are invisible by definition — no browser ever renders
+    one — but lxml's Comment nodes carry their text on `.text` like a real
+    element, so a naive text_content()-style walk concatenates it right in.
+    Not framework-specific: a plain `<!-- normal comment -->` leaks the
+    exact same way."""
+    graph = parse_html('<button onclick="f()"><!-- normal comment -->Join</button>')
+    assert graph["nodes"][0]["label"] == "Join"
+
+
+def test_label_never_picks_up_a_lit_hydration_marker_comment_as_text():
+    """Confirmed live on reddit.com: Lit-based shreddit-* web components
+    leave declarative-shadow-DOM hydration marker comments
+    (<!--?lit$438023304$-->) in the DOM, and they concatenated straight
+    into real button labels ("?lit$438023304$Join")."""
+    graph = parse_html('<button onclick="f()"><!--?lit$438023304$-->Join</button>')
+    assert graph["nodes"][0]["label"] == "Join"
+
+
+def test_label_keeps_real_text_immediately_after_a_comment():
+    """The fix must skip only the comment's own text, not the real text
+    node that follows it in the same parent."""
+    graph = parse_html('<button onclick="f()">Real<!-- marker --> Label</button>')
+    assert graph["nodes"][0]["label"] == "Real Label"
+
+
+def test_duplicate_node_collapse():
+    """Three identical buttons should collapse to one entry with count when enabled."""
+    html = "<button>More</button><button>More</button><button>More</button>"
+    graph = parse_html(html, collapse_duplicates=True)
+    assert len(graph["nodes"]) == 1
+    node = graph["nodes"][0]
+    assert node["label"] == "More"
+    assert node.get("count") == 3
+    assert graph["metadata"].get("duplicates_collapsed") == 2
+    # compact text shows the × count
+    assert "×3" in graph.to_compact_text()
+
+
+
+def test_collapsing_duplicates_keeps_document_order():
+    """collapse_duplicates must not reorder the graph.
+
+    It used to rebuild the node list by walking the (type, role, label) groups,
+    which emitted every same-labelled node together. On a feed that fragmented
+    the @card runs in to_compact_text() -- the same card header repeated once
+    per run, costing *more* tokens than the collapse saved -- and handed the
+    model a node order that no longer matched the page.
+    """
+    html = "<html><body>" + "".join(
+        f'<li><a href="/p{i}">Post {i}</a><a href="/like/{i}">Like</a>'
+        f'<a href="/share/{i}">Share</a></li>'
+        for i in range(1, 4)
+    ) + "</body></html>"
+
+    graph = parse_html(html, "https://e.com", collapse_duplicates=True)
+    labels = [n["label"] for n in graph["nodes"]]
+    assert labels == [
+        "Post 1", "Like", "Share",
+        "Post 2", "Like", "Share",
+        "Post 3", "Like", "Share",
+    ]
+
+    text = graph.to_compact_text()
+    cards = [ln for ln in text.splitlines() if ln.startswith("@card")]
+    assert len(cards) == len(set(cards)) == 3, f"card runs fragmented:\n{text}"
+
+
+def test_collapsing_duplicates_still_collapses_undifferentiated_repeats():
+    """The ordering fix must not cost the feature its actual job."""
+    html = "<html><body>" + "".join(
+        '<div><button>More actions</button></div>' for _ in range(5)
+    ) + "</body></html>"
+
+    graph = parse_html(html, "https://e.com", collapse_duplicates=True)
+    assert len(graph["nodes"]) == 1
+    assert graph["nodes"][0]["count"] == 5
+    assert graph["metadata"]["duplicates_collapsed"] == 4

@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from zerodom import cli
 
@@ -79,3 +80,8 @@ def test_audit_is_a_first_class_verb():
 
     with pytest.raises(SystemExit):
         cli.main(["audit", "--help"])
+
+
+def test_extension_prints_a_loadable_directory(capsys):
+    assert cli.main(["extension"]) == 0
+    assert (Path(capsys.readouterr().out.strip()) / "manifest.json").is_file()

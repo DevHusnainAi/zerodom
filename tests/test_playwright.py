@@ -305,7 +305,27 @@ def test_offscreen_content_is_not_treated_as_hidden(browser):
         "<section class='lazy'><button>Below the fold</button></section>"
         "</body></html>"
     )
-    assert [n["label"] for n in ZeroDOM.from_page(p)["nodes"]] == ["Below the fold"]
+    # viewport_only=False: this is about hidden-vs-offscreen, and from_page now
+    # drops offscreen nodes by default, which would mask the thing under test.
+    nodes = ZeroDOM.from_page(p, viewport_only=False)["nodes"]
+    assert [n["label"] for n in nodes] == ["Below the fold"]
+    p.close()
+
+
+def test_display_contents_wrapper_is_not_treated_as_hidden(browser):
+    """`display: contents` makes the element generate no box of its own —
+    checkVisibility() correctly says "no" for it — but its children render
+    completely normally, real boxes and all. Confirmed live on reddit.com:
+    the entire post feed sits inside one such wrapper (an i18n passthrough
+    div), and marking it hidden deleted all 27 real, visible posts
+    underneath in one shot, since a hidden subtree is pruned outright."""
+    p = browser.new_page()
+    p.set_content(
+        "<html><body>"
+        "<div style='display:contents'><button>Real post title</button></div>"
+        "</body></html>"
+    )
+    assert [n["label"] for n in ZeroDOM.from_page(p)["nodes"]] == ["Real post title"]
     p.close()
 
 
