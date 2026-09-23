@@ -1,7 +1,7 @@
 {
   "name": "@vexralabs/zerodom",
-  "version": "0.0.7",
-  "description": "DOM-to-Interaction-Graph middleware for AI web agents (TypeScript port)",
+  "version": "0.0.8",
+  "description": "Terminal-native DOM perception for red teams and AI agents. Hook into live Chrome sessions, cut HTML tokens 98.9% (median) and map attack surfaces from the CLI (TypeScript port).",
   "mcpName": "io.github.DevHusnainAi/zerodom",
   "license": "Apache-2.0",
   "type": "module",
@@ -14,7 +14,7 @@
     }
   },
   "files": ["dist"],
-  "keywords": ["dom", "llm", "agent", "playwright", "browser-automation", "tokens", "mcp"],
+  "keywords": ["appsec", "red-team", "security", "attack-surface", "pentest", "bug-bounty", "dom", "mcp", "ai-agents", "llm", "chrome", "cdp", "playwright", "tokens"],
   "author": {
     "name": "Syed Husnain Khalid",
     "email": "contact@vexralabs.com"
@@ -24,7 +24,7 @@
     "url": "git+https://github.com/DevHusnainAi/zerodom.git",
     "directory": "js"
   },
-  "homepage": "https://github.com/DevHusnainAi/zerodom/tree/main/js#readme",
+  "homepage": "https://zerodom.vexralabs.com",
   "bugs": "https://github.com/DevHusnainAi/zerodom/issues",
   "scripts": {
     "build": "tsc",

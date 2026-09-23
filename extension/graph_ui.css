@@ -1,0 +1,131 @@
+/* Graph UI styles — shared verbatim by the extension popup's Graph tab and the
+   in-page sidebar injected by mcp_server.py. Canonical copy lives in
+   zerodom/; extension/graph_ui.css is a byte-identical mirror enforced by
+   tests/test_graph_ui_sync.py.
+
+   The popup loads this into its own document; the sidebar injects it into a
+   shadow root, which is why generic class names (.chip, .graph-node) are safe
+   here — on a foreign page the shadow boundary keeps the site's CSS out and
+   these rules in. Nothing here may depend on a selector defined outside this
+   file, or the sidebar renders unstyled. */
+
+.zd-graph-root {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  color: #e1e3e8;
+}
+.zd-graph-root *, .zd-graph-root *::before, .zd-graph-root *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+.summary{font-size:11px;color:#5b5f68;margin-bottom:10px}
+.filter-input{width:100%;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:6px 10px;color:#e1e3e8;font-size:12px;outline:none;margin-bottom:10px}
+.filter-input::placeholder{color:#5b5f68}
+.filter-input:focus{border-color:rgba(34,224,216,.3)}
+.scroll-list{overflow-y:auto;border-radius:6px}
+.empty-state{text-align:center;color:#5b5f68;font-size:12px;padding:24px 0}
+
+.ctx-menu{position:fixed;z-index:2147483647;background:#15171b;border:1px solid rgba(255,255,255,.1);border-radius:6px;padding:4px;min-width:170px;box-shadow:0 6px 24px rgba(0,0,0,.5);display:none}
+.ctx-item{display:block;width:100%;text-align:left;background:none;border:none;padding:6px 10px;color:#c7cad0;font-size:12px;cursor:pointer;border-radius:4px}
+.ctx-item:hover{background:rgba(255,255,255,.07)}
+.ctx-item .ctx-k{color:#5b5f68;font-size:10px;display:block}
+
+.action-bar{display:flex;gap:6px}
+.action-btn{background:rgba(255,255,255,.06);color:#c7cad0;border:none;border-radius:5px;padding:4px 10px;font-size:11px;font-weight:500;cursor:pointer;transition:background .15s}
+.action-btn:hover{background:rgba(255,255,255,.1)}
+
+.graph-container{margin-bottom:12px}
+.graph-container-header{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:rgba(255,255,255,.04);border-radius:6px;cursor:pointer;font-size:12px;color:#c7cad0;font-weight:500}
+.graph-container-header:hover{background:rgba(255,255,255,.06)}
+.graph-container-count{font-size:10px;color:#5b5f68}
+.graph-container-tokens{font-size:10px;color:#22e0d8}
+.graph-container-body{padding-left:12px;border-left:1px solid rgba(255,255,255,.06);margin-top:4px}
+
+.graph-node{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;transition:background .1s,border-color .1s;border-left:2px solid transparent}
+/* 4% white was invisible in the in-page sidebar — it reads on the popup's
+   small dark panel, but not as a 380px column over a live site. Bright
+   enough to track with the eye, neutral so it never reads as .selected
+   (which is cyan); the left accent is what actually catches the eye at a
+   glance, and it sits on the transparent border .graph-node already has.
+   The .sev-* rules below are equal specificity and come later, so a flagged
+   row keeps its severity colour on hover without needing its own rule. */
+.graph-node:hover{background:rgba(255,255,255,.13);border-left-color:rgba(255,255,255,.45)}
+.graph-node.sev-critical{border-left-color:#e05252}
+.graph-node.sev-high{border-left-color:#e0a83d}
+.graph-node.sev-medium{border-left-color:#ffc837}
+.graph-node-id{font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:#22e0d8;flex:none;min-width:24px}
+.graph-node-type{font-size:10px;color:#5b5f68;flex:none}
+.graph-node-label{font-size:12px;color:#9199a3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+
+.sev-badge{font-size:9px;padding:1px 5px;border-radius:3px;flex:none;font-weight:700}
+.sev-badge.sev-critical{background:rgba(224,82,82,.18);color:#e05252}
+.sev-badge.sev-high{background:rgba(224,168,61,.18);color:#e0a83d}
+.sev-badge.sev-medium{background:rgba(255,200,55,.18);color:#ffc837}
+
+.stability{width:6px;height:6px;border-radius:50%;flex:none}
+.stability-stable{background:#4fbf7f}
+.stability-moderate{background:#ffc837}
+.stability-fragile{background:#e05252}
+.stability-unknown{background:#5b5f68}
+
+.token-badge{font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:9px;color:#5b5f68;background:rgba(255,255,255,.04);padding:1px 4px;border-radius:3px;flex:none}
+
+.diff-added{background:rgba(79,191,127,.08)}
+.diff-removed{background:rgba(224,82,82,.08)}
+.diff-changed{background:rgba(255,200,55,.08)}
+
+.graph-node.selected{background:rgba(34,224,216,.12);box-shadow:inset 0 0 0 1px rgba(34,224,216,.35)}
+.graph-node.diff-added{box-shadow:inset 0 0 0 1px rgba(79,191,127,.35)}
+.graph-node.diff-changed{box-shadow:inset 0 0 0 1px rgba(224,168,61,.4)}
+.diff-badge{font-size:9px;padding:1px 4px;border-radius:3px;font-weight:700;flex:none}
+.diff-b-new{background:rgba(79,191,127,.2);color:#4fbf7f}
+.diff-b-chan{background:rgba(224,168,61,.2);color:#e0a83d}
+.snapshot-status{margin-left:8px;font-size:10px;color:#5b5f68}
+.picked-flash{animation:picked .9s ease-out}
+@keyframes picked{0%{background:rgba(34,224,216,.45)}100%{background:transparent}}
+/* F5: hover-revealed inline actions — hidden until the row is hovered so
+   rows stay compact for agents screenshotted/parsed, but a human hovering a
+   row gets the two verbs (copy / click) without knowing the gestures. */
+.graph-node .row-actions{display:inline-flex;gap:3px;margin-left:6px;opacity:0;transition:opacity .12s;vertical-align:middle}
+.graph-node:hover .row-actions{opacity:1}
+.row-act{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#d8e1ea;border-radius:4px;font-size:10px;line-height:1;padding:3px 5px;cursor:pointer}
+.row-act:hover{background:rgba(34,224,216,.18);border-color:rgba(34,224,216,.4);color:#22e0d8}
+
+.bulk-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;background:rgba(34,224,216,.07);border:1px solid rgba(34,224,216,.18);border-radius:6px;padding:5px 10px;margin-bottom:8px}
+.bulk-count{font-size:11px;color:#22e0d8;font-weight:600;flex:none}
+.bulk-actions{display:flex;gap:6px}
+
+.code-panel{margin-top:8px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px}
+.code-panel-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.code-node-label{font-size:11px;color:#9199a3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.code-tabs{display:flex;gap:4px}
+.code-tab{font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,.06);color:#7d828c;cursor:pointer;border:none}
+.code-tab.active{background:rgba(34,224,216,.12);color:#22e0d8}
+.code-block{position:relative;background:#0a0b0d;border-radius:6px;padding:8px 10px;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:#c7cad0;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow-y:auto}
+.code-copy-btn{position:absolute;top:6px;right:6px;background:rgba(255,255,255,.08);border:none;border-radius:4px;color:#c7cad0;font-size:10px;padding:2px 8px;cursor:pointer}
+.code-copy-btn:hover{background:rgba(255,255,255,.14)}
+
+.chip-bar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.chip{font-size:11px;padding:4px 10px;border-radius:20px;background:rgba(255,255,255,.06);color:#7d828c;cursor:pointer;border:none;transition:all .15s}
+.chip.active{background:rgba(34,224,216,.12);color:#22e0d8}
+.chip:hover{background:rgba(255,255,255,.1)}
+.chip-bar-sep{width:1px;height:20px;background:rgba(255,255,255,.1);flex:none}
+
+.view-toggle{display:flex;gap:4px;margin-bottom:10px}
+.view-btn{font-size:11px;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,.06);color:#7d828c;cursor:pointer;border:none}
+.view-btn.active{background:rgba(34,224,216,.12);color:#22e0d8}
+
+/* Tree view. Depth comes in as a custom property so nesting is one padding
+   rule rather than a class per level — the DOM can nest arbitrarily deep and
+   a fixed set of .depth-1..n classes would silently stop indenting. */
+.tree-branch{display:flex;align-items:center;gap:6px;padding:5px 6px;margin-top:2px;
+  padding-left:calc(var(--d) * 12px + 6px);font-size:11px;color:#7d828c;
+  border-left:1px solid rgba(255,255,255,.07)}
+.tree-branch:hover{color:#c7cad0}
+.tree-twig{flex:none;width:6px;height:6px;border-left:1px solid rgba(34,224,216,.45);
+  border-bottom:1px solid rgba(34,224,216,.45);border-bottom-left-radius:2px;margin-bottom:3px}
+.tree-label{font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
+  color:#22e0d8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.tree-leaf{padding-left:calc(var(--d) * 12px);border-left:1px solid rgba(255,255,255,.07)}

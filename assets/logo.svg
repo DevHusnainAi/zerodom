@@ -1,23 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
-     role="img" aria-label="zerodom">
-  <title>zerodom</title>
-  <!-- Own background chip, not transparent: the accent cyan measures ~1.65:1 against
-       a white README, effectively invisible without a dark backing of its own. -->
-  <rect width="64" height="64" rx="14" fill="#080b16"/>
-  <!-- The DOM: many undifferentiated nodes, thinning out. -->
-  <g fill="#3e5098">
-    <circle cx="14" cy="14" r="2.6"/><circle cx="25" cy="14" r="2.6" opacity=".8"/>
-    <circle cx="36" cy="14" r="2.6" opacity=".6"/>
-    <circle cx="14" cy="25" r="2.6" opacity=".8"/><circle cx="25" cy="25" r="2.6" opacity=".6"/>
-    <circle cx="14" cy="36" r="2.6" opacity=".6"/>
-  </g>
-  <!-- The interaction graph: what is left once the rest is pruned. -->
-  <g fill="none" stroke="#22e0d8" stroke-width="3" stroke-linecap="round">
-    <path d="M31 43 L47 33 M31 43 L47 52"/>
-  </g>
-  <g fill="#22e0d8">
-    <circle cx="31" cy="43" r="5"/>
-    <circle cx="48" cy="32" r="4"/>
-    <circle cx="48" cy="53" r="4"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- The site logo (components/logo.tsx) on a dark tile, so it reads on light and dark tabs. -->
+  <rect width="32" height="32" rx="7" fill="#09090b"/>
+  <ellipse cx="16" cy="16" rx="7.2" ry="8.4" fill="none" stroke="#fafafa" stroke-width="2.6"/>
+  <path d="M10 22 L22 10" stroke="#fafafa" stroke-width="2.6" stroke-linecap="round"/>
 </svg>

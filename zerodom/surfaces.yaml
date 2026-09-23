@@ -1,0 +1,43 @@
+# Default ZeroDOM surface rules. Deterministic, client-side only — flags what
+# the parsed interaction graph reveals, never sends a request. Point --rules at
+# your own file to override. Match keys: type/role/input_type (exact),
+# *_regex (label/href/selector/value/placeholder), has/missing (attr lists),
+# and page.present_hidden_regex / page.missing_hidden_regex (CSRF-token gates).
+rules:
+  - id: sensitive-field-name
+    severity: high
+    description: Input labelled like a secret — exposed to the client where it can be read or tampered with.
+    match:
+      type: input
+      label_regex: "api[_-]?key|secret|access[_-]?token|private[_-]?key|client[_-]?secret|\\bpassword\\b|\\bpwd\\b"
+
+  - id: prefilled-credential
+    severity: high
+    description: A field arrives with a non-empty value that looks like a credential — a leaked default or session secret in the DOM.
+    match:
+      type: input
+      label_regex: "token|secret|key|password"
+      has: [value]
+
+  - id: exposed-admin-link
+    severity: medium
+    description: Link into an admin / internal / debug surface reachable from this page.
+    match:
+      href_regex: "/(admin|internal|_debug|debug|actuator|swagger|graphql|phpmyadmin|\\.git)(/|$|\\?)"
+
+  - id: form-without-csrf
+    severity: high
+    description: Fillable field present but no CSRF/anti-forgery token among the page's hidden fields.
+    match:
+      role: textbox
+    page:
+      missing_hidden_regex: "csrf|xsrf|authenticity_token|__requestverificationtoken|anti[-_]?forgery"
+
+  - id: password-field-outside-form-token
+    severity: medium
+    description: Password input on a page carrying no anti-forgery hidden field — credential POST likely unprotected.
+    match:
+      type: input
+      input_type: password
+    page:
+      missing_hidden_regex: "csrf|xsrf|authenticity_token|__requestverificationtoken"

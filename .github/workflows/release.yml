@@ -31,3 +31,24 @@ jobs:
           [ "$want" = "$got" ] || { echo "tag $want != pyproject $got"; exit 1; }
       - run: uv build
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # The unpacked Chrome extension as a zip on the GitHub release, with a checksum,
+  # for anyone who wants it without pip. Same tag, so the zip always matches the
+  # PyPI version's relay protocol.
+  extension-zip:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload the asset
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zip and checksum the extension
+        run: |
+          zip -r "zerodom-extension-${GITHUB_REF_NAME}.zip" extension
+          sha256sum "zerodom-extension-${GITHUB_REF_NAME}.zip" > "zerodom-extension-${GITHUB_REF_NAME}.zip.sha256"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(zerodom-extension-"${GITHUB_REF_NAME}".zip*)
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber \
+            || gh release create "$GITHUB_REF_NAME" "${files[@]}" --generate-notes

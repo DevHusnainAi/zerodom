@@ -1,8 +1,9 @@
 # @vexralabs/zerodom
 
-**The visual action layer for AI web agents — TypeScript edition.**
+**Deterministic AppSec & AI perception layer — TypeScript edition.**
 
-See the page. Know exactly what to click.
+Terminal-native DOM perception for red teams and AI agents: cut HTML tokens
+98.9% (median) and keep selectors out of the context window.
 
 [![npm version](https://img.shields.io/npm/v/%40vexralabs%2Fzerodom)](https://www.npmjs.com/package/@vexralabs/zerodom)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](../LICENSE)

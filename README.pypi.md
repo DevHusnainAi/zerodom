@@ -2,10 +2,33 @@
 
 <!-- mcp-name: io.github.DevHusnainAi/zerodom -->
 
-### Your agent doesn't need the DOM. It needs to know what it can click.
+### Deterministic AppSec & AI perception layer.
 
-ZeroDOM turns a bloated HTML page into a token-optimized **interaction graph** —
-the buttons, inputs and links an agent can actually act on, and nothing else.
+**Terminal-native DOM perception for red teams and AI agents.** Hook into live
+Chrome sessions, cut HTML tokens 98.9% (median) and map attack surfaces from the CLI.
+No LLM in the parse.
+
+ZeroDOM reduces a page to what can be acted on (the buttons, inputs and links),
+each with an id that resolves to exactly one element:
+
+- **Relay mode** attaches to the Chrome you're already logged into, over
+  `chrome.debugger`. Cookies, MFA and SSO are already done.
+- **Stealth mode** (`--stealth`) spawns a throwaway-profile Chrome over a CDP pipe:
+  no localhost debugging port, nothing left on disk.
+- **`zerodom scan`** runs a deterministic YAML ruleset over the graph (forms without
+  CSRF tokens, exposed admin/debug links, sensitive inputs) and emits JSONL findings.
+- **Unix pipes.** `-` reads URLs from stdin and `--pipe` streams nodes as JSONL, so it
+  slots into `httpx` / `jq` pipelines and CI.
+
+```bash
+cat targets.txt | httpx -silent | zerodom scan -
+cat targets.txt | zerodom scan - --rules my-rules.yaml --fail-on-finding   # CI gate
+cat targets.txt | zerodom inspect --pipe --stealth -
+```
+
+Only scan targets you are authorized to test.
+
+### Why addressing matters
 
 An agent driving a browser gets one of two action spaces today, and both are bad.
 **Pixels** are slow, expensive, and produce coordinates that go stale the moment
@@ -47,7 +70,7 @@ smaller than raw HTML, parsed in a median 55ms with no model in the loop.
 
 ```bash
 pip install zerodom
-# or: uvx zerodom — the CLI runs straight off PyPI
+# or: uvx zerodom - the CLI runs straight off PyPI
 ```
 
 One extra step only if you use the browser-backed features (`from_page`,
@@ -129,7 +152,7 @@ for Cursor.
 
 | tool | what it does |
 |---|---|
-| `zerodom_parse_url(url, verbose=False)` | navigate, return the compact graph |
+| `zerodom_parse_url(url, verbose=False, frames=False)` | navigate, return the compact graph; `frames=True` also reads same- and cross-origin iframes (embedded auth portals, payment fields) |
 | `zerodom_read_page(verbose=False)` | re-read the live DOM **without navigating** |
 | `zerodom_find(query)` | return only the nodes matching a phrase |
 | `zerodom_click_node(node_id)` | click, then return **what changed** |
@@ -148,7 +171,20 @@ zerodom https://example.com --render          # headless Chromium, for JS-heavy 
 zerodom https://example.com --json            # full JSON graph, selectors included
 zerodom https://example.com --frames          # also read inside iframes
 zerodom https://example.com --html out.html   # graph beside an annotated screenshot
+zerodom https://example.com --stealth         # throwaway Chrome over a CDP pipe, no port
+cat targets.txt | zerodom inspect --pipe -    # JSONL, one node per line
+cat targets.txt | zerodom scan -              # attack-surface findings as JSONL
 ```
+
+**Relay mode (your logged-in Chrome)** needs the extension, which ships inside the package:
+
+```bash
+zerodom extension     # prints the bundled extension's directory
+# chrome://extensions -> Developer mode -> Load unpacked -> select that directory
+zerodom relay
+```
+
+Each release also attaches `zerodom-extension-<version>.zip` with a `.sha256`.
 
 ## `zerodom audit`
 

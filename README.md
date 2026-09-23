@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/banner.png" alt="ZeroDOM — the visual action layer for AI web agents. See the page. Know exactly what to click." width="100%">
+<img src="assets/banner.png" alt="ZeroDOM: your headless browser forgets who's logged in. ZeroDOM doesn't. Deterministic DOM perception for AppSec and AI agents." width="100%">
 
 <br/>
 
@@ -18,11 +18,21 @@
 
 ---
 
-> **An agent should see `click [45]`, and ZeroDOM resolves [45] to the exact DOM element** —
-> no hallucinated CSS locators, no drifted pixel coordinates, no ambiguous `(role, name)` pairs
-> that match the wrong element.
+> **Deterministic AppSec & AI perception layer.** Terminal-native DOM perception for red
+> teams and AI agents. Hook into live Chrome sessions, cut HTML tokens 98.9% (median) and
+> map attack surfaces from the CLI. No LLM in the parse.
 
-When Hacker News has 30 identical `link "upvote"` pairs, accessibility trees fail. ZeroDOM
+- **Relay mode** attaches to the Chrome you're already logged into, over `chrome.debugger`.
+  Cookies, MFA and SSO are already done.
+- **Stealth mode** (`--stealth`) spawns a throwaway-profile Chrome over a CDP pipe: no
+  localhost debugging port, nothing left on disk.
+- **[`zerodom scan`](#attack-surface-mapping)** runs a deterministic YAML ruleset over the
+  graph and emits JSONL findings.
+- **Unix pipes.** `-` reads URLs from stdin and `--pipe` streams nodes as JSONL.
+
+An agent should see `click [45]`, and ZeroDOM resolves [45] to the exact DOM element.
+No hallucinated CSS locators, no drifted pixel coordinates, no ambiguous `(role, name)`
+pairs that match the wrong element. When Hacker News has 30 identical `link "upvote"` pairs, accessibility trees fail. ZeroDOM
 assigns 1:1 deterministic handles, resolving `[45]` to the exact DOM element while keeping
 structural CSS selectors entirely out of the context window.
 
@@ -38,7 +48,7 @@ structural CSS selectors entirely out of the context window.
   &nbsp;·&nbsp;
   <b><a href="https://zerodom.vexralabs.com/playground">Playground</a></b>
   &nbsp;·&nbsp;
-  <b><a href="https://zerodom.vexralabs.com/compare">vs. ARIA snapshots</a></b>
+  <b><a href="https://zerodom.vexralabs.com/compare">Compare</a></b>
   &nbsp;·&nbsp;
   <b><a href="#benchmarks">Benchmarks</a></b>
 </p>
@@ -53,7 +63,7 @@ structural CSS selectors entirely out of the context window.
 
 ```bash
 pip install zerodom
-# or: uvx zerodom — the CLI runs straight off PyPI
+# or: uvx zerodom - the CLI runs straight off PyPI
 ```
 
 **TypeScript / Node**
@@ -121,7 +131,7 @@ it can't use — no `<style>`, no hydration payloads, no nested-table syntax.
 
 ---
 
-## The problem is addressing, not size
+## The problem is addressing, not token count
 
 An agent driving a browser gets one of two action spaces today, and both are bad.
 
@@ -179,11 +189,42 @@ playwright install chromium
 
 | tool | what it does |
 |---|---|
-| `zerodom_parse_url(url, verbose=False)` | navigate, return the compact graph |
+| `zerodom_parse_url(url, verbose=False, frames=False, viewport_only=False, check_occlusion=False)` | navigate, return the compact graph; `frames=True` also reads same- and cross-origin iframes (embedded auth portals, payment fields) |
 | `zerodom_read_page(verbose=False)` | re-read the live DOM **without navigating** |
 | `zerodom_find(query)` | return only the nodes matching a phrase |
-| `zerodom_click_node(node_id)` | click, then return **what changed** |
-| `zerodom_fill_node(node_id, text)` | type, then return what changed |
+| `zerodom_click_node(node_id)` | click, then return **what changed** — flags a same-page no-op shortly after navigation as a possible SSR-hydration miss (the handler may not be attached yet) |
+| `zerodom_fill_node(node_id, text)` | type, then return what changed — types via real keystrokes into `contenteditable` editors (Notion, Slack, Discord, Jira) |
+| `zerodom_hover(node_id)` | hover, revealing hover-triggered menus/tooltips |
+| `zerodom_press_key(node_id, key)` | press a key on a focused node (Enter, Escape, Tab, ...) |
+| `zerodom_upload_file(node_id, path)` | set a file input's value to a local path |
+| `zerodom_drag(source_node_id, target_node_id)` | drag one node onto another |
+| `zerodom_scroll(direction, amount=800)` | scroll, return what's newly visible |
+| `zerodom_new_tab(url=None)` | open a tab and make it active |
+| `zerodom_list_tabs()` | list every open tab, marking the active one |
+| `zerodom_switch_tab(tab_id)` | make another open tab active |
+| `zerodom_close_tab(tab_id=None)` | close a tab (the active one by default) |
+| `zerodom_screenshot(path=None)` | full-page screenshot of the active tab, saved to disk |
+| `zerodom_set_viewport(width, height)` | resize the viewport for responsive-design testing |
+| `zerodom_get_styles(node_id)` | curated computed styles + box model for a node — design/CSS review |
+| `zerodom_network_log(clear=False)` | recent requests/responses the active tab has made |
+| `zerodom_status()` | diagnose the connection: relay/extension reachability, active tab, recent relay log |
+| `zerodom_eval_js(code)` ⚠️ | run arbitrary JS in the real page, return the result |
+| `zerodom_get_cookies()` ⚠️ | list cookies for the active tab, **including `httpOnly` ones** |
+
+**In an attached (real-browser) session, zerodom locks the tab while it's driving.** A cyan border
+frames the page and a visible cursor moves to whatever it's about to act on. Real clicks/scrolling
+from you are blocked at the browser level (`Input.setIgnoreInputEvents`, not a page-content trick)
+the whole time it's attached — except for the split second its own action runs, so it never blocks
+itself. A small "zerodom is driving this tab" banner marks why. See `docs/DECISIONS.md` D15.
+
+⚠️ **`zerodom_eval_js` and `zerodom_get_cookies` are real power, not a toy.** Both go through
+the same `chrome.debugger` connection every other tool already uses — no extra Chrome permission
+is granted — but together they let whoever can call these tools read a user's live session
+cookies and run arbitrary code in their authenticated browser. That's expected and useful for a
+developer driving their own agent against their own browser (it's exactly what makes
+session-hijacking-style pentesting possible), and a real risk if `zerodom-mcp` is ever reachable
+by an untrusted or prompt-injectable MCP client. Nothing here gates that — it's a documented
+boundary, not an enforced one. See `docs/DECISIONS.md` D14.
 
 **An agent loop shouldn't re-read the page it already has.** Two tools exist so it
 doesn't have to. `zerodom_find` answers "where's the dispatch button?" with one
@@ -201,6 +242,34 @@ The saving compounds: it is the difference between an agent spending the full
 graph on every one of twenty actions and spending it once. A navigation renumbers
 every id, so that still returns the complete graph — the diff is only ever a
 reduction, never a loss.
+
+**Long feeds are the other big token sink.** A social feed or a video site's
+homepage lazy-renders far more than fits on screen — most of the graph is
+scrolled off-screen and irrelevant to the next action. `zerodom_parse_url(url,
+viewport_only=True)` drops those nodes; the graph's first line reports how many
+were skipped so you know to scroll and re-read rather than assume the page is
+just small. Off by default (it costs a `getBoundingClientRect()` per element),
+and it sticks for the rest of the session — every `zerodom_click_node`/
+`zerodom_fill_node` re-read after it honors the same filter, same lifetime as
+`frames`.
+
+**Twenty identical `button 'Upvote'` lines are ambiguous, not just long.** On
+a feed or a Hacker-News-style table, every row repeats the same controls with
+the same labels — nothing in the flat list says which one belongs to which
+story. Nodes sharing a repeated-list-item ancestor (`<article>`/`<li>`/`<tr>`,
+or the matching ARIA role) are grouped under one `@card "title":` header
+whenever that item holds 2+ controls, using the item's own heading or link
+text as the name. A card with only one control isn't grouped — nothing to
+disambiguate there, and it isn't a guessed div/class pattern either: a bare
+`<div>`-soup list won't get grouped, since a wrong guess is worse than none.
+
+**Occluded nodes cause "element intercepts pointer events."** A modal
+backdrop, an open dropdown, or a cookie banner leaves the covered controls in
+the DOM and in the graph — `zerodom_parse_url(url, check_occlusion=True)`
+hit-tests each node's center point and drops the ones something else is
+covering, catching this at parse time instead of at click time. Off by
+default: the elementFromPoint() cost per node is real and unmeasured against
+this project's own `<50ms`/5k-node budget, so it isn't imposed by default.
 
 ---
 
@@ -323,7 +392,37 @@ zerodom https://example.com --find "sign in"  # only the nodes that match
 zerodom https://example.com --frames         # also read inside iframes
 zerodom https://example.com --json            # the full graph, selectors included
 zerodom https://example.com --render          # headless Chromium, for JS pages
+zerodom https://example.com --stealth         # throwaway Chrome over a CDP pipe, no port
+cat targets.txt | zerodom inspect --pipe -    # JSONL, one node per line
 ```
+
+**Relay mode (your logged-in Chrome)** needs the extension, which ships inside the package:
+
+```bash
+zerodom extension     # prints the bundled extension's directory
+# chrome://extensions -> Developer mode -> Load unpacked -> select that directory
+zerodom relay
+```
+
+Each release also attaches `zerodom-extension-<version>.zip` with a `.sha256`.
+
+---
+
+## Attack surface mapping
+
+`zerodom scan` evaluates every parsed node against a deterministic YAML ruleset
+(the bundled `surfaces.yaml`, or your own via `--rules`) and emits one JSONL finding
+per line. The bundled rules flag forms with no anti-forgery token among the page's
+hidden fields, password inputs on pages with no CSRF field, links into
+admin/internal/debug surfaces, and sensitive-looking inputs. Rules are fixed match
+keys, not an expression language, so nothing in a rules file gets evaluated.
+
+```bash
+cat targets.txt | httpx -silent | zerodom scan -
+cat targets.txt | zerodom scan - --rules my-rules.yaml --fail-on-finding   # CI gate
+```
+
+Only scan targets you are authorized to test.
 
 ---
 
