@@ -50,5 +50,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           files=(zerodom-extension-"${GITHUB_REF_NAME}".zip*)
+          # Notes are this version's CHANGELOG.md section: --generate-notes only
+          # lists merged PRs, which is one line for a squash-merged release.
+          awk -v v="${GITHUB_REF_NAME#v}" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
           gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber \
-            || gh release create "$GITHUB_REF_NAME" "${files[@]}" --generate-notes
+            || gh release create "$GITHUB_REF_NAME" "${files[@]}" --notes-file notes.md
