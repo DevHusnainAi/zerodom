@@ -98,7 +98,7 @@
 
   function severityOf(node) {
     const label = (node.label || "") + " " + (node.placeholder || "");
-    const href = (node.href || "").toLowerCase();
+    const href = (node.href || "").replace(/^[\s\x00-\x1f]+/, "").toLowerCase();
     let level = null;
     let tag = null;
     // F12: XSS / injection surface flags (partial — innerHTML/eval sinks need
@@ -107,7 +107,9 @@
     // they're the action the user *intended* to protect, while these are the
     // actions an attacker might want to steal or abuse.
     if (href.startsWith("javascript:")) { level = "critical"; tag = "js: href"; }
+    else if (href.startsWith("vbscript:")) { level = "critical"; tag = "vbscript: href"; }
     else if (href.startsWith("data:text/html")) { level = "high"; tag = "data:html"; }
+    else if (href.startsWith("data:")) { level = "high"; tag = "data: href"; }
     else if (node.content_editable) { level = "high"; tag = "editable"; }
     else if (node.input_type === "password") { level = "critical"; tag = "password"; }
     else if (node.input_type === "file") { level = "high"; tag = "file"; }
@@ -125,7 +127,7 @@
   }
 
   function codeSnippets(node) {
-    const sel = (node.selector || "").replace(/'/g, "\\'");
+    const sel = (node.selector || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     return [
       { name: "ZeroDOM", code: "[" + node.id + "]" },
       { name: "Playwright", code: "await page.locator('" + sel + "').click();" },
@@ -135,7 +137,7 @@
   }
 
   function copyFormats(node) {
-    const sel = (node.selector || "").replace(/'/g, "\\'");
+    const sel = (node.selector || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     return [
       { label: "[" + node.id + "]", hint: "ZeroDOM id", text: "[" + node.id + "]" },
       { label: "page.locator('" + sel + "')", hint: "Playwright", text: "page.locator('" + sel + "')" },

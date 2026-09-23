@@ -305,7 +305,10 @@ def test_offscreen_content_is_not_treated_as_hidden(browser):
         "<section class='lazy'><button>Below the fold</button></section>"
         "</body></html>"
     )
-    assert [n["label"] for n in ZeroDOM.from_page(p)["nodes"]] == ["Below the fold"]
+    # viewport_only=False: this is about hidden-vs-offscreen, and from_page now
+    # drops offscreen nodes by default, which would mask the thing under test.
+    nodes = ZeroDOM.from_page(p, viewport_only=False)["nodes"]
+    assert [n["label"] for n in nodes] == ["Below the fold"]
     p.close()
 
 
