@@ -64,7 +64,7 @@ def test_cdp_client_waits_for_extension_before_getting_a_response():
             async with websockets.connect(server.cdp_endpoint()) as cdp:
                 await cdp.send(json.dumps({"id": 1, "method": "Browser.getVersion", "params": {}}))
 
-                with pytest.raises(TimeoutError):
+                with pytest.raises(asyncio.TimeoutError):  # != builtin TimeoutError on 3.10
                     await asyncio.wait_for(cdp.recv(), timeout=0.2)
 
                 async with websockets.connect(server.extension_endpoint()) as ext:
