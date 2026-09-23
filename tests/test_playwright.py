@@ -457,3 +457,51 @@ def test_async_page_reads_nested_frames_concurrently():
     assert counts == [1, 1, 1]
     # "Deep" lives two frames down — the bug this test exists for.
     assert depths == [0, 1, 2]
+
+
+def test_crawl_maps_routes_forms_and_api_calls():
+    """The recon crawler: BFS-walk a rendered app, capturing forms, the XHR/fetch
+    the JS fires, and staying in scope + skipping destructive links (read-only)."""
+    import http.server, threading, json as _json
+    from zerodom.cli import crawl_site
+
+    PAGES = {
+        "/": b'<a href="/dash">D</a> <a href="/logout">out</a> <a href="https://evil.test/x">ext</a>',
+        "/dash": b'<a href="/inv/1">I</a><script>fetch("/api/v1/me")</script>',
+        "/inv/1": b'<form action="/api/v1/pay" method="post"><input name="amt"><input name="csrf" type="hidden"></form>',
+    }
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"<html><body>" + PAGES.get(self.path, b"nope") + b"</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    # crawl_site is sync Playwright; run it in a worker thread so a loop another
+    # test left on the main thread can't trip "Sync API inside the asyncio loop"
+    # (in production `zerodom crawl` runs in its own fresh process).
+    box = {}
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        t = threading.Thread(target=lambda: box.setdefault("recs", list(crawl_site(base + "/", max_pages=10))))
+        t.start()
+        t.join(60)
+    finally:
+        srv.shutdown()
+    recs = box["recs"]
+
+    urls = [r["url"] for r in recs]
+    assert not any("logout" in u for u in urls)          # destructive skipped
+    assert not any("evil.test" in u for u in urls)        # out of scope skipped
+    api = {a.split("/api")[-1] for r in recs for a in r.get("api_calls", [])}
+    assert "/v1/me" in api                                # captured a fired XHR
+    forms = [f for r in recs for f in r.get("forms", [])]
+    assert any(f["method"] == "POST" and {"amt", "csrf"} <= {i["name"] for i in f["inputs"]} for f in forms)
+    assert any(r.get("hidden_fields") == ["csrf"] for r in recs)

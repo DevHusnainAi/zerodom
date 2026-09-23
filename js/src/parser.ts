@@ -150,6 +150,8 @@ export interface GraphMetadata {
   total_interactive_nodes: number;
   parsing_latency_ms: number;
   warning?: string;
+  /** Which bot-wall/CAPTCHA the page carries, by fingerprint — see detectChallenge. */
+  blocked?: { kind: string; marker: string };
   frames_read?: number;
   frames_skipped?: number;
   offscreen_skipped?: number;
@@ -158,6 +160,34 @@ export interface GraphMetadata {
   /** `<input type="hidden">` payloads, collected not pruned — see parser.py. */
   hidden_fields?: Array<Record<string, string>>;
   hidden_field_count?: number;
+}
+
+// Challenge/CAPTCHA fingerprints. In relay mode a hunter usually sails past these
+// because the human already cleared the session; when one *is* in the way, the
+// agent should hand off (or reuse a cleared session) instead of looping on it.
+// Mirror of parser.py's _CHALLENGE_MARKERS / _detect_challenge — keep in sync.
+const CHALLENGE_MARKERS: Array<[string, string[]]> = [
+  ["cloudflare", ["challenge-platform", "cf-chl", "__cf_chl", "cf-mitigated",
+                  "/cdn-cgi/challenge", "checking if the site connection is secure"]],
+  ["turnstile", ["cf-turnstile", "challenges.cloudflare.com/turnstile", "turnstile/v0"]],
+  ["recaptcha", ["g-recaptcha", "grecaptcha", "recaptcha/api", "www.google.com/recaptcha"]],
+  ["hcaptcha", ["h-captcha", "hcaptcha.com"]],
+];
+
+/**
+ * Which bot-wall/CAPTCHA a page carries, by fingerprint, or null. Deterministic
+ * substring match over the raw HTML — a marker is a marker wherever it sits.
+ * Cloudflare's full-page interstitial is checked first because it *blocks* the
+ * page, where a Turnstile/reCAPTCHA/hCaptcha widget sits on an otherwise usable form.
+ */
+export function detectChallenge(html: string): { kind: string; marker: string } | null {
+  const low = html.toLowerCase();
+  for (const [kind, markers] of CHALLENGE_MARKERS) {
+    for (const marker of markers) {
+      if (low.includes(marker)) return { kind, marker };
+    }
+  }
+  return null;
 }
 
 /** One node as the compact DSL renders it. Shared so partial views — a search
@@ -783,6 +813,8 @@ export class ZeroDOMParser {
     if (dupSkipped) metadata.duplicates_collapsed = dupSkipped;
     const warning = this.emptyPageWarning(this.rawHtml.length);
     if (warning) metadata.warning = warning;
+    const blocked = detectChallenge(this.rawHtml);
+    if (blocked) metadata.blocked = blocked;
     return new InteractionGraph(this.nodes, metadata);
   }
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -40,7 +41,13 @@ _session: dict[str, Any] = {
     "aria_cache_url": None,  # sidebar's Playwright-comparison card, cached per URL
     "aria_cache_tokens": None,  # -- see _read(), aria_snapshot() is too expensive to run on every read
     "navigated_at": 0.0,  # time.monotonic() of the last _goto() -- see _recently_navigated()
+    "identities": {},  # name -> APIRequestContext, for cross-identity replay/IDOR
+    "scope": None,  # None = unrestricted; else {allow, deny, max_rps, locked} — see _scope_ok
 }
+
+# Destructive/irreversible actions an unattended hunt must never take. Matched
+# against a URL and against a node's href+label, case-insensitively.
+_SCOPE_DEFAULT_DENY = r"logout|sign-?out|/delete|/remove|/destroy|revoke|deactivate|/api/.*(delete|remove)|\bdelete\b|\bremove\b"
 
 # How long after a fresh navigation a click that produced zero diff is worth
 # flagging as a possible SSR-hydration miss (Next.js/Remix/Nuxt: the raw HTML
@@ -158,6 +165,82 @@ async def _page() -> Any:
     _session.update(pw=pw, browser=browser, attached=attached, active=tab_key)
     _wire_network_log(page, tab_key)
     return page
+
+
+# chrome.debugger can't attach these, so an agent can't drive them — refuse with a
+# clear message rather than let the attach fail deep in the relay and stick the
+# session on a dead tab.
+_UNDRIVABLE = ("chrome://", "chrome-extension://", "chrome-untrusted://",
+               "devtools://", "edge://", "view-source:")
+
+
+def _reject_undrivable(url: str) -> None:
+    u = (url or "").strip().lower()
+    if u.startswith(_UNDRIVABLE) or "chromewebstore.google.com" in u:
+        raise ValueError(
+            f"zerodom can't drive {url!r} — chrome://, extension, devtools and Web Store "
+            "pages block the debugger. Open a normal http(s) page (or a local file)."
+        )
+
+
+def _load_scope_from_env() -> None:
+    """An operator can lock scope before the agent starts by setting ZERODOM_SCOPE
+    to a YAML/JSON file (allow: [host globs], deny: regex, max_rps: N). A
+    file-loaded scope is `locked` — the agent can't widen it via zerodom_set_scope."""
+    path = os.environ.get("ZERODOM_SCOPE")
+    if not path or _session.get("scope"):
+        return
+    import yaml
+    from pathlib import Path as _P
+    data = yaml.safe_load(_P(path).read_text(encoding="utf-8")) or {}
+    _session["scope"] = {
+        "allow": [h.lower() for h in (data.get("allow") or data.get("hosts") or [])],
+        "deny": data.get("deny") or _SCOPE_DEFAULT_DENY,
+        "max_rps": data.get("max_rps"),
+        "locked": True,
+        "_last": 0.0,
+    }
+
+
+async def _scope_ok(url: str) -> None:
+    """Enforce the engagement scope on a URL: host allowlist, destructive denylist,
+    and a rate throttle. No scope set → unrestricted (backward compatible)."""
+    _load_scope_from_env()
+    sc = _session.get("scope")
+    if not sc:
+        return
+    import fnmatch
+    from urllib.parse import urlparse
+    if sc.get("deny") and re.search(sc["deny"], url, re.I):
+        raise PermissionError(f"scope: refusing {url!r} — matches the destructive deny rule.")
+    host = urlparse(url).netloc.lower()
+    allow = sc.get("allow") or []
+    if host and allow and not any(fnmatch.fnmatch(host, p) for p in allow):
+        raise PermissionError(f"scope: {host} is out of scope (allowed: {allow}).")
+    rps = sc.get("max_rps")
+    if rps:
+        wait = (1.0 / rps) - (time.monotonic() - sc.get("_last", 0.0))
+        if wait > 0:
+            await asyncio.sleep(wait)
+        sc["_last"] = time.monotonic()
+
+
+async def _enforce_action(node: dict) -> None:
+    """Scope-check a click/fill target: refuse a destructive control (by href or
+    label), and enforce host scope on an absolute link. Fills are typing, but a
+    'Delete' button is a click — the shared _act path covers both."""
+    _load_scope_from_env()
+    sc = _session.get("scope")
+    if not sc:
+        return
+    href = node.get("href") or ""
+    label = node.get("label") or ""
+    if sc.get("deny") and re.search(sc["deny"], f"{href} {label}", re.I):
+        raise PermissionError(
+            f"scope: refusing to act on {label or href!r} — matches the destructive "
+            "deny rule (logout/delete/…). Hand this to the operator to do by hand.")
+    if "://" in href:
+        await _scope_ok(href)
 
 
 async def _goto(page: Any, url: str) -> None:
@@ -398,7 +481,7 @@ _LOGO_SVG_INLINE = (
 # Tokens). Deliberately no "Step N/total": the server has no way to know an
 # agent's planned total step count, so it only shows a real, counted-so-far
 # number, never a guessed one. Structure is built once, idempotent.
-# Everything stays pointer-events:none except the waitlist link, a normal
+# Everything stays pointer-events:none except the Documentation link, a normal
 # fixed-destination anchor — it must never intercept a real click elsewhere.
 _DRIVING_UI_JS = """() => {
   if (document.getElementById('zerodom-driving-border')) return;
@@ -512,7 +595,7 @@ _DRIVING_UI_JS = """() => {
   const banner = document.createElement('div');
   banner.id = 'zerodom-driving-bar';
   // aria-hidden -- parser.py's _is_hidden() prunes this whole subtree, so
-  // the bar's own "Join Waitlist" <a> never shows up as an actionable node
+  // the bar's own "Documentation" <a> never shows up as an actionable node
   // in the graph an agent is driving from.
   banner.setAttribute('aria-hidden', 'true');
   banner.style.cssText = 'position:fixed;top:0;left:0;right:0;height:' + BAR_HEIGHT + 'px;' +
@@ -546,10 +629,10 @@ _DRIVING_UI_JS = """() => {
       '<span style="color:#3d4048;">&middot;</span>' +
       '<span id="zerodom-bar-step">step 0</span>' +
     '</span>' +
-    '<a href="https://zerodom.vexralabs.com/#waitlist" target="_blank" rel="noopener" ' +
+    '<a href="https://zerodom.vexralabs.com/docs" target="_blank" rel="noopener" ' +
       'style="pointer-events:auto;flex:none;margin:6px 0 6px 14px;padding:4px 12px;' +
       'border-radius:6px;background:#22e0d8;color:#0a0b0d;font-weight:600;font-size:12px;' +
-      'text-decoration:none;white-space:nowrap;">Join Waitlist</a>'
+      'text-decoration:none;white-space:nowrap;">Documentation</a>'
   );
   document.body.appendChild(banner);
 
@@ -894,6 +977,7 @@ async def _act(node_id: str, verb: str, *args: Any) -> str:
     instead of ending it.
     """
     node = _node(node_id)
+    await _enforce_action(node)
     if verb == "fill" and _session["attached"] and _is_sensitive_field(node):
         raise PermissionError(
             f"Refusing to fill {compact_line(node)} — looks like a "
@@ -1241,6 +1325,8 @@ async def zerodom_parse_url(
     unmeasured, so it isn't imposed on every caller by default.
     """
     _session["frames"] = frames
+    _reject_undrivable(url)
+    await _scope_ok(url)
     _session["viewport_only"] = viewport_only
     _session["check_occlusion"] = check_occlusion
     page = await _page()
@@ -1421,6 +1507,9 @@ async def zerodom_new_tab(url: str | None = None) -> str:
     In an attached (real-browser) session the new tab lands in the same
     "zerodom" tab group as every other tab this session touches.
     """
+    if url:
+        _reject_undrivable(url)  # refuse before opening an orphan blank tab
+        await _scope_ok(url)
     await _page()  # ensure the browser and its first tab exist
     browser = _session["browser"]
     page = await browser.contexts[0].new_page()
@@ -1713,6 +1802,158 @@ async def _probe_relay_liveness(timeout: float = 3.0) -> str:
         )
     except Exception as exc:
         return f"probe error: {exc}"
+
+
+@mcp.tool()
+async def zerodom_set_scope(hosts: str, deny: str | None = None, max_rps: float | None = None) -> str:
+    """Constrain the hunt to authorized targets — enforced in code, not on trust.
+
+    `hosts`: comma-separated in-scope host globs (`app.example.com,*.example.com`).
+    Navigation, replay and clicks to any other host are then refused. `deny`: a
+    regex of destructive URLs/labels to refuse (default covers logout/delete/
+    remove/deactivate/revoke) so an unattended agent can't take an irreversible
+    action. `max_rps`: throttle to at most N requests/second (program rate limits).
+
+    An operator can instead lock scope before the agent starts by setting the
+    ZERODOM_SCOPE env var to a YAML file; a locked scope can't be widened here.
+    """
+    if (_session.get("scope") or {}).get("locked"):
+        return ("scope is locked by the operator (ZERODOM_SCOPE env). The agent can't "
+                "change it — ask the operator to edit the scope file.")
+    allow = [h.strip().lower() for h in hosts.split(",") if h.strip()]
+    _session["scope"] = {"allow": allow, "deny": deny or _SCOPE_DEFAULT_DENY,
+                         "max_rps": max_rps, "locked": False, "_last": 0.0}
+    return (f"scope set — in: {allow or 'any'}; deny: /{deny or 'default destructive rules'}/; "
+            f"rate: {max_rps or 'unlimited'} req/s. Out-of-scope and destructive actions "
+            "will now be refused.")
+
+
+# ─── Cross-identity replay (the IDOR / authz hunting loop) ──────────────────
+
+async def _identity_request(name: str | None):
+    """The APIRequestContext to send a request through. name None/"live"/"me" is
+    the real logged-in session (the attached browser's own cookie jar); any other
+    name is one registered by zerodom_add_identity."""
+    if name in (None, "live", "me", "self"):
+        page = await _page()
+        return page.context.request
+    ctx = _session["identities"].get(name)
+    if ctx is None:
+        raise ValueError(
+            f"unknown identity {name!r}. Register it first with "
+            f"zerodom_add_identity({name!r}, storage_state=…), or use 'live' for the current session."
+        )
+    return ctx
+
+
+def _summarize(status: int, body: str) -> dict:
+    return {
+        "status": status,
+        "bytes": len(body),
+        "sha256": hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:16],
+    }
+
+
+@mcp.tool()
+async def zerodom_add_identity(name: str, storage_state: str | None = None, header: str | None = None) -> str:
+    """Register a second identity (e.g. user B) for cross-tenant IDOR testing.
+
+    `storage_state` is a Playwright storage_state JSON file (cookies + origins) —
+    capture one per account. `header` is an optional extra request header
+    ('Authorization: Bearer …') for token-auth APIs, repeatable via comma isn't
+    supported; call again to add more. The current logged-in session is always
+    available as identity 'live' without registering.
+
+    Once two identities exist, zerodom_compare_identities(url) fetches the same
+    URL as each and flags a byte-identical response — the cross-tenant IDOR tell.
+    """
+    pw = _session.get("pw")
+    if pw is None:
+        await _page()  # bootstrap the browser/playwright
+        pw = _session["pw"]
+    headers = {}
+    if header:
+        if ":" not in header:
+            return f"--header needs 'Key: Value', got {header!r}"
+        k, v = header.split(":", 1)
+        headers[k.strip()] = v.strip()
+    ctx = await pw.request.new_context(
+        storage_state=storage_state or None,
+        extra_http_headers=headers or None,
+    )
+    _session["identities"][name] = ctx
+    how = []
+    if storage_state:
+        how.append(f"cookies from {storage_state}")
+    if headers:
+        how.append(f"header {list(headers)[0]}")
+    return f"identity {name!r} registered ({', '.join(how) or 'no auth — anonymous'}). " \
+           f"Now: zerodom_compare_identities('<url>') or zerodom_replay('<url>', as_identity={name!r})."
+
+
+@mcp.tool()
+async def zerodom_replay(url: str, method: str = "GET", body: str | None = None,
+                         header: str | None = None, as_identity: str | None = None) -> str:
+    """Replay an HTTP request under a chosen identity — Burp Repeater for the agent.
+
+    Sends `method` `url` (with optional `body` and one extra `header` 'K: V')
+    through `as_identity` (default the live logged-in session). Returns the
+    response status, size and a body preview. Use it to probe an endpoint,
+    tamper with a request, or check an object reference — then change the id/body
+    and replay again. Pair with zerodom_compare_identities for the A-vs-B diff.
+    """
+    _reject_undrivable(url)
+    await _scope_ok(url)
+    req = await _identity_request(as_identity)
+    headers = {}
+    if header and ":" in header:
+        k, v = header.split(":", 1)
+        headers[k.strip()] = v.strip()
+    resp = await req.fetch(url, method=method.upper(),
+                           headers=headers or None, data=body)
+    text = await resp.text()
+    s = _summarize(resp.status, text)
+    preview = text[:600] + ("…" if len(text) > 600 else "")
+    return (f"{method.upper()} {url}  [{as_identity or 'live'}]\n"
+            f"status {s['status']} · {s['bytes']} bytes · sha {s['sha256']}\n"
+            f"---\n{preview}")
+
+
+@mcp.tool()
+async def zerodom_compare_identities(url: str, method: str = "GET", body: str | None = None,
+                                     identities: list[str] | None = None) -> str:
+    """Fetch one URL as each identity and diff — the cross-tenant IDOR check.
+
+    Sends `method` `url` through every identity in `identities` (default: the
+    live session plus every registered one) and reports each response's status
+    and size. **A byte-identical response under two identities on a per-user
+    resource is a cross-tenant IDOR.** Runs on the real, rendered session, so it
+    works where a plain HTTP fetch would hit a WAF or a login wall.
+    """
+    _reject_undrivable(url)
+    await _scope_ok(url)
+    names = identities or (["live"] + list(_session["identities"]))
+    if len(names) < 2:
+        return ("Need at least two identities. Register a second with "
+                "zerodom_add_identity('B', storage_state='B.json'), then retry.")
+    per: dict[str, dict] = {}
+    for name in names:
+        req = await _identity_request(name)
+        resp = await req.fetch(url, method=method.upper(), data=body)
+        per[name] = _summarize(resp.status, await resp.text())
+    identical = [[a, b] for i, a in enumerate(names) for b in names[i + 1:]
+                 if per[a]["sha256"] == per[b]["sha256"]]
+    lines = [f"{method.upper()} {url}"]
+    for name, s in per.items():
+        lines.append(f"  [{name:<10}] status {s['status']} · {s['bytes']} bytes · sha {s['sha256']}")
+    if identical:
+        pairs = " and ".join("/".join(p) for p in identical)
+        lines.append(f"\n⚠ IDENTICAL response under {pairs} — cross-tenant IDOR if this URL "
+                     f"is a per-user resource (each identity should see only its own data).")
+    else:
+        lines.append("\nResponses differ across identities — properly isolated (or the "
+                     "resource isn't user-specific).")
+    return "\n".join(lines)
 
 
 @mcp.tool()

@@ -31,6 +31,26 @@ logger = logging.getLogger("zerodom.relay")
 SendToExtension = Callable[[str, Any], Awaitable[Any]]
 SendToCDPClient = Callable[[dict[str, Any]], None]
 
+# chrome.debugger.attach refuses these schemes/pages; auto-attaching one used to
+# fail mid-handshake and wedge the whole relay session (an open chrome://extensions
+# tab did it). about:blank and a fresh blank tab are drivable, so they stay in.
+_UNATTACHABLE_SCHEMES = (
+    "chrome://", "chrome-extension://", "chrome-untrusted://",
+    "devtools://", "edge://", "view-source:", "about:",
+)
+
+
+def _is_attachable(tab: dict[str, Any]) -> bool:
+    """Whether chrome.debugger can attach to a tab, by its URL. Un-attachable
+    tabs are skipped rather than attempted, so one can't kill the session."""
+    url = (tab.get("url") or tab.get("pendingUrl") or "").strip().lower()
+    if url in ("", "about:blank"):
+        return True
+    if url.startswith(_UNATTACHABLE_SCHEMES):
+        return False
+    # The Chrome Web Store blocks the debugger too, over normal https.
+    return "chromewebstore.google.com" not in url and "chrome.google.com/webstore" not in url
+
 
 @dataclass
 class TabSession:
@@ -93,7 +113,10 @@ class BrowserModel:
         if tab_id is None:
             return
         self._known_tabs[tab_id] = tab
-        if self._auto_attach:
+        # Skip tabs chrome.debugger can never attach (chrome://, the Web Store,
+        # devtools, …). Attempting it fails mid-flight and used to wedge the whole
+        # session — one open chrome://extensions tab was enough to kill it.
+        if self._auto_attach and _is_attachable(tab):
             asyncio.create_task(self._attach_tab_safe(tab_id))
 
     def on_tab_removed(self, tab_id: int) -> None:
@@ -125,16 +148,33 @@ class BrowserModel:
     async def enable_auto_attach(self) -> None:
         self._auto_attach = True
         await asyncio.gather(
-            *(self._attach_tab_safe(tab_id) for tab_id in list(self._known_tabs)),
+            *(self._attach_tab_safe(tab_id) for tab_id in list(self._known_tabs)
+              if _is_attachable(self._known_tabs.get(tab_id, {}))),
         )
 
     async def create_target(self, url: str | None) -> dict[str, Any]:
+        # chrome.debugger can't attach chrome://, the Web Store, devtools, … — so
+        # refuse before creating an orphan tab we could never drive. Attempting it
+        # anyway (create tab, attach throws) used to leave the session stuck on a
+        # dead tab.
+        if url and not _is_attachable({"url": url}):
+            raise RuntimeError(f"cannot drive an un-attachable URL: {url}")
         tab = await self._send_to_extension("chrome.tabs.create", [{"url": url}])
         tab_id = tab.get("id") if tab else None
         if tab_id is None:
             raise RuntimeError("Failed to create tab")
         self._known_tabs[tab_id] = tab
-        tab_session = await self._attach_tab(tab_id)
+        try:
+            tab_session = await self._attach_tab(tab_id)
+        except Exception:
+            # Attach failed after the tab was created — close the orphan so it
+            # can't become a stuck active tab, then surface a clean error.
+            self._known_tabs.pop(tab_id, None)
+            try:
+                await self._send_to_extension("chrome.tabs.remove", [tab_id])
+            except Exception:
+                pass
+            raise
         target_info = tab_session.target_info or {}
         return {"targetId": target_info.get("targetId")}
 

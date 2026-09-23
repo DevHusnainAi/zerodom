@@ -396,6 +396,62 @@ zerodom https://example.com --stealth         # throwaway Chrome over a CDP pipe
 cat targets.txt | zerodom inspect --pipe -    # JSONL, one node per line
 ```
 
+### For authenticated / protected testing
+
+Meant for targets you are authorized to test. ZeroDOM does not defeat bot
+detection; it works *with* an already-authorized session and your own proxy.
+
+```bash
+zerodom https://app.example.com --proxy http://127.0.0.1:8080 --insecure   # route through Burp/Caido
+export ZERODOM_PROXY=http://127.0.0.1:8080                                   # or set it once per engagement
+zerodom https://app.example.com --header 'X-Bug-Bounty: h1-1234'            # a program's WAF-bypass token
+zerodom https://app.example.com --render --storage-state cleared.json       # reuse a human-cleared session
+```
+
+### Map the attack surface — `zerodom crawl`
+
+Deep, authenticated, read-only recon: it walks a rendered app (real JS SPAs
+load), stays in scope, and emits the surface map as JSONL — each page's forms
+(and CSRF fields), in-scope links, and the **API calls its JavaScript fires**.
+The map a hunter builds by hand.
+
+```bash
+zerodom crawl https://app.example.com --storage-state session.json --max-pages 60
+# {"url":".../settings","forms":[{"action":".../api/v1/profile","method":"POST","inputs":[…]}],
+#  "api_calls":["GET .../api/v1/me","GET .../api/v1/notifications"],"hidden_fields":["csrf"], …}
+```
+
+Safe to run unattended — it never submits a form or follows a destructive link
+(`logout`/`delete`/…, tune with `--deny`). Feed its `api_calls` straight into
+`zerodom compare` for the IDOR pass. Takes `--proxy` (Burp) and `--scope` too.
+
+### Cross-tenant IDOR — `zerodom compare`
+
+Fetch one URL under two saved sessions and diff the responses. If user A gets
+byte-identical content to user B on B's private resource, that's a cross-tenant
+IDOR — the single most common bug an AI agent finds. Each identity is a Playwright
+`storage_state` file (its cookies).
+
+```bash
+zerodom compare https://app.example.com/api/invoice/2 --as alice=alice.json --as bob=bob.json
+# {"identical_body_pairs":[["alice","bob"]], "note":"byte-identical … a cross-tenant IDOR …", …}
+
+# Sweep a range of object ids through the same two identities:
+seq 1 500 | sed 's#^#https://app.example.com/api/invoice/#' \
+  | zerodom compare - --as alice=alice.json --as bob=bob.json | jq 'select(.identical_body_pairs|length>0)'
+```
+
+It also surfaces privilege differences (`only_alice` / `only_bob` list the
+actionable nodes each identity sees that the other doesn't — e.g. an `Admin`
+link). Emits one JSON object per URL; takes the same `--proxy`/`--header` options.
+
+**Challenge / CAPTCHA pages.** ZeroDOM detects Cloudflare, Turnstile, reCAPTCHA
+and hCaptcha and reports a `blocked` signal instead of an empty graph — it never
+solves them. The honest paths, in order: drive the page in **relay mode** (your
+own Chrome, where you already cleared it), or reuse a `cf_clearance` cookie you
+solved once via `--storage-state`, or send a program-authorized bypass header.
+A `cleared.json` is a Playwright `storage_state` (`context.storage_state(path=...)`).
+
 **Relay mode (your logged-in Chrome)** needs the extension, which ships inside the package:
 
 ```bash
@@ -420,7 +476,14 @@ keys, not an expression language, so nothing in a rules file gets evaluated.
 ```bash
 cat targets.txt | httpx -silent | zerodom scan -
 cat targets.txt | zerodom scan - --rules my-rules.yaml --fail-on-finding   # CI gate
+zerodom scan https://app.example.com --js                                 # + secrets/endpoints from inline JS
 ```
+
+`--js` adds a deterministic pass over the page's inline scripts for leaked
+secrets (AWS/Google/Stripe/Slack/GitHub keys, private keys, JWTs — reported
+redacted, never reprinted) and interesting endpoints (`/api`, `/admin`,
+`/internal`, `/graphql`). `scan` also takes the `--proxy` / `--header` /
+`--storage-state` options above.
 
 Only scan targets you are authorized to test.
 

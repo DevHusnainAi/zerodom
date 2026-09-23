@@ -155,10 +155,22 @@ class CDPPipe:
                 raise CDPError("no page target appeared")
             time.sleep(0.05)
 
-    def outer_html(self, url: str | None, session_id: str, timeout: float = 30.0) -> tuple[str, str]:
-        """Navigate (if `url` given), wait for load, return (outer_html, final_url)."""
+    def outer_html(
+        self, url: str | None, session_id: str, timeout: float = 30.0,
+        headers: dict | None = None, cookies: list | None = None,
+    ) -> tuple[str, str]:
+        """Navigate (if `url` given), wait for load, return (outer_html, final_url).
+
+        `headers` (a program's bypass header) and `cookies` (a cleared session
+        reused from a storage_state file) are set over CDP before navigating."""
         self.send("Page.enable", session_id=session_id)
         self.send("Runtime.enable", session_id=session_id)
+        if headers or cookies:
+            self.send("Network.enable", session_id=session_id)
+        if headers:
+            self.send("Network.setExtraHTTPHeaders", {"headers": headers}, session_id=session_id)
+        if cookies:
+            self.send("Network.setCookies", {"cookies": cookies}, session_id=session_id)
         if url:
             self.send("Page.navigate", {"url": url}, session_id=session_id, timeout=timeout)
         # Block in-page until the document is fully loaded — one awaited promise
@@ -221,6 +233,8 @@ def spawn(
     headless: bool = True,
     chrome: str | None = None,
     ephemeral_profile: bool = True,
+    proxy: str | None = None,
+    insecure: bool = False,
     extra_args: tuple[str, ...] = (),
 ) -> CDPPipe:
     """Spawn Chrome wired to a CDP pipe on FD 3/4 and return an open CDPPipe.
@@ -257,6 +271,16 @@ def spawn(
         args.append("--headless=new")
     if profile_dir:
         args.append(f"--user-data-dir={profile_dir}")
+    if proxy:
+        # Route every request through the hunter's proxy (Burp/Caido). Chrome
+        # bypasses the proxy for localhost by default, which would hide a local
+        # target from the tool doing the intercepting — force it through too.
+        args.append(f"--proxy-server={proxy}")
+        args.append("--proxy-bypass-list=<-loopback>")
+    if insecure:
+        # Burp/Caido present their own CA; without this Chrome aborts the
+        # intercepted TLS handshake. Explicit opt-in, off by default.
+        args.append("--ignore-certificate-errors")
     args.extend(extra_args)
     if url:
         args.append(url)
@@ -292,15 +316,24 @@ def spawn(
     return CDPPipe(write_fd=cmd_w, read_fd=evt_r, proc=proc, profile_dir=profile_dir)
 
 
-def fetch(url: str, *, headless: bool = True, chrome: str | None = None) -> tuple[str, str]:
+def fetch(
+    url: str,
+    *,
+    headless: bool = True,
+    chrome: str | None = None,
+    proxy: str | None = None,
+    insecure: bool = False,
+    headers: dict | None = None,
+    cookies: list | None = None,
+) -> tuple[str, str]:
     """One-shot: spawn, read (outer_html, final_url), clean up. The `--stealth` path.
 
     Launch blank, then navigate over CDP inside outer_html — passing the URL as a
     launch arg raced the page_session() attach, which grabbed the initial
     about:blank before the navigation committed and returned an empty graph.
     """
-    with spawn(None, headless=headless, chrome=chrome) as pipe:
-        return pipe.outer_html(url, pipe.page_session())
+    with spawn(None, headless=headless, chrome=chrome, proxy=proxy, insecure=insecure) as pipe:
+        return pipe.outer_html(url, pipe.page_session(), headers=headers, cookies=cookies)
 
 
 def _selfcheck() -> None:

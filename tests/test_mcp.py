@@ -361,3 +361,123 @@ def test_hydration_hint_suppressed_when_the_click_fired_a_request(monkeypatch, p
     out = asyncio.run(mcp_server.zerodom_click_node("03"))  # no further DOM diff
     assert out.splitlines()[2] == "no structural change"
     assert "handler may not have finished attaching" not in out
+
+
+# ─── Cross-identity replay / IDOR tools ─────────────────────────────────────
+
+class FakeAPIResponse:
+    def __init__(self, status, body):
+        self.status = status
+        self._body = body
+
+    async def text(self):
+        return self._body
+
+
+class FakeRequestContext:
+    """Stands in for a Playwright APIRequestContext: returns a canned body,
+    optionally varying by the request's method, so a replay/compare is testable."""
+
+    def __init__(self, body, status=200):
+        self.body, self.status = body, status
+        self.calls = []
+
+    async def fetch(self, url, method="GET", headers=None, data=None):
+        self.calls.append((method, url, data))
+        return FakeAPIResponse(self.status, self.body)
+
+
+@pytest.fixture
+def identities():
+    mcp_server._session["identities"] = {}
+    yield mcp_server._session["identities"]
+    mcp_server._session["identities"] = {}
+
+
+def test_compare_identities_flags_identical_body_as_idor(identities):
+    # Both identities get Bob's invoice → cross-tenant IDOR.
+    identities["alice"] = FakeRequestContext("<h1>Invoice 2 — Bob</h1>")
+    identities["bob"] = FakeRequestContext("<h1>Invoice 2 — Bob</h1>")
+    out = asyncio.run(mcp_server.zerodom_compare_identities(
+        "https://app/api/invoice/2", identities=["alice", "bob"]))
+    assert "IDENTICAL response under alice/bob" in out
+    assert "IDOR" in out
+
+
+def test_compare_identities_reports_isolation_when_different(identities):
+    identities["alice"] = FakeRequestContext("<h1>Alice's data</h1>")
+    identities["bob"] = FakeRequestContext("<h1>Bob's data</h1>")
+    out = asyncio.run(mcp_server.zerodom_compare_identities(
+        "https://app/api/me", identities=["alice", "bob"]))
+    assert "properly isolated" in out
+    assert "IDENTICAL" not in out
+
+
+def test_compare_identities_needs_two(identities):
+    identities["alice"] = FakeRequestContext("x")
+    out = asyncio.run(mcp_server.zerodom_compare_identities("https://app/x", identities=["alice"]))
+    assert "at least two identities" in out
+
+
+def test_replay_sends_through_the_named_identity(identities):
+    ctx = FakeRequestContext("pong", status=201)
+    identities["bob"] = ctx
+    out = asyncio.run(mcp_server.zerodom_replay(
+        "https://app/api/ping", method="post", body="{}", as_identity="bob"))
+    assert ctx.calls == [("POST", "https://app/api/ping", "{}")]
+    assert "status 201" in out and "[bob]" in out
+
+
+def test_replay_rejects_unknown_identity(identities):
+    with pytest.raises(ValueError, match="unknown identity"):
+        asyncio.run(mcp_server.zerodom_replay("https://app/x", as_identity="ghost"))
+
+
+def test_replay_refuses_undrivable_url(identities):
+    with pytest.raises(ValueError, match="can't drive"):
+        asyncio.run(mcp_server.zerodom_replay("chrome://settings", as_identity="live"))
+
+
+# ─── Scope enforcement ──────────────────────────────────────────────────────
+
+@pytest.fixture
+def scoped():
+    mcp_server._session["scope"] = None
+    yield
+    mcp_server._session["scope"] = None
+
+
+def test_set_scope_then_out_of_scope_and_destructive_are_refused(scoped, page):
+    asyncio.run(mcp_server.zerodom_set_scope("app.test,*.api.test", max_rps=None))
+    # in scope is fine
+    asyncio.run(mcp_server.zerodom_parse_url("https://app.test/dashboard"))
+    # out of scope host refused before any navigation
+    with pytest.raises(PermissionError, match="out of scope"):
+        asyncio.run(mcp_server.zerodom_parse_url("https://evil.test/x"))
+    # destructive URL refused even in scope
+    with pytest.raises(PermissionError, match="destructive"):
+        asyncio.run(mcp_server.zerodom_parse_url("https://app.test/account/delete"))
+
+
+def test_destructive_click_is_refused(scoped, page):
+    asyncio.run(mcp_server.zerodom_set_scope("example.com"))
+    mcp_server._session["nodes"] = [
+        {"id": "node_01", "type": "button", "label": "Delete account", "selector": "#del", "href": ""},
+        {"id": "node_02", "type": "a", "label": "View", "selector": "#v", "href": "/view"},
+    ]
+    with pytest.raises(PermissionError, match="destructive"):
+        asyncio.run(mcp_server._act("01", "click"))
+
+
+def test_no_scope_is_unrestricted(scoped, page):
+    assert mcp_server._session["scope"] is None
+    # any host, any path — no scope means no enforcement (backward compatible)
+    asyncio.run(mcp_server.zerodom_parse_url("https://anything.example/logout"))
+
+
+def test_locked_scope_cannot_be_widened_by_the_agent(scoped):
+    mcp_server._session["scope"] = {"allow": ["app.test"], "deny": mcp_server._SCOPE_DEFAULT_DENY,
+                                    "max_rps": None, "locked": True, "_last": 0.0}
+    out = asyncio.run(mcp_server.zerodom_set_scope("evil.test"))
+    assert "locked by the operator" in out
+    assert mcp_server._session["scope"]["allow"] == ["app.test"]  # unchanged

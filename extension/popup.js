@@ -172,7 +172,7 @@ stopBtn.addEventListener("click", async () => {
   stopBtn.textContent = "Stopping…";
   const res = await send({ type: "zerodom-emergency-stop" });
   stopBtn.disabled = false;
-  stopBtn.textContent = "Stop — detach now";
+  stopBtn.textContent = "Stop and detach now";
   if (res && res.stopped) {
     refreshLiveStats();
   }
@@ -219,12 +219,24 @@ function mergeNetworkEntries(entries) {
   return Array.from(byUrl.values());
 }
 
-function statusBadgeClass(status) {
-  if (!status) return "badge-unknown";
-  if (status >= 200 && status < 300) return "badge-2xx";
-  if (status >= 300 && status < 400) return "badge-3xx";
-  if (status >= 400 && status < 500) return "badge-4xx";
-  return "badge-5xx";
+const HTTP_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "CONNECT", "TRACE"]);
+
+// Method cell: colour only mutating verbs; GET/HEAD stay quiet. A value that
+// isn't a real HTTP method (the capture sometimes leaks the protocol — "h2",
+// "h3" — into this field) is not decision-relevant here, so it renders as "—".
+function methodTag(method) {
+  const m = (method || "").toUpperCase();
+  if (!HTTP_METHODS.has(m)) return `<span class="tag m-quiet">·</span>`;
+  const cls = { POST: "m-post", PUT: "m-put", DELETE: "m-delete", PATCH: "m-patch" }[m] || "m-quiet";
+  return `<span class="tag ${cls}">${m}</span>`;
+}
+
+// Status cell: 2xx is the common case and reads muted; only redirects/errors
+// get a hue, so the exceptions are what the eye catches.
+function statusTag(status) {
+  if (!status) return `<span class="tag s-none">·</span>`;
+  const band = status < 300 ? "s-2xx" : status < 400 ? "s-3xx" : status < 500 ? "s-4xx" : "s-5xx";
+  return `<span class="tag ${band}">${status}</span>`;
 }
 
 function renderNetwork(entries) {
@@ -250,12 +262,6 @@ function applyNetworkFilter() {
   netSummary.textContent = `${filtered.length} requests`;
 
   netList.innerHTML = filtered.map((e) => {
-    const methodBadge = e.method
-      ? `<span class="badge badge-method-${escapeHtml(e.method.toLowerCase())}">${escapeHtml(e.method)}</span>`
-      : "";
-    const statusBadge = e.status
-      ? `<span class="badge ${statusBadgeClass(e.status)}">${e.status}</span>`
-      : "";
     let shortUrl = e.url;
     try {
       const u = new URL(e.url);
@@ -263,10 +269,12 @@ function applyNetworkFilter() {
     } catch (_) { /* keep full url */ }
     const timeStr = e.time != null ? `${Math.round(e.time)}ms` : "";
     const title = escapeHtml(e.url);
+    // Four grid cells, always present, so every row aligns on the same rail.
     return `<div class="net-row" onclick="window._copyNetUrl('${title}')">` +
-      `${methodBadge}${statusBadge}` +
+      methodTag(e.method) +
+      statusTag(e.status) +
       `<span class="net-url" title="${title}">${escapeHtml(shortUrl)}</span>` +
-      (timeStr ? `<span class="net-time">${timeStr}</span>` : "") +
+      `<span class="net-time">${timeStr}</span>` +
       `</div>`;
   }).join("");
 }
@@ -313,7 +321,7 @@ function renderCookies(data) {
   const cookies = data.cookies;
   const httpOnlyCount = cookies.filter((c) => c.httpOnly).length;
   const secureCount = cookies.filter((c) => c.secure).length;
-  cookieSummary.textContent = `${cookies.length} cookies — ${httpOnlyCount} httpOnly, ${secureCount} secure`;
+  cookieSummary.textContent = `${cookies.length} cookies · ${httpOnlyCount} httpOnly, ${secureCount} secure`;
 
   cookieList.innerHTML = cookies.map((c) => {
     const val = c.value.length > 30 ? c.value.slice(0, 30) + "…" : c.value;
@@ -325,9 +333,11 @@ function renderCookies(data) {
     }
     return `<div class="cookie-row" onclick="window._copyCookieVal('${escapeHtml(c.value)}')">` +
       `<span class="cookie-name">${escapeHtml(c.name)}</span>` +
-      `<span class="cookie-value" title="${escapeHtml(c.value)}">${escapeHtml(val)}</span>` +
-      `<span class="cookie-domain">${escapeHtml(c.domain)}</span>` +
       `<span class="flags">${flags.join("")}</span>` +
+      `<div class="cookie-sub">` +
+        `<span class="cookie-value" title="${escapeHtml(c.value)}">${escapeHtml(val)}</span>` +
+        `<span class="cookie-domain">${escapeHtml(c.domain)}</span>` +
+      `</div>` +
       `</div>`;
   }).join("");
 }
@@ -409,7 +419,7 @@ function renderStorage(data) {
   const total = local.length + session.length;
   storageSummary.textContent = data && data.error
     ? `Error: ${data.error}`
-    : `${total} keys — ${local.length} localStorage, ${session.length} sessionStorage`;
+    : `${total} keys · ${local.length} localStorage, ${session.length} sessionStorage`;
   if (total === 0) {
     storageList.innerHTML = '<div class="empty-state">No localStorage/sessionStorage.</div>';
     return;

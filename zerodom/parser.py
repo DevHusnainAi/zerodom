@@ -775,6 +775,8 @@ class ZeroDOMParser:
             meta["hidden_field_count"] = len(self.hidden_fields)
         if warning := self._empty_page_warning(len(self.raw_html)):
             meta["warning"] = warning
+        if blocked := _detect_challenge(self.raw_html):
+            meta["blocked"] = blocked
         return InteractionGraph(nodes=self.nodes, metadata=meta)
 
     def _empty_page_warning(self, html_bytes: int) -> str | None:
@@ -804,6 +806,35 @@ class ZeroDOMParser:
             "probably in an iframe (not traversed), a closed shadow root, or "
             "rendered to canvas. See Limitations."
         )
+
+
+# Challenge/CAPTCHA fingerprints. In relay mode a hunter usually sails past these
+# because the human already cleared the session; when one *is* in the way, the
+# agent should hand off (or reuse a cleared session) instead of looping on it.
+# Verified live 2026-09-23 against the vendor demo pages — see docs/PROFILE-A-PLAN.md.
+_CHALLENGE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cloudflare", ("challenge-platform", "cf-chl", "__cf_chl", "cf-mitigated",
+                    "/cdn-cgi/challenge", "checking if the site connection is secure")),
+    ("turnstile", ("cf-turnstile", "challenges.cloudflare.com/turnstile", "turnstile/v0")),
+    ("recaptcha", ("g-recaptcha", "grecaptcha", "recaptcha/api", "www.google.com/recaptcha")),
+    ("hcaptcha", ("h-captcha", "hcaptcha.com")),
+)
+
+
+def _detect_challenge(html: str) -> dict[str, str] | None:
+    """Which bot-wall/CAPTCHA a page carries, by fingerprint, or None.
+
+    Deterministic substring match over the raw HTML — a marker is a marker
+    wherever it sits (script src, inline config, class name). Cloudflare's
+    full-page interstitial is checked first because it *blocks* the page, where a
+    Turnstile/reCAPTCHA/hCaptcha widget usually sits on an otherwise usable form.
+    """
+    low = html.lower()
+    for kind, markers in _CHALLENGE_MARKERS:
+        for marker in markers:
+            if marker in low:
+                return {"kind": kind, "marker": marker}
+    return None
 
 
 def parse_html(

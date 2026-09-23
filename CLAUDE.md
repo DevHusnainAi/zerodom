@@ -48,7 +48,7 @@ npm test                             # node --test --experimental-strip-types, m
 
 ### Which tests need what
 
-- `test_parser.py`, `test_audit.py`, `test_cli.py`, `test_graph_ui_sync.py` — pure, no browser.
+- `test_parser.py`, `test_audit.py`, `test_cli.py`, `test_jsintel.py`, `test_surfaces.py`, `test_graph_ui_sync.py` — pure, no browser.
 - `js/test/graphUi.test.ts` — the shared graph UI, mounted under linkedom (`cd js && npm test`).
 - `test_mcp.py`, `test_mcp_cdp.py` — MCP tools against a `FakePage`/`FakeGotoPage`, no browser.
 - `test_relay.py` — `BrowserModel` state machine with a `FakeExtension`; `test_relay_server.py` —
@@ -126,7 +126,11 @@ first — for the FR-numbered ones it states the design constraint.
   job). POSIX-only: `close_fds=False` on the Popen is deliberate (with it on,
   CPython's fd-close scan reclaims slot 4 and Chrome reports "pipe fds not
   open"); Windows raises. Feeds the *existing* `ZeroDOMParser`, not a new one —
-  it just fetches `outerHTML` after load.
+  it just fetches `outerHTML` after load. Also carries the engagement options for
+  the stealth path: `proxy`/`insecure` become `--proxy-server`/`--ignore-certificate-errors`
+  Chrome args (with `--proxy-bypass-list=<-loopback>` so a localhost target still
+  goes through Burp/Caido); `headers`/`cookies` are set over CDP
+  (`Network.setExtraHTTPHeaders`/`setCookies`) in `outer_html` before navigating.
 - **`surfaces.py`** + **`surfaces.yaml`** — `zerodom scan <url> [--rules PATH]`.
   Runs deterministic client-side rules over the parsed graph (sensitive input
   labels, admin/debug links, forms/passwords with no CSRF hidden field). Not an
@@ -135,18 +139,48 @@ first — for the FR-numbered ones it states the design constraint.
   in, `re.search` out, nothing to sandbox because nothing is evaluated. Unknown
   match keys are a load-time error, not a silent no-op. Complements `audit.py`:
   that checks selectors a human wrote, this checks the surface the parser found.
+- **`jsintel.py`** — `zerodom scan --js`. Deterministic regex over a page's inline
+  `<script>` blocks + markup for leaked secrets (AWS/Google/Stripe/Slack/GitHub
+  keys, private keys, JWTs — matched value redacted in the finding so the log
+  isn't a fresh copy of the leak) and interesting endpoints (`/api|/admin|/internal|
+  /graphql` path literals, from script text only so hrefs/visible links don't
+  count). Reuses `surfaces.Finding` so findings stream through the same JSONL
+  path. Linked/bundled JS is not fetched — that's a per-script network fan-out,
+  its own feature. Off unless `--js`.
+- **Blocked-state detection** (`parser._detect_challenge`) — a deterministic
+  substring match over the raw HTML for CF/Turnstile/reCAPTCHA/hCaptcha
+  fingerprints, surfaced as `metadata["blocked"] = {"kind", "marker"}`. We detect
+  and hand off, never solve; the honest paths (relay mode, `--storage-state`
+  clearance reuse, program bypass header) are the answer, not an evasion engine.
+  Markers verified live 2026-09-23 (see `docs/PROFILE-A-PLAN.md`).
 - **`audit.py`** — `zerodom audit <dir> --url <url>`, no ZeroDOM required in the suite
   being audited. Regexes (`CALL_PATTERNS`) pull selectors out of existing Playwright/
   Puppeteer/Cypress/Selenium test code, then resolves each against a live page and
   reports `ok`/`dead`/`ambiguous`/`invalid` — the same "matches more than one element"
   failure mode `_selector()` in `parser.py` is built to avoid, but for selectors a human
   already wrote.
-- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `extension` (prints the unpacked
+- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `compare` / `extension` (prints the unpacked
   extension's path; the wheel bundles `extension/` as `zerodom/extension` via hatch `force-include`,
   and each `v*` release also attaches a zip + sha256) (entry point `zerodom`; a bare
   first arg that isn't a subcommand is rewritten to `inspect`). `capture()` shares one
   Playwright browser session across screenshot + HTML report generation since both need
-  the same live page.
+  the same live page. `inspect`/`scan` share engagement flags via `_add_fetch_flags`:
+  `--proxy`/`$ZERODOM_PROXY` + `--insecure` (Burp/Caido), `--header 'K: V'` (repeatable,
+  a program's bypass token), `--storage-state STATE.json` (reuse a cleared session —
+  native storage_state on the Playwright paths, cookies via CDP on stealth, Cookie
+  header on plain HTTP). `--frames`+`--stealth` errors rather than silently dropping
+  stealth; `_goto()` commits on `domcontentloaded` then bounds the `networkidle`
+  wait so a Turnstile/CF page can't hang the fetch.
+  `compare_identities()` (`zerodom compare URL --as NAME=STATE.json …`, ≥2) fetches one
+  URL under each identity's cookies and diffs — byte-identical bodies across two
+  identities is the cross-tenant IDOR tell; `only_<name>` lists the actionable
+  nodes each identity sees that the other doesn't. `_http_fetch` returns the
+  status (403-vs-200 is the point) where `fetch` drops it.
+  `crawl_site()` (`zerodom crawl URL`) is the recon crawler: a rendered BFS over
+  same-scope routes that records each page's forms, in-scope links and fired
+  XHR/fetch API calls (via `page.on("request")`), read-only (skips a `--deny` regex of
+  destructive links). It's sync Playwright, so tests run it in a worker thread to dodge a
+  leaked asyncio loop; in production it's its own process.
 
 Import order in `__init__.py` matters for avoiding circular imports:
 `label_linker` → `parser` → `playwright_wrapper`.
@@ -162,6 +196,21 @@ Import order in `__init__.py` matters for avoiding circular imports:
   tool that calls `page.goto`.
 - Node ids are normalized in `_selector()`: `"03"`, `"[03]"`, and `"node_03"` all resolve
   to the same selector.
+- **Cross-identity hunting loop** (the IDOR/authz weapon): `zerodom_add_identity(name,
+  storage_state, header)` registers a second logged-in identity as a Playwright
+  `APIRequestContext` in `_session["identities"]`; `zerodom_replay(url, method, body,
+  header, as_identity)` is Burp Repeater for the agent; `zerodom_compare_identities(url,
+  …)` fetches one URL as each identity and flags a byte-identical response as a
+  cross-tenant IDOR. Uses the request context (real session cookies), so it works past a
+  WAF/login wall where a plain fetch can't. `_reject_undrivable()` refuses chrome://,
+  extension, devtools and Web Store URLs (they can't be attached and used to wedge the
+  session); `relay._is_attachable()`/`create_target` enforce the same at the relay layer.
+- **Scope enforcement** (`_scope_ok`/`_enforce_action`, tool `zerodom_set_scope`, env
+  `ZERODOM_SCOPE`): `_session["scope"]` = {allow host globs, deny regex, max_rps, locked}.
+  Wired into `zerodom_parse_url`/`zerodom_new_tab`/`zerodom_replay`/`zerodom_compare_identities`
+  (URL host allowlist + destructive denylist + throttle) and `_act` (destructive click/fill
+  refused). None = unrestricted (backward compatible). A file-loaded scope is `locked` so
+  the agent can't widen its own bounds — this is what makes an unattended hunt safe.
 - Connection: `ZERODOM_CDP_ENDPOINT` wins if set; otherwise `_ensure_relay_running()`
   auto-spawns `zerodom relay` on :8765 and points at it. Relay output goes to
   `~/.zerodom/relay.log` (not DEVNULL — a stuck handshake is invisible otherwise).

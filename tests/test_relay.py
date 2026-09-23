@@ -59,6 +59,31 @@ def test_tab_created_before_auto_attach_is_just_recorded(rig):
     assert cdp.sent == []
 
 
+def test_create_target_refuses_an_unattachable_url(rig):
+    """Opening a chrome:// tab via create_target used to attach it, fail, and
+    stick the session on a dead tab. It must refuse before creating anything."""
+    model, ext, cdp = rig
+    with pytest.raises(RuntimeError, match="un-attachable"):
+        asyncio.run(model.create_target("chrome://extensions/"))
+    assert ext.calls == []  # no tab created, nothing attached
+
+
+def test_unattachable_tabs_are_never_attached(rig):
+    """A chrome:// / Web Store / devtools tab can't be attached; attempting it
+    used to fail mid-handshake and wedge the session. They must be skipped."""
+    model, ext, cdp = rig
+    model.on_tab_created({"id": 1, "url": "https://real.example/"})
+    model.on_tab_created({"id": 2, "url": "chrome://extensions/"})
+    model.on_tab_created({"id": 3, "url": "chrome-extension://abc/popup.html"})
+    model.on_tab_created({"id": 4, "url": "devtools://devtools/bundled/x.html"})
+    model.on_tab_created({"id": 5, "pendingUrl": "chrome://newtab/"})
+    model.on_tab_created({"id": 6, "url": "https://chromewebstore.google.com/detail/x"})
+    model.on_tab_created({"id": 7, "url": "about:blank"})  # blank IS drivable
+    asyncio.run(model.enable_auto_attach())
+    attached = {c[1][0]["tabId"] for c in ext.calls if c[0] == "chrome.debugger.attach"}
+    assert attached == {1, 7}, attached
+
+
 def test_enable_auto_attach_attaches_every_known_tab(rig):
     model, ext, cdp = rig
     model.on_tab_created({"id": 1, "url": "https://a.example/"})

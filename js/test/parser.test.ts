@@ -255,3 +255,18 @@ test("collapsing duplicates still collapses undifferentiated repeats", () => {
   assert.equal((graph.nodes[0] as any).count, 5);
   assert.equal(graph.metadata.duplicates_collapsed, 4);
 });
+
+test("challenge pages flag the vendor in metadata (mirror of test_parser.py)", () => {
+  const cases: Record<string, string> = {
+    '<script src="/cdn-cgi/challenge-platform/h/b/x.js"></script>': "cloudflare",
+    '<div class="cf-turnstile" data-sitekey="x"></div>': "turnstile",
+    '<div class="g-recaptcha"></div>': "recaptcha",
+    '<div class="h-captcha"></div>': "hcaptcha",
+  };
+  for (const [frag, kind] of Object.entries(cases)) {
+    const g = parseHtml(`<html><body>${frag}</body></html>`, "https://t.example");
+    assert.equal(g.metadata.blocked?.kind, kind, frag);
+  }
+  const clean = parseHtml("<html><body><a href=/x>hi</a></body></html>", "https://x.example");
+  assert.equal(clean.metadata.blocked, undefined);
+});

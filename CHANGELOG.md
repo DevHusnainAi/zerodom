@@ -4,6 +4,66 @@ All notable changes to ZeroDOM are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Bug-bounty / red-team workflow: CLI recon + IDOR primitives, an MCP cross-identity
+hunting loop, and a relay hardened so it no longer wedges.
+
+### Added
+
+- **Scope enforcement (MCP):** `zerodom_set_scope(hosts, deny, max_rps)` — or the
+  `ZERODOM_SCOPE` env (a locked YAML the agent can't widen) — constrains the hunt in
+  code: navigation, replay and clicks to an out-of-scope host are refused, destructive
+  URLs/controls (logout/delete/deactivate/…) are refused, and requests are throttled to
+  the program's rate limit. Makes the agent safe to run unattended.
+- **Hunting methodology (`examples/bug_bounty_hunt.md`):** a playbook that orchestrates
+  the tools into an autonomous authenticated hunt — recon → test IDOR / access-control /
+  business-logic → report, scoped per program, authorization and read-only rules first.
+- **`zerodom crawl` — deep authenticated recon.** BFS-walks a rendered app (real JS
+  SPAs load) from a start URL, staying in scope, and yields the attack-surface map as
+  JSONL: each page's forms (+ CSRF fields), in-scope links, and the API calls its JS
+  fires. Read-only and safe to run unattended — never submits a form or follows a
+  destructive link (logout/delete/…, configurable via `--deny`). Takes `--storage-state`
+  for auth and `--proxy` for Burp. This is the map a hunter builds by hand.
+- **Cross-identity hunting loop (MCP):** `zerodom_add_identity` registers a second
+  logged-in identity (storage_state cookies and/or an auth header); `zerodom_replay`
+  is Burp Repeater for the agent (replay/tamper a request under any identity); and
+  `zerodom_compare_identities` fetches one URL as each identity and flags a
+  byte-identical response as a cross-tenant IDOR. Runs on the real, rendered session
+  (Playwright APIRequestContext), so it works where a plain fetch hits a WAF or login wall.
+- **`zerodom compare URL --as NAME=STATE.json …`:** fetch one URL under two saved
+  sessions and diff the responses — the cross-tenant IDOR primitive. Byte-identical
+  bodies across two identities flags a likely IDOR; `only_<name>` lists the
+  actionable nodes each identity sees that the other doesn't (privilege diff).
+  Reads a URL list from stdin (`-`) for scripted object-id sweeps.
+- **`--proxy URL` / `$ZERODOM_PROXY` + `--insecure`:** route every request through
+  an intercepting proxy (Burp/Caido), so ZeroDOM's traffic shows up in the tool
+  you already hunt in. Works on the stealth, render, and plain-HTTP paths;
+  localhost targets are forced through too.
+- **`scan --js`:** a deterministic pass over inline JS for leaked secrets
+  (AWS/Google/Stripe/Slack/GitHub keys, private keys, JWTs — reported redacted,
+  never reprinted) and interesting endpoints (`/api`, `/admin`, `/internal`,
+  `/graphql`).
+- **`--header 'K: V'`** (repeatable): send a program's WAF-bypass token.
+- **`--storage-state STATE.json`:** reuse a human-cleared session — carry a
+  `cf_clearance` cookie / storage state into automated reads.
+- **Challenge detection:** Cloudflare, Turnstile, reCAPTCHA and hCaptcha are
+  detected and reported as a `blocked` signal (in graph metadata and the CLI
+  report) instead of an empty graph. ZeroDOM never solves them; it points at
+  relay mode, `--storage-state`, or a bypass header.
+
+### Fixed
+
+- **Relay no longer wedges on a `chrome://` tab.** An un-attachable tab (chrome://,
+  the Web Store, devtools, an extension page) — whether opened in the background or by
+  the agent — used to fail `chrome.debugger.attach` mid-handshake and kill the whole
+  session. Un-attachable tabs are now skipped (auto-attach), refused with a clean error
+  (`create_target`), and rejected up front by the MCP tools with a clear message.
+- `--frames` combined with `--stealth` now errors instead of silently ignoring
+  `--stealth` (they use different fetch engines).
+- The render/frames path no longer hangs 30s on a Turnstile/Cloudflare page whose
+  network never goes idle; it commits on DOM-ready and bounds the settle wait.
+
 ## [0.0.8] — 2026-09-23
 
 Repositioned as a deterministic AppSec & AI perception layer: terminal-native

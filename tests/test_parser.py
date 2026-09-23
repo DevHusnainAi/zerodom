@@ -887,3 +887,21 @@ def test_collapsing_duplicates_still_collapses_undifferentiated_repeats():
     assert len(graph["nodes"]) == 1
     assert graph["nodes"][0]["count"] == 5
     assert graph["metadata"]["duplicates_collapsed"] == 4
+
+
+def test_challenge_pages_flag_the_vendor_in_metadata():
+    # Fingerprints verified live against the vendor demo pages (docs/PROFILE-A-PLAN.md).
+    cases = {
+        '<script src="/cdn-cgi/challenge-platform/h/b/x.js"></script>': "cloudflare",
+        '<div class="cf-turnstile" data-sitekey="x"></div>': "turnstile",
+        '<div class="g-recaptcha"></div>': "recaptcha",
+        '<div class="h-captcha"></div>': "hcaptcha",
+    }
+    for html, kind in cases.items():
+        meta = parse_html(f"<html><body>{html}</body></html>", "https://t.example")["metadata"]
+        assert meta.get("blocked", {}).get("kind") == kind, (html, meta.get("blocked"))
+
+
+def test_a_clean_page_is_not_flagged_as_blocked():
+    meta = parse_html(LOGIN_FORM, "https://x.example")["metadata"]
+    assert "blocked" not in meta

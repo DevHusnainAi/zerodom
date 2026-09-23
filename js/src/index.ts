@@ -8,6 +8,7 @@ export {
   isShadowRoot,
   compactLine,
   findNodes,
+  detectChallenge,
 } from "./parser.js";
 export type { GraphNode, GraphMetadata } from "./parser.js";
 export { LabelLinker, textOf, getLabel } from "./labelLinker.js";

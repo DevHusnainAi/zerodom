@@ -4,8 +4,11 @@ savings. `zerodom <url>` for the compact graph, --find to search it."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -21,47 +24,119 @@ def count_tokens(text: str) -> int:
     return len(tiktoken.get_encoding("cl100k_base").encode(text))
 
 
-def fetch(url: str, render: bool, stealth: bool = False) -> tuple[str, str]:
+def _goto(page, url: str) -> None:
+    """Navigate without hanging on a page that never goes network-idle.
+
+    `wait_until="networkidle"` hangs the full 30s on any Turnstile/CF challenge
+    or long-poll page (the widget keeps a socket open forever). Commit on DOM
+    ready, then give the network a short bounded window to settle for SPAs and
+    read whatever is there if it doesn't."""
+    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    try:
+        page.wait_for_load_state("networkidle", timeout=6000)
+    except Exception:
+        pass  # never idles (challenge widget / long-poll) — read the page as-is
+
+
+def _launch(pw, proxy: str | None):
+    return pw.chromium.launch(proxy={"server": proxy} if proxy else None)
+
+
+def _context(browser, *, insecure, headers, storage_state):
+    """A Playwright context carrying the engagement's headers and a reused,
+    already-cleared session (Playwright storage_state JSON: cookies + origins)."""
+    return browser.new_context(
+        viewport={"width": 1280, "height": 900},
+        ignore_https_errors=insecure,
+        extra_http_headers=headers or None,
+        storage_state=storage_state or None,
+    )
+
+
+def _cookies_from_state(storage_state: str | None) -> list[dict]:
+    """The cookies out of a Playwright storage_state file, for the pipe/HTTP
+    paths that can't consume the file natively (localStorage there is dropped —
+    a cleared-session cookie like cf_clearance is what carries the challenge)."""
+    if not storage_state:
+        return []
+    return json.loads(Path(storage_state).read_text(encoding="utf-8")).get("cookies", [])
+
+
+def fetch(
+    url: str,
+    render: bool,
+    stealth: bool = False,
+    proxy: str | None = None,
+    insecure: bool = False,
+    headers: dict | None = None,
+    storage_state: str | None = None,
+) -> tuple[str, str]:
     """Return (html, final_url). `render` runs a real browser for JS-heavy pages;
     `stealth` spawns a throwaway-profile Chrome over a CDP pipe (no port, no
-    Playwright driver, nothing left on disk) — see cdp_pipe.py."""
+    Playwright driver, nothing left on disk) — see cdp_pipe.py. `proxy` routes
+    traffic through Burp/Caido; `insecure` trusts the proxy's own CA; `headers`
+    adds a program's bypass header; `storage_state` reuses a cleared session."""
     if stealth:
         from .cdp_pipe import fetch as pipe_fetch
 
-        return pipe_fetch(url)
+        return pipe_fetch(url, proxy=proxy, insecure=insecure,
+                          headers=headers, cookies=_cookies_from_state(storage_state))
     if render:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
-            page = browser.new_page()
-            page.goto(url, wait_until="networkidle")
+            browser = _launch(pw, proxy)
+            page = _context(browser, insecure=insecure, headers=headers, storage_state=storage_state).new_page()
+            _goto(page, url)
             html, final_url = serialize(page), page.url
             browser.close()
             return html, final_url
 
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode(resp.headers.get_content_charset() or "utf-8", "replace"), resp.url
+    _status, html, final = _http_fetch(url, proxy, insecure, headers, storage_state)
+    return html, final
 
 
-def fetch_with_frames(url: str):
+def _http_fetch(url, proxy, insecure, headers, storage_state) -> tuple[int, str, str]:
+    """Plain HTTP with the engagement's proxy/headers/cookies, returning the
+    status too — `compare` needs 403-vs-200, which the graph alone can't show."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
+    for c in _cookies_from_state(storage_state):
+        req.add_header("Cookie", f"{c['name']}={c['value']}")
+    hs: list = []
+    if proxy:
+        hs.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    if insecure:
+        import ssl
+        hs.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+    opener = urllib.request.build_opener(*hs)
+    try:
+        with opener.open(req, timeout=30) as resp:
+            body = resp.read().decode(resp.headers.get_content_charset() or "utf-8", "replace")
+            return resp.status, body, resp.url
+    except urllib.error.HTTPError as e:  # 401/403/404 are the whole point of an IDOR check
+        return e.code, e.read().decode("utf-8", "replace"), url
+
+
+def fetch_with_frames(url: str, proxy: str | None = None, insecure: bool = False,
+                      headers: dict | None = None, storage_state: str | None = None):
     """Load in a real browser and read every readable iframe as well."""
     from playwright.sync_api import sync_playwright
 
     from .playwright_wrapper import ZeroDOM
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch()
-        page = browser.new_page()
-        page.goto(url, wait_until="networkidle")
+        browser = _launch(pw, proxy)
+        page = _context(browser, insecure=insecure, headers=headers, storage_state=storage_state).new_page()
+        _goto(page, url)
         graph, html, final_url = ZeroDOM.from_page(page, frames=True), serialize(page), page.url
         browser.close()
     return graph, html, final_url
 
 
 def capture(
-    url: str, screenshot: str | None, html_path: str | None, frames: bool = False
+    url: str, screenshot: str | None, html_path: str | None, frames: bool = False,
+    proxy: str | None = None, insecure: bool = False,
+    headers: dict | None = None, storage_state: str | None = None,
 ):
     """Load a URL once and write whichever visual artifacts were asked for.
 
@@ -74,9 +149,9 @@ def capture(
     from .playwright_wrapper import ZeroDOM
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch()
-        page = browser.new_page(viewport={"width": 1280, "height": 900})
-        page.goto(url, wait_until="networkidle")
+        browser = _launch(pw, proxy)
+        page = _context(browser, insecure=insecure, headers=headers, storage_state=storage_state).new_page()
+        _goto(page, url)
         source, final_url = serialize(page), page.url
         graph = ZeroDOM.from_page(page, frames=frames)
 
@@ -92,6 +167,154 @@ def capture(
             fh.write(graph.to_html_report(png, layout))
         notes.append(f"  HTML report        {html_path}")
     return graph, source, final_url, "\n".join(notes)
+
+
+_DEFAULT_DENY = "logout|sign-?out|delete|remove|destroy|revoke|deactivate|/api/.*(delete|remove)"
+
+
+def crawl_site(
+    start_url: str,
+    *,
+    scope: set[str] | None = None,
+    max_pages: int = 40,
+    deny: str = _DEFAULT_DENY,
+    proxy: str | None = None,
+    insecure: bool = False,
+    headers: dict | None = None,
+    storage_state: str | None = None,
+):
+    """Deep, authenticated, read-only recon of a real app: BFS-walk same-scope
+    routes in a rendered browser (so JS SPAs actually load), and for each page
+    record the forms, links, and the API calls it fired. This is the attack-
+    surface map a hunter builds by hand — routes, params, endpoints — yielded one
+    JSON object per page.
+
+    Read-only by design: it navigates and reads, never submits a form or clicks a
+    control matching `deny` (logout/delete/…), so it's safe to run unattended.
+    """
+    import re as _re
+    from urllib.parse import urljoin, urlparse
+
+    from lxml import html as lxml_html
+    from playwright.sync_api import sync_playwright
+
+    deny_re = _re.compile(deny, _re.I)
+    start_host = urlparse(start_url).netloc
+    allow = {start_host} | (scope or set())
+
+    def in_scope(u: str) -> bool:
+        h = urlparse(u).netloc
+        return h in allow and not deny_re.search(u)
+
+    def forms_of(doc, base: str) -> list[dict]:
+        out = []
+        for f in doc.iter("form"):
+            inputs = [
+                {"name": i.get("name"), "type": (i.get("type") or i.tag)}
+                for i in f.iter("input", "select", "textarea") if i.get("name")
+            ]
+            out.append({
+                "action": urljoin(base, f.get("action") or base),
+                "method": (f.get("method") or "get").upper(),
+                "inputs": inputs,
+            })
+        return out
+
+    seen: set[str] = set()
+    queue: list[str] = [start_url]
+    with sync_playwright() as pw:
+        browser = _launch(pw, proxy)
+        ctx = _context(browser, insecure=insecure, headers=headers, storage_state=storage_state)
+        page = ctx.new_page()
+        api_calls: list[str] = []
+        # XHR/fetch the page fires during a load = the app's real API surface.
+        page.on("request", lambda r: api_calls.append(f"{r.method} {r.url}")
+                if r.resource_type in ("xhr", "fetch") else None)
+        while queue and len(seen) < max_pages:
+            url = queue.pop(0)
+            if url in seen:
+                continue
+            seen.add(url)
+            api_calls.clear()
+            try:
+                _goto(page, url)
+                html, final = serialize(page), page.url
+            except Exception as exc:
+                yield {"url": url, "error": str(exc)[:200]}
+                continue
+            graph = ZeroDOMParser(html, final).parse()
+            try:
+                doc = lxml_html.fromstring(html)
+            except Exception:
+                doc = None
+            links = sorted({
+                urljoin(final, n["href"]) for n in graph["nodes"]
+                if n.get("href") and n["href"].split(":", 1)[0] not in ("javascript", "mailto", "tel")
+            })
+            forms = forms_of(doc, final) if doc is not None else []
+            record = {
+                "url": final,
+                "forms": forms,
+                "api_calls": sorted(set(api_calls)),
+                "hidden_fields": [h["name"] for h in graph["metadata"].get("hidden_fields", [])],
+                "links_in_scope": [l for l in links if in_scope(l)],
+            }
+            if blocked := graph["metadata"].get("blocked"):
+                record["blocked"] = blocked["kind"]
+            yield record
+            for l in record["links_in_scope"]:
+                if l not in seen and l not in queue:
+                    queue.append(l)
+        browser.close()
+
+
+def compare_identities(
+    url: str,
+    identities: list[tuple[str, str]],
+    *,
+    proxy: str | None = None,
+    insecure: bool = False,
+    headers: dict | None = None,
+) -> dict:
+    """Fetch one URL under each identity (a name + its storage_state cookies) and
+    diff the responses — the cross-tenant IDOR primitive: does user A see user B's
+    data? Byte-identical bodies across two identities on a per-user resource is
+    the tell. Deterministic; interpretation stays with the human."""
+    per: dict[str, dict] = {}
+    bodies: dict[str, str] = {}
+    for name, state in identities:
+        status, body, final = _http_fetch(url, proxy, insecure, headers, state)
+        bodies[name] = body
+        graph = ZeroDOMParser(body, final).parse()
+        per[name] = {
+            "status": status,
+            "bytes": len(body),
+            "nodes": graph["metadata"]["total_interactive_nodes"],
+            "sha256": hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:16],
+            "_labels": {n.get("label", "") for n in graph["nodes"]},
+        }
+
+    # Any two identities returning the exact same body — the IDOR alarm.
+    names = [n for n, _ in identities]
+    identical: list[list[str]] = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if per[a]["sha256"] == per[b]["sha256"]:
+                identical.append([a, b])
+
+    result: dict = {"url": url, "identities": {}, "identical_body_pairs": identical}
+    if len(names) >= 2:
+        a, b = names[0], names[1]
+        result["only_" + a] = sorted(l for l in per[a]["_labels"] - per[b]["_labels"] if l)
+        result["only_" + b] = sorted(l for l in per[b]["_labels"] - per[a]["_labels"] if l)
+    if identical:
+        result["note"] = ("byte-identical response under "
+                          + " and ".join("/".join(p) for p in identical)
+                          + " — a cross-tenant IDOR if this URL is a per-user resource")
+    for name, d in per.items():
+        d.pop("_labels", None)
+        result["identities"][name] = d
+    return result
 
 
 def emit_jsonl(graph) -> None:
@@ -115,7 +338,18 @@ def inspect(
     frames: bool = False,
     stealth: bool = False,
     as_pipe: bool = False,
+    proxy: str | None = None,
+    insecure: bool = False,
+    headers: dict | None = None,
+    storage_state: str | None = None,
 ) -> int:
+    # --frames traverses iframes via Playwright; --stealth is the CDP-pipe path
+    # that has no frame traversal. They can't compose, so say so instead of
+    # silently ignoring --stealth (the frames branch used to win quietly).
+    if frames and stealth:
+        raise SystemExit("zerodom: --frames and --stealth can't be combined "
+                         "(--frames needs the Playwright render path; --stealth is the CDP pipe)")
+
     # A local path is a perfectly good thing to inspect; both fetchers need file://.
     if "://" not in url and Path(url).exists():
         url = Path(url).resolve().as_uri()
@@ -123,14 +357,13 @@ def inspect(
     extra = ""
     if screenshot or html_path:
         # One browser session for the graph and every artifact asked for.
-        graph, html, final_url, extra = capture(url, screenshot, html_path, frames)
+        graph, html, final_url, extra = capture(
+            url, screenshot, html_path, frames, proxy, insecure, headers, storage_state)
     elif frames:
         # Frames only exist in a live browser, so this is a --render superset.
-        graph, html, final_url = fetch_with_frames(url)
+        graph, html, final_url = fetch_with_frames(url, proxy, insecure, headers, storage_state)
     else:
-        # Keep the common call 2-arg so callers (and tests) that wrap `fetch`
-        # aren't forced to know about stealth; widen only when it's requested.
-        html, final_url = fetch(url, render, stealth) if stealth else fetch(url, render)
+        html, final_url = fetch(url, render, stealth, proxy, insecure, headers, storage_state)
         graph = ZeroDOMParser(html, final_url).parse()
 
     if as_pipe:  # machine path: JSONL to stdout, no token report
@@ -159,6 +392,10 @@ def inspect(
     print(f"  Raw DOM tokens     {raw_tokens:,}", file=report)
     print(f"  ZeroDOM tokens     {graph_tokens:,}  ({'json' if as_json else 'compact text'})", file=report)
     print(f"  Token savings      {savings:.1f}%", file=report)
+    if blocked := graph["metadata"].get("blocked"):
+        print(f"  Blocked            {blocked['kind']} challenge detected "
+              f"(reuse a cleared session with --storage-state, or drive it in relay mode)",
+              file=report)
     if extra:
         print(extra, file=report)
     print("─" * 52, file=report)
@@ -188,9 +425,14 @@ def scan_targets(args) -> int:
         target = url
         if "://" not in target and Path(target).exists():
             target = Path(target).resolve().as_uri()
-        html, final_url = fetch(target, args.render, args.stealth) if args.stealth else fetch(target, args.render)
+        html, final_url = fetch(target, args.render, args.stealth, args.proxy,
+                                args.insecure, _parse_headers(args.headers), args.storage_state)
         graph = ZeroDOMParser(html, final_url).parse()
-        for finding in evaluate(graph, rules):
+        findings = list(evaluate(graph, rules))
+        if args.js:
+            from .jsintel import scan_js
+            findings += scan_js(html, final_url)
+        for finding in findings:
             any_finding = True
             sys.stdout.write(json.dumps(finding.to_dict(), ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -204,6 +446,55 @@ def extension_dir() -> Path:
         if (d / "manifest.json").is_file():
             return d
     raise SystemExit("zerodom: extension files not found in this install")
+
+
+def _add_fetch_flags(p) -> None:
+    """Engagement fetch options shared by inspect and scan. `ZERODOM_PROXY`
+    supplies the proxy default so a hunter can export it once per engagement."""
+    p.add_argument(
+        "--proxy", metavar="URL", default=os.environ.get("ZERODOM_PROXY"),
+        help="route traffic through an intercepting proxy, e.g. http://127.0.0.1:8080 "
+             "(Burp/Caido); defaults to $ZERODOM_PROXY",
+    )
+    p.add_argument(
+        "--insecure", action="store_true",
+        help="trust the proxy's own TLS CA (ignore certificate errors) — needed for Burp/Caido",
+    )
+    p.add_argument(
+        "--header", metavar="'K: V'", action="append", dest="headers",
+        help="extra request header, repeatable — e.g. a program's WAF bypass token",
+    )
+    p.add_argument(
+        "--storage-state", metavar="STATE.json", dest="storage_state",
+        help="reuse a Playwright storage_state (cookies + localStorage) — carries a "
+             "human-cleared session, e.g. a cf_clearance cookie, into automated reads",
+    )
+
+
+def _parse_headers(pairs: list | None) -> dict:
+    """`--header 'K: V'` values → {K: V}. A header without a colon is a user error."""
+    out = {}
+    for raw in pairs or []:
+        if ":" not in raw:
+            raise SystemExit(f"zerodom: --header needs 'Key: Value', got {raw!r}")
+        k, v = raw.split(":", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def _parse_identities(pairs: list | None) -> list[tuple[str, str]]:
+    """`--as NAME=STATE.json` values → [(name, path)]. Needs at least two to diff."""
+    ids: list[tuple[str, str]] = []
+    for raw in pairs or []:
+        if "=" not in raw:
+            raise SystemExit(f"zerodom: --as needs NAME=STATE.json, got {raw!r}")
+        name, path = raw.split("=", 1)
+        if not Path(path).is_file():
+            raise SystemExit(f"zerodom: identity {name!r} state file not found: {path}")
+        ids.append((name.strip(), path.strip()))
+    if len(ids) < 2:
+        raise SystemExit("zerodom: compare needs at least two --as identities to diff")
+    return ids
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -239,6 +530,27 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--render", action="store_true", help="fetch via headless Chromium")
     scan.add_argument("--stealth", action="store_true", help="fetch via a throwaway-profile Chrome over a CDP pipe")
     scan.add_argument("--fail-on-finding", action="store_true", help="exit non-zero if any rule fires (for CI)")
+    scan.add_argument("--js", action="store_true", help="also extract leaked secrets and endpoints from inline JS")
+    _add_fetch_flags(scan)
+
+    crawl = sub.add_parser(
+        "crawl", help="deep authenticated recon: map an app's routes/forms/API calls as JSONL"
+    )
+    crawl.add_argument("url", help="the start URL (crawl stays on its host by default)")
+    crawl.add_argument("--scope", metavar="HOSTS", help="extra in-scope hosts, comma-separated")
+    crawl.add_argument("--max-pages", type=int, default=40, dest="max_pages", help="page cap (default 40)")
+    crawl.add_argument("--deny", default=_DEFAULT_DENY, help="regex of links to never follow (logout/delete/…)")
+    _add_fetch_flags(crawl)
+
+    cmp = sub.add_parser(
+        "compare", help="fetch a URL under two saved sessions and diff the responses (cross-tenant IDOR)"
+    )
+    cmp.add_argument("url", help="the URL (or '-' to read URLs from stdin, one per line)")
+    cmp.add_argument(
+        "--as", metavar="NAME=STATE.json", action="append", dest="identities", required=True,
+        help="a named identity and its storage_state file, repeatable — pass at least two",
+    )
+    _add_fetch_flags(cmp)
 
     insp = sub.add_parser("inspect", help="parse a URL and report token savings")
     insp.add_argument("url")
@@ -285,13 +597,14 @@ def main(argv: list[str] | None = None) -> int:
         metavar="OUT.html",
         help="write a self-contained HTML report: graph beside the annotated page",
     )
+    _add_fetch_flags(insp)
 
     # `inspect` is the common verb, so requiring it is ceremony: `zerodom <url>`
     # works, and the explicit form keeps working for anyone who learned it.
     argv = sys.argv[1:] if argv is None else argv
     if (
         argv
-        and argv[0] not in {"inspect", "audit", "relay", "scan", "extension", "-h", "--help"}
+        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "crawl", "extension", "-h", "--help"}
         and not argv[0].startswith("-")
     ):
         argv = ["inspect", *argv]
@@ -313,6 +626,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scan":
         return scan_targets(args)
 
+    if args.command == "crawl":
+        scope = set(h.strip() for h in (args.scope or "").split(",") if h.strip())
+        for record in crawl_site(
+            args.url, scope=scope, max_pages=args.max_pages, deny=args.deny,
+            proxy=args.proxy, insecure=args.insecure,
+            headers=_parse_headers(args.headers), storage_state=args.storage_state,
+        ):
+            sys.stdout.write(json.dumps(record, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+        return 0
+
+    if args.command == "compare":
+        ids = _parse_identities(args.identities)
+        hdrs = _parse_headers(args.headers)
+        urls = _stdin_urls() if args.url == "-" else [args.url]
+        for url in urls:
+            result = compare_identities(url, ids, proxy=args.proxy,
+                                        insecure=args.insecure, headers=hdrs)
+            sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+        return 0
+
     if args.command == "extension":
         path = extension_dir()
         # Path alone on stdout so `cd "$(zerodom extension)"` works; the how-to goes to stderr.
@@ -321,6 +656,7 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 0
 
+    headers = _parse_headers(args.headers)
     # `-` means: read URLs from stdin, one per line (cat targets.txt | zerodom inspect -).
     if args.url == "-":
         rc = 0
@@ -328,12 +664,14 @@ def main(argv: list[str] | None = None) -> int:
             rc |= inspect(
                 url, args.render, args.as_json, args.screenshot,
                 args.html_path, args.find, args.frames, args.stealth, args.as_pipe,
+                args.proxy, args.insecure, headers, args.storage_state,
             )
         return rc
 
     return inspect(
         args.url, args.render, args.as_json, args.screenshot,
         args.html_path, args.find, args.frames, args.stealth, args.as_pipe,
+        args.proxy, args.insecure, headers, args.storage_state,
     )
 
 

@@ -23,11 +23,13 @@ nav{width:118px;flex-shrink:0;border-right:1px solid rgba(255,255,255,.06);paddi
 .nav-item.active{color:#22e0d8;background:rgba(34,224,216,.08)}
 section{display:none;flex:1;padding:16px;overflow-y:auto}
 section.active{display:block}
+section>p{color:#9aa1ac;font-size:12px;line-height:1.5}
 .panel{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:10px 12px}
-.row{display:flex;justify-content:space-between;align-items:center;padding:4px 0}
-.k{color:#5b5f68;font-size:12px}
-.v{color:#c7cad0;font-size:12px}
-.summary{font-size:11px;color:#5b5f68;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:4px 0}
+.k{color:#8b93a0;font-size:12px;flex:none}
+.v{color:#c7cad0;font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}
+.summary{font-size:11px;color:#8b93a0;margin-bottom:10px}
+.section-label{font-size:11px;color:#8b93a0;font-weight:600;letter-spacing:.06em;text-transform:uppercase;margin-top:14px;margin-bottom:8px}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0}
 .label{font-size:12px;color:#9199a3}
 .switch{width:36px;height:20px;border-radius:10px;border:none;cursor:pointer;position:relative;transition:background .2s}
@@ -35,12 +37,16 @@ section.active{display:block}
 .switch.on{background:#4fbf7f}
 .switch.on::after{transform:translateX(16px)}
 .switch.off{background:#3a3d44}
-.hint{font-size:11px;color:#5b5f68;line-height:1.5;margin-top:6px}
+.hint{font-size:11px;color:#8b93a0;line-height:1.5;margin-top:6px}
 .filter-input{width:100%;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:6px 10px;color:#e1e3e8;font-size:12px;outline:none;margin-bottom:10px}
-.filter-input::placeholder{color:#5b5f68}
+.filter-input::placeholder{color:#6b727c}
 .filter-input:focus{border-color:rgba(34,224,216,.3)}
 .scroll-list{overflow-y:auto;border-radius:6px}
-.empty-state{text-align:center;color:#5b5f68;font-size:12px;padding:24px 0}
+.scroll-list::-webkit-scrollbar{width:8px}
+.scroll-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px;border:2px solid transparent;background-clip:padding-box}
+.scroll-list::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.18);background-clip:padding-box}
+.scroll-list::-webkit-scrollbar-track{background:transparent}
+.empty-state{text-align:center;color:#8b93a0;font-size:12px;padding:24px 0}
 .danger{background:rgba(224,82,82,.1);border:1px solid rgba(224,82,82,.2);border-radius:6px;padding:7px 14px;color:#e05252;font-size:12px;cursor:pointer;transition:background .15s}
 .danger:hover{background:rgba(224,82,82,.18)}
 a{color:#22e0d8;text-decoration:none}
@@ -52,43 +58,52 @@ a:hover{text-decoration:underline}
    live in graph_ui.css — shared verbatim with the in-page sidebar. */
 
 
-.tool-btn{display:flex;align-items:center;gap:8px;width:100%;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px 12px;color:#c7cad0;font-size:12px;cursor:pointer;transition:all .15s;margin-bottom:6px}
+/* Icon-free to match the rest of the popup (nav, network, cookies carry no
+   glyphs); label left, hint right, one dense row per action. */
+.tool-btn{display:flex;align-items:baseline;justify-content:space-between;gap:12px;width:100%;text-align:left;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px 12px;cursor:pointer;transition:all .15s;margin-bottom:6px}
 .tool-btn:hover{background:rgba(255,255,255,.08);border-color:rgba(34,224,216,.2)}
-.tool-btn-icon{font-size:16px;flex:none}
-.tool-btn-text{font-size:12px}
-.tool-btn-hint{font-size:10px;color:#5b5f68}
+.tool-btn-text{font-size:12px;font-weight:500;color:#e6e8ec;white-space:nowrap}
+.tool-btn-hint{font-size:10px;color:#8b93a0;flex:none;white-space:nowrap}
 
-.badge{font-size:9px;padding:2px 6px;border-radius:4px;flex:none;font-weight:700}
-.badge-method-get{background:rgba(34,224,216,.16);color:#22e0d8}
-.badge-method-post{background:rgba(224,168,61,.2);color:#e0a83d}
-.badge-method-put{background:rgba(91,155,213,.2);color:#5b9bd5}
-.badge-method-delete{background:rgba(224,82,82,.18);color:#e05252}
-.badge-method-patch{background:rgba(168,112,224,.2);color:#a870e0}
-.badge-method-head,.badge-method-options{background:rgba(255,255,255,.08);color:#9199a3}
-.badge-2xx{background:rgba(79,191,127,.15);color:#4fbf7f}
-.badge-3xx{background:rgba(255,200,55,.15);color:#ffc837}
-.badge-4xx{background:rgba(224,82,82,.15);color:#e05252}
-.badge-5xx{background:rgba(224,82,82,.25);color:#e05252}
-.badge-unknown{background:rgba(255,255,255,.06);color:#5b5f68}
+/* Status/method colour is reserved for exceptions. A wall of green 200s or
+   teal GETs is noise, so the common case (2xx, GET/HEAD) reads quiet and only
+   redirects/errors/mutations get a hue. */
+.tag{font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;font-weight:600;letter-spacing:.02em}
+.m-quiet{color:#6b727c}
+.m-post{color:#e0a83d}
+.m-put{color:#6aa8e6}
+.m-delete{color:#ef6b6b}
+.m-patch{color:#b98be6}
+.s-2xx{color:#7d828c}
+.s-3xx{color:#e0a83d}
+.s-4xx{color:#ef6b6b}
+.s-5xx{color:#ff5b5b;font-weight:700}
+.s-none{color:#4a4e57}
 
-.net-row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:11px;transition:background .1s}
-.net-row:hover{background:rgba(255,255,255,.04)}
-.net-url{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9199a3;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace}
-.net-time{flex:none;color:#5b5f68;font-size:10px;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace}
+/* One shared alignment rail for every data row: fixed method/status columns,
+   flexible url, trailing meta. Fixes the ragged left edge across rows. */
+.net-row{display:grid;align-items:center;column-gap:10px;padding:6px 8px;cursor:pointer;font-size:11px;grid-template-columns:34px 30px minmax(0,1fr) auto}
+.net-row+.net-row,.cookie-row+.cookie-row{border-top:1px solid rgba(255,255,255,.04)}
+.net-row:hover,.cookie-row:hover{background:rgba(255,255,255,.045)}
+.net-url{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b3b9c2;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace}
+.net-time{justify-self:end;color:#6b727c;font-size:10px;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace}
 
-.cookie-row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:11px;transition:background .1s}
-.cookie-row:hover{background:rgba(255,255,255,.04)}
-.cookie-name{flex:none;min-width:70px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#e1e3e8;font-weight:600}
-.cookie-value{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9199a3;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace}
-.cookie-domain{flex:none;color:#5b5f68;font-size:10px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.flags{display:flex;gap:4px;flex:none}
+/* Two lines: the value (what a click copies) gets the full width on line 2,
+   with the domain trailing it dim; flags sit top-right on line 1. A one-line
+   grid squeezed the value to nothing whenever the domain + flags were long. */
+.cookie-row{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:10px;row-gap:2px;padding:7px 8px;cursor:pointer}
+.cookie-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#e6e8ec;font-weight:600;font-size:11px;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace}
+.cookie-sub{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;min-width:0}
+.cookie-value{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9aa1ac;font-size:10px;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace}
+.cookie-domain{flex:none;color:#6b727c;font-size:10px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flags{display:flex;gap:4px;flex:none;justify-self:end;align-self:start}
 .flag{font-size:9px;padding:2px 6px;border-radius:4px;background:rgba(255,255,255,.06);color:#7d828c;font-weight:700}
 .flag-httponly{background:rgba(224,168,61,.2);color:#e0a83d}
 .flag-secure{background:rgba(79,191,127,.15);color:#4fbf7f}
 .flag-samesite{background:transparent;border:1px solid rgba(125,130,140,.35);color:#7d828c;font-weight:500}
 .flag-jwt{background:rgba(34,224,216,.1);color:#22e0d8}
 .storage-src{flex:none;width:16px;height:16px;line-height:16px;text-align:center;border-radius:4px;font-size:9px;font-weight:700;background:rgba(34,224,216,.12);color:#22e0d8;margin-top:1px}
-.storage-row{cursor:default}
+.storage-row{cursor:default;grid-template-columns:16px minmax(0,1fr);column-gap:8px}
 
 .tab-row{display:flex;align-items:center;gap:8px;padding:6px 4px}
 .tab-group-badge{width:8px;height:8px;border-radius:50%;flex:none}
@@ -118,12 +133,12 @@ a:hover{text-decoration:underline}
     </nav>
 
     <section id="panel-session" class="active">
-      <p>Auto-connects to any local zerodom relay — nothing to set up here.</p>
+      <p>Auto-connects to any local zerodom relay. Nothing to set up here.</p>
       <div id="tabs"></div>
       <div id="live-stats"></div>
-      <button class="danger" id="stop-btn" style="display: none; margin-top: 12px;">Stop — detach now</button>
+      <button class="danger" id="stop-btn" style="display: none; margin-top: 12px;">Stop and detach now</button>
       <p class="hint" id="stop-hint" style="display: none; margin-top: 6px;">
-        Detaches the debugger immediately — frees your real clicks/typing right away.
+        Detaches the debugger immediately, freeing your real clicks and typing.
         Independent of the relay or MCP server; works even if either is stuck.
       </p>
     </section>
@@ -137,7 +152,7 @@ a:hover{text-decoration:underline}
         <button class="action-btn" id="net-copy-all">Copy All</button>
         <button class="action-btn" id="net-clear">Clear</button>
       </div>
-      <div class="summary" id="net-summary">—</div>
+      <div class="summary" id="net-summary">·</div>
       <input class="filter-input" id="net-filter" type="text" placeholder="Filter by URL…">
       <div class="scroll-list" id="net-list">
         <div class="empty-state">No requests captured yet.</div>
@@ -149,12 +164,12 @@ a:hover{text-decoration:underline}
         <button class="action-btn" id="cookie-copy-json">Copy JSON</button>
         <button class="action-btn" id="cookie-copy-full">Copy Full</button>
       </div>
-      <div class="summary" id="cookie-summary">—</div>
+      <div class="summary" id="cookie-summary">·</div>
       <div class="scroll-list" id="cookie-list">
         <div class="empty-state">No cookies for this origin.</div>
       </div>
-      <div style="margin-top: 12px; font-size: 11px; color: #5b5f68; font-weight: 600; letter-spacing: .04em;">WEB STORAGE</div>
-      <div class="summary" id="storage-summary">—</div>
+      <div class="section-label">Web storage</div>
+      <div class="summary" id="storage-summary">·</div>
       <div class="scroll-list" id="storage-list" style="max-height: 180px;">
         <div class="empty-state">No localStorage/sessionStorage.</div>
       </div>
@@ -163,20 +178,16 @@ a:hover{text-decoration:underline}
     <section id="panel-tools">
       <p style="margin-bottom: 14px;">Quick actions for the driving tab.</p>
       <button class="tool-btn" id="tool-screenshot">
-        <span class="tool-btn-icon">📸</span>
-        <div><div class="tool-btn-text">Screenshot</div><div class="tool-btn-hint">Full page capture</div></div>
+        <span class="tool-btn-text">Screenshot</span><span class="tool-btn-hint">full-page capture</span>
       </button>
       <button class="tool-btn" id="tool-copy-url">
-        <span class="tool-btn-icon">🔗</span>
-        <div><div class="tool-btn-text">Copy Page URL</div><div class="tool-btn-hint">Current page address</div></div>
+        <span class="tool-btn-text">Copy page URL</span><span class="tool-btn-hint">current address</span>
       </button>
       <button class="tool-btn" id="tool-open-new">
-        <span class="tool-btn-icon">↗</span>
-        <div><div class="tool-btn-text">Open in New Tab</div><div class="tool-btn-hint">Same URL, new tab</div></div>
+        <span class="tool-btn-text">Open in new tab</span><span class="tool-btn-hint">same URL</span>
       </button>
       <button class="tool-btn" id="tool-clear-net">
-        <span class="tool-btn-icon">🗑</span>
-        <div><div class="tool-btn-text">Clear Network Log</div><div class="tool-btn-hint">Reset captured requests</div></div>
+        <span class="tool-btn-text">Clear network log</span><span class="tool-btn-hint">reset captured requests</span>
       </button>
     </section>
 
@@ -186,7 +197,7 @@ a:hover{text-decoration:underline}
         <button class="switch on" id="hud-toggle"></button>
       </div>
       <p class="hint">Hides what's already drawn on the driving tab right now.
-        Comes back on the next page navigation — not a saved preference yet.</p>
+        Comes back on the next page navigation; not a saved preference yet.</p>
     </section>
 
     <section id="panel-about">

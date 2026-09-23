@@ -41,7 +41,9 @@ CI runs: `uv sync && uv run playwright install --with-deps chromium && uv run py
 - **`audit.py`** — selector audit against live page
 - **`cdp_pipe.py`** — `--stealth` transport: spawns Chrome via `--remote-debugging-pipe`, raw CDP over FD 3/4 (NUL-framed, sync). No port, no Playwright, ephemeral profile. Spawns fresh (can't attach to running Chrome — that's the relay). POSIX-only, `close_fds=False` is deliberate. Feeds the existing parser.
 - **`surfaces.py`** + **`surfaces.yaml`** — `zerodom scan`: deterministic YAML rules over the parsed graph (sensitive labels, admin links, missing-CSRF). Fixed match keys + regex, no expression language. Unknown key = load error.
-- **`cli.py`** — `zerodom inspect`/`audit`/`relay`/`scan`; `--pipe` (JSONL nodes), `--stealth`, `-` reads target URLs from stdin
+- **`jsintel.py`** — `zerodom scan --js`: regex over inline JS for leaked secrets (redacted in the finding) and `/api|/admin|/internal|/graphql` endpoints. Reuses `surfaces.Finding`. Linked JS not fetched.
+- **Blocked-state detection** (`parser._detect_challenge`) — CF/Turnstile/reCAPTCHA/hCaptcha fingerprints → `metadata["blocked"]`. Detect and hand off (relay / `--storage-state` / bypass header), never solve.
+- **`cli.py`** — `zerodom inspect`/`audit`/`relay`/`scan`/`extension`; `--pipe` (JSONL nodes), `--stealth`, `-` reads target URLs from stdin. Engagement flags on inspect+scan: `--proxy`/`$ZERODOM_PROXY`+`--insecure` (Burp/Caido), `--header 'K: V'` (repeatable), `--storage-state` (reuse a cleared session). `--frames`+`--stealth` errors; `_goto` bounds `networkidle` so challenge pages don't hang. `zerodom compare URL --as NAME=STATE.json` (≥2): fetch under each identity's cookies, diff responses (byte-identical = cross-tenant IDOR). `zerodom crawl URL`: rendered, scoped, read-only BFS recon → attack-surface map (forms, links, fired API calls) as JSONL.
 
 Import order in `__init__.py` matters: `label_linker` → `parser` → `playwright_wrapper`.
 
@@ -53,6 +55,7 @@ Import order in `__init__.py` matters: `label_linker` → `parser` → `playwrig
 - Every non-obvious selector/label decision has a comment explaining *why*, anchored to real-world page
 
 ## MCP server specifics
+- Cross-identity hunting: `zerodom_add_identity`/`zerodom_replay`/`zerodom_compare_identities` — register user B, replay/tamper a request under an identity, and diff one URL across identities (byte-identical = cross-tenant IDOR). Real-session APIRequestContext, works past WAF/login. chrome:// et al. refused at MCP + relay layers (no more wedge). `zerodom_set_scope`/`ZERODOM_SCOPE`: host allowlist + destructive denylist + rate throttle, enforced in code on nav/replay/click (locked scope can't be widened by the agent).
 - Entry point: `zerodom-mcp` (console script)
 - Single global session (`_session` dict) — node ids normalized: `"03"`, `"[03]"`, `"node_03"` all work
 - Tools re-read live DOM via `_read()` — form state and scroll persist across actions

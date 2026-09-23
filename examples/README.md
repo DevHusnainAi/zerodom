@@ -22,3 +22,9 @@ For the live-browser tool set (the Chrome extension + relay, `zerodom_click_node
 driving your real, already-logged-in Chrome rather than a throwaway one), see
 [`mcp_agent_system_prompt.md`](mcp_agent_system_prompt.md): a recommended system prompt for
 an agent using those tools, checked against the real tool signatures.
+
+For **bug-bounty / red-team hunting**, [`bug_bounty_hunt.md`](bug_bounty_hunt.md) is a
+full methodology the agent follows to run the loop — recon (`zerodom crawl` + `scan --js`)
+→ test IDOR / access-control / business-logic (`zerodom_compare_identities`, `zerodom_replay`)
+→ report — on an authorized target, in your real logged-in session. Use it as a system
+prompt or fill in its per-program block and use it as a `CLAUDE.md`.
