@@ -674,7 +674,7 @@ def test_network_log_tool_reports_and_clears(clean_session):
     page.handlers["request"](FakeRequest("GET", "https://example.com/"))
 
     result = asyncio.run(mcp_server.zerodom_network_log())
-    assert "GET" in result and "https://example.com/" in result
+    assert result.split()[1:] == ["GET", "https://example.com/"]
 
     asyncio.run(mcp_server.zerodom_network_log(clear=True))
     assert mcp_server._session["network_log"]["0"] == []
