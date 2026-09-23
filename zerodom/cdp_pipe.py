@@ -293,9 +293,14 @@ def spawn(
 
 
 def fetch(url: str, *, headless: bool = True, chrome: str | None = None) -> tuple[str, str]:
-    """One-shot: spawn, read (outer_html, final_url), clean up. The `--stealth` path."""
-    with spawn(url, headless=headless, chrome=chrome) as pipe:
-        return pipe.outer_html(None, pipe.page_session())
+    """One-shot: spawn, read (outer_html, final_url), clean up. The `--stealth` path.
+
+    Launch blank, then navigate over CDP inside outer_html — passing the URL as a
+    launch arg raced the page_session() attach, which grabbed the initial
+    about:blank before the navigation committed and returned an empty graph.
+    """
+    with spawn(None, headless=headless, chrome=chrome) as pipe:
+        return pipe.outer_html(url, pipe.page_session())
 
 
 def _selfcheck() -> None:

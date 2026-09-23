@@ -149,16 +149,19 @@ def inspect(
               else f"No node matches {find!r} among {len(graph['nodes'])} nodes.")
     else:
         print(graph.to_json() if as_json else graph.to_compact_text())
-    print(f"\n{'─' * 52}")
-    print(f"  URL                {final_url}")
-    print(f"  Interactive nodes  {graph['metadata']['total_interactive_nodes']}")
-    print(f"  Parsing latency    {graph['metadata']['parsing_latency_ms']} ms")
-    print(f"  Raw DOM tokens     {raw_tokens:,}")
-    print(f"  ZeroDOM tokens     {graph_tokens:,}  ({'json' if as_json else 'compact text'})")
-    print(f"  Token savings      {savings:.1f}%")
+    # --json is a machine payload; keep stdout pure JSON so `zerodom … --json | jq`
+    # works, and send the human token report to stderr instead.
+    report = sys.stderr if as_json else sys.stdout
+    print(f"\n{'─' * 52}", file=report)
+    print(f"  URL                {final_url}", file=report)
+    print(f"  Interactive nodes  {graph['metadata']['total_interactive_nodes']}", file=report)
+    print(f"  Parsing latency    {graph['metadata']['parsing_latency_ms']} ms", file=report)
+    print(f"  Raw DOM tokens     {raw_tokens:,}", file=report)
+    print(f"  ZeroDOM tokens     {graph_tokens:,}  ({'json' if as_json else 'compact text'})", file=report)
+    print(f"  Token savings      {savings:.1f}%", file=report)
     if extra:
-        print(extra)
-    print("─" * 52)
+        print(extra, file=report)
+    print("─" * 52, file=report)
     return 0
 
 

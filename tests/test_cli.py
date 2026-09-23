@@ -1,3 +1,4 @@
+import json
 import pytest
 from pathlib import Path
 
@@ -28,8 +29,11 @@ def test_compact_is_the_default_output(served, capsys):
 
 def test_json_flag_emits_the_full_graph(served, capsys):
     cli.main(["https://shop.test/", "--json"])
-    out = capsys.readouterr().out
-    assert '"selector":' in out and "(json)" in out
+    cap = capsys.readouterr()
+    # stdout is pure JSON so `--json | jq` works; the token report goes to stderr.
+    assert '"selector":' in cap.out
+    json.loads(cap.out)
+    assert "(json)" in cap.err and "(json)" not in cap.out
 
 
 def test_find_prints_only_matching_nodes(served, capsys):
