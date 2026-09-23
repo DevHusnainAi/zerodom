@@ -304,6 +304,58 @@ def test_highlight_is_skipped_for_a_launched_headless_session(monkeypatch, clean
     assert locator.click_calls == 1
 
 
+def _sensitive_field_session(attached: bool, **node_extra) -> TrackingLocator:
+    node = {"id": "node_01", "type": "input", "label": "Password", "selector": "#pw", **node_extra}
+    mcp_server._session.update(
+        pages={"0": object()}, active="0", attached=attached, selectors={}, nodes=[node], url=None,
+    )
+    return TrackingLocator()
+
+
+def test_fill_is_refused_on_a_password_input_type_when_attached(monkeypatch, clean_session):
+    locator = _sensitive_field_session(attached=True, input_type="password", label="Enter your secret")
+    monkeypatch.setattr(mcp_server, "locate", lambda page, node: locator)
+
+    try:
+        asyncio.run(mcp_server._act("01", "fill", "hunter2"))
+        assert False, "expected PermissionError"
+    except PermissionError:
+        pass
+    assert locator.fill_calls == [], "must never dispatch the fill, not even try and roll back"
+
+
+def test_fill_is_refused_on_a_text_field_labeled_cvv_when_attached(monkeypatch, clean_session):
+    locator = _sensitive_field_session(attached=True, input_type="text", label="CVV")
+    monkeypatch.setattr(mcp_server, "locate", lambda page, node: locator)
+
+    try:
+        asyncio.run(mcp_server._act("01", "fill", "123"))
+        assert False, "expected PermissionError"
+    except PermissionError:
+        pass
+    assert locator.fill_calls == []
+
+
+def test_fill_on_a_password_field_is_allowed_for_a_launched_headless_session(monkeypatch, clean_session):
+    # The guard is specifically about a real, watched session filling a real
+    # person's credentials -- a throwaway headless browser has no such risk.
+    locator = _sensitive_field_session(attached=False, input_type="password")
+    monkeypatch.setattr(mcp_server, "locate", lambda page, node: locator)
+
+    asyncio.run(mcp_server._act("01", "fill", "hunter2"))
+
+    assert locator.fill_calls == ["hunter2"]
+
+
+def test_fill_on_an_ordinary_field_is_unaffected_when_attached(monkeypatch, clean_session):
+    locator = _sensitive_field_session(attached=True, input_type="email", label="Email address")
+    monkeypatch.setattr(mcp_server, "locate", lambda page, node: locator)
+
+    asyncio.run(mcp_server._act("01", "fill", "a@b.com"))
+
+    assert locator.fill_calls == ["a@b.com"]
+
+
 def test_a_highlight_failure_never_blocks_the_real_action(monkeypatch, clean_session):
     class BrokenHighlightLocator(TrackingLocator):
         async def evaluate(self, js):
@@ -557,7 +609,7 @@ class _FakeCookieContext:
     async def cookies(self):
         return [{
             "name": "session", "value": "abc123", "domain": "example.com",
-            "httpOnly": True, "secure": True,
+            "httpOnly": True, "secure": True, "sameSite": "Strict",
         }]
 
 
@@ -600,7 +652,7 @@ def test_set_viewport_resizes_the_page_and_rereads(monkeypatch, clean_session):
     assert page.viewport_calls == [{"width": 375, "height": 812}]
 
 
-def test_get_cookies_reports_the_httponly_flag(clean_session):
+def test_get_cookies_reports_the_httponly_and_samesite_flags(clean_session):
     page = FakeToolsPage()
     mcp_server._session.update(pages={"0": page}, active="0")
 
@@ -608,6 +660,7 @@ def test_get_cookies_reports_the_httponly_flag(clean_session):
 
     assert "session=abc123" in result
     assert "httpOnly=True" in result
+    assert "sameSite=Strict" in result
 
 
 def test_eval_js_runs_in_the_page_and_returns_json(clean_session):

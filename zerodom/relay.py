@@ -153,6 +153,44 @@ class BrowserModel:
         tab_session = self._find_tab_session(lambda s: s.session_id == session_id)
         return tab_session.target_info if tab_session else None
 
+    def new_client_session(self, tab_session: TabSession) -> str:
+        """A genuinely distinct session id for context.new_cdp_session(page)
+        -- Target.attachToTarget/attachToBrowserTarget used to just hand
+        back the tab's own main session id, which seemed fine (Playwright
+        got a working session id either way) until it wasn't: Playwright's
+        driver tracks CDP sessions by identity internally, and two of its
+        own session objects sharing one server-side id corrupted that
+        bookkeeping — confirmed live as a real Node-side assertion crash
+        ("Connection closed while reading from the driver") on the very
+        next real page action after any raw command went through the
+        explicit session. Real CDP genuinely supports multiple simultaneous
+        sessions attached to one target; this is that, at last. Reuses the
+        same child_sessions routing already built for worker/oopif
+        auto-attach (BrowserModel.send_command's fallback), so no new
+        dispatch path is needed — a session id here just needs to be found
+        in *some* TabSession's child_sessions to route correctly.
+        """
+        session_id = f"pw-cdp-{self._next_session_id}"
+        self._next_session_id += 1
+        tab_session.child_sessions.add(session_id)
+        return session_id
+
+    def get_tab_id(self, session_id: str | None) -> int | None:
+        """The real chrome tab id behind a relay session id — for commands
+        that aren't CDP at all (chrome.windows.update, a plain extension API
+        unrelated to chrome.debugger) but still need to know *which tab's
+        window*. mcp_server.py never sees real chrome tab ids otherwise;
+        this is the one seam where it needs to. Checks a tab's own main
+        session id and its child sessions (new_client_session()'s explicit
+        CDPSessions live there) — same dual lookup send_command already
+        does, since callers reach this via either kind of session id."""
+        if not session_id:
+            return None
+        tab_session = self._find_tab_session(lambda s: s.session_id == session_id)
+        if tab_session is None:
+            tab_session = self._find_tab_session(lambda s: session_id in s.child_sessions)
+        return tab_session.tab_id if tab_session else None
+
     async def send_browser_command(self, method: str, params: Any) -> Any:
         """A browser-level command (Storage.*, Browser.*, ...) with no target
         of its own — chrome.debugger.sendCommand still needs *a* tab, so any
@@ -277,20 +315,64 @@ async def handle_cdp_command(
     if method == "Target.attachToTarget":
         # Needed for Playwright's context.new_cdp_session(page) — its only
         # way to reach a CDP method with no high-level wrapper (e.g.
-        # Input.setIgnoreInputEvents). Real CDP would open a genuinely new
-        # session; this relay only ever tracks one session per tab, so it
-        # hands back the *existing* one for a tab already known here rather
-        # than pretending to create a second. Good enough for what
-        # new_cdp_session's caller actually wants: a session_id it can send
-        # more commands through — those still route through the normal
-        # session_id-keyed fallback below, unchanged.
+        # Input.setIgnoreInputEvents). Hands back a genuinely distinct
+        # session id via new_client_session(), not the tab's own main one —
+        # see its docstring for why that distinction turned out to matter.
         target_id = (params or {}).get("targetId")
         tab_session = model._find_tab_session(
             lambda s: (s.target_info or {}).get("targetId") == target_id
         )
         if tab_session is None:
             raise RuntimeError(f"Target.attachToTarget: unknown targetId {target_id!r}")
-        return {"sessionId": tab_session.session_id}
+        return {"sessionId": model.new_client_session(tab_session)}
+    if method == "Target.attachToBrowserTarget":
+        # context.new_cdp_session()'s actual first move (confirmed live,
+        # not documented anywhere obvious) — and one chrome.debugger can
+        # never satisfy for real: a tab-scoped chrome.debugger attachment is
+        # flatly rejected for a browser-level target ("Not allowed", real
+        # Chrome error). Silently broke every raw CDP session ever taken
+        # since D15 (Input.setIgnoreInputEvents, the real input-block half
+        # of the driving-lock UI) — masked because _set_input_ignored
+        # swallows all exceptions by design, so the visible border/cursor
+        # kept rendering with no sign real input was never actually
+        # blocked. Faked the same way as Target.attachToTarget above: this
+        # model has no real distinction between a "browser" session and a
+        # "tab" session — every command ends up at
+        # chrome.debugger.sendCommand({tabId}, ...) regardless — so any
+        # attached tab does, via a genuinely distinct session id from
+        # new_client_session() (see its docstring for why that matters).
+        tab_session = next(iter(model._tab_sessions.values()), None)
+        if tab_session is None:
+            raise RuntimeError("Target.attachToBrowserTarget: no attached tab available")
+        return {"sessionId": model.new_client_session(tab_session)}
+    if method == "Browser.setWindowBounds":
+        # A real, recognized CDP Browser-domain method — required, not just
+        # convenient: Playwright's own driver validates method names against
+        # its internal protocol schema before ever sending them, so a made-up
+        # name like "chrome.windows.update" gets rejected client-side with
+        # "wasn't found" and never reaches this relay at all (confirmed the
+        # hard way). CDP's own Browser.setWindowBounds normally needs a
+        # windowId from Browser.getWindowForTarget first; this relay skips
+        # that ceremony since it already knows the tab from `session_id` —
+        # `windowId` in `params` is accepted but ignored, not real CDP
+        # semantics, just reusing a name Playwright won't block. The actual
+        # window resize is chrome.windows.update, a plain extension API
+        # unrelated to chrome.debugger's Browser domain entirely.
+        tab_id = model.get_tab_id(session_id)
+        if tab_id is None:
+            raise RuntimeError("Browser.setWindowBounds: no tab for this session")
+        bounds = (params or {}).get("bounds") or {}
+        await model._send_to_extension("chrome.windows.update", [tab_id, bounds])
+        # Real CDP's Browser.setWindowBounds response is bare {} -- the
+        # extension's chrome.windows.update() actually returns the full
+        # chrome.windows.Window object, but forwarding that verbatim
+        # crashed Playwright's own Node driver outright (a real internal
+        # assertion failure, "Connection closed while reading from the
+        # driver", not a graceful Python-side error) — it evidently has
+        # internal expectations about this specific method's response
+        # shape. Discarding the extension's result and returning the real
+        # empty shape is what real CDP does anyway.
+        return {}
     if session_id:
         return await model.send_command(session_id, method, params)
     return await model.send_browser_command(method, params)
@@ -348,6 +430,23 @@ class RelayServer:
         return f"ws://127.0.0.1:{self._port}{self._extension_path}"
 
     async def _route(self, ws: Any) -> None:
+        # A real vulnerability, not a theoretical one — confirmed live: any
+        # public webpage's JS can open a WebSocket straight to this
+        # loopback port (WebSocket has no browser-enforced CORS the way
+        # fetch() does — a server that doesn't check Origin itself accepts
+        # anything) and speak this same JSON-RPC protocol, driving the
+        # user's own attached session. Worse since the path stopped being a
+        # random per-run UUID (Stage 6b, for reconnect convenience) — a
+        # fixed, guessable "/cdp/local" is no obscurity at all. The real
+        # fix is Origin, not path secrecy: legitimate callers are either
+        # our own extension (a `chrome-extension://` origin) or a
+        # non-browser client like Playwright/Python (no Origin header at
+        # all) — a page-origin ("http://"/"https://") gets rejected
+        # outright, regardless of path.
+        origin = ws.request.headers.get("Origin", "")
+        if origin.startswith("http://") or origin.startswith("https://"):
+            await ws.close(1008, "rejected: page origins may not connect to this relay")
+            return
         path = ws.request.path
         if path == self._extension_path:
             await self._handle_extension(ws)

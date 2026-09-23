@@ -158,13 +158,55 @@ def test_an_unknown_path_is_refused():
     # The upgrade itself succeeds (routing happens after accept, not via
     # process_request) — the server closes right after, so the client sees
     # a normal ConnectionClosed on its first read, not a rejected handshake.
-    # Fine for a single-user local tool whose real paths are secret UUIDs
-    # nobody will guess; a process_request-level reject is more precise but
-    # not worth the extra code for what this stage actually needs.
+    # Path secrecy alone stopped being the real security boundary once
+    # Stage 6b fixed the CLI's default path to "local" for reconnect
+    # convenience — see test_a_page_origin_is_rejected below for the actual
+    # boundary now (Origin, not path).
     async def scenario():
         async with running_server() as server:
             async with websockets.connect(f"ws://127.0.0.1:{server._port}/not-a-real-path") as ws:
                 with pytest.raises(websockets.ConnectionClosed):
                     await ws.recv()
+
+    run(scenario())
+
+
+def test_a_page_origin_is_rejected():
+    """The real fix for the fixed/guessable default path (D17): any public
+    webpage's JS can open a WebSocket straight to this loopback port —
+    WebSocket has no browser-enforced CORS the way fetch() does, a server
+    that doesn't check Origin itself accepts anything — confirmed live
+    before this fix existed. Only page origins (http/https) are rejected;
+    the extension (chrome-extension://) and non-browser clients like
+    Playwright/Python (no Origin header at all) still connect normally."""
+    async def scenario():
+        async with running_server() as server:
+            async with websockets.connect(
+                server.cdp_endpoint(),
+                additional_headers={"Origin": "https://evil.example.com"},
+            ) as ws:
+                with pytest.raises(websockets.ConnectionClosed):
+                    await ws.recv()
+
+    run(scenario())
+
+
+def test_a_non_browser_client_with_no_origin_header_still_connects():
+    """Playwright's own connect_over_cdp, and every diagnostic script used
+    to build this project, send no Origin header at all — must keep
+    working, this isn't a same-origin allowlist, just a page-origin
+    blocklist. A real extension connection is needed here (not just the CDP
+    side left hanging) — _handle_cdp awaits extension_ready unconditionally
+    before it ever looks at the client, so a CDP connection with no
+    extension ever showing up blocks server teardown forever, an existing,
+    narrower issue unrelated to Origin checking and out of scope here."""
+    async def scenario():
+        async with running_server() as server:
+            async with websockets.connect(server.extension_endpoint()) as ext:
+                await ext.send(json.dumps({"method": "extension.initialized", "params": []}))
+                async with websockets.connect(server.cdp_endpoint()) as ws:
+                    await ws.send(json.dumps({"id": 1, "method": "Browser.getVersion", "params": {}}))
+                    resp = await asyncio.wait_for(_recv_json(ws), timeout=2)
+                    assert resp["result"]["product"] == "Chrome/Extension-Bridge"
 
     run(scenario())

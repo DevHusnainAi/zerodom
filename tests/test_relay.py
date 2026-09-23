@@ -30,6 +30,8 @@ class FakeExtension:
             return tab
         if method == "chrome.tabs.remove":
             return None
+        if method == "chrome.windows.update":
+            return {"id": 1, **params[1]}
         raise AssertionError(f"unexpected extension call: {method}")
 
 
@@ -248,6 +250,45 @@ def test_get_target_info_by_session_id(rig):
     assert model.get_target_info("no-such-session") is None
 
 
+def test_get_tab_id_by_session_id(rig):
+    model, ext, cdp = rig
+    model.on_tab_created({"id": 42, "url": "https://example.com/"})
+    asyncio.run(model.enable_auto_attach())
+    assert model.get_tab_id("pw-tab-1") == 42
+    assert model.get_tab_id(None) is None
+    assert model.get_tab_id("no-such-session") is None
+
+
+def test_browser_set_window_bounds_routes_by_session_to_the_real_tab_id(rig):
+    """Browser.setWindowBounds is repurposed, not real CDP window-management
+    -- a real CDP method name is required so Playwright's own driver doesn't
+    reject it client-side before it ever reaches this relay (a made-up
+    method name like "chrome.windows.update" gets rejected that way,
+    confirmed live). handle_cdp_command must resolve the caller's sessionId
+    to a real chrome tab id (not the relay's own pw-tab-N string) and
+    forward just the bounds through as chrome.windows.update params. The
+    response must be the real CDP shape ({}), not the extension's raw
+    chrome.windows.Window result -- forwarding that verbatim crashed
+    Playwright's own Node driver outright (confirmed live)."""
+    model, ext, cdp = rig
+    model.on_tab_created({"id": 42, "url": "https://example.com/"})
+    asyncio.run(model.enable_auto_attach())
+
+    result = asyncio.run(handle_cdp_command(
+        model, "Browser.setWindowBounds",
+        {"windowId": 0, "bounds": {"width": 800, "height": 600}}, "pw-tab-1",
+    ))
+
+    assert ("chrome.windows.update", [42, {"width": 800, "height": 600}]) in ext.calls
+    assert result == {}
+
+
+def test_browser_set_window_bounds_without_a_session_raises(rig):
+    model, ext, cdp = rig
+    with pytest.raises(RuntimeError, match="no tab for this session"):
+        asyncio.run(handle_cdp_command(model, "Browser.setWindowBounds", {}, None))
+
+
 def test_send_browser_command_routes_through_any_attached_tab(rig):
     model, ext, cdp = rig
     model.on_tab_created({"id": 1, "url": "https://example.com/"})
@@ -355,10 +396,16 @@ def test_unrecognized_command_with_a_session_forwards_as_a_tab_command(rig):
     assert call[1][0] == {"tabId": 1}
 
 
-def test_attach_to_target_returns_the_existing_session_for_a_known_target(rig):
+def test_attach_to_target_returns_a_distinct_child_session_for_a_known_target(rig):
     """What context.new_cdp_session(page) needs to work at all against this
     relay — it's the only way Playwright reaches a CDP method with no
-    high-level wrapper (e.g. Input.setIgnoreInputEvents)."""
+    high-level wrapper (e.g. Input.setIgnoreInputEvents). Must be a session
+    id distinct from the tab's own main one, not that same id reused —
+    handing back the same id corrupted Playwright's own driver-side session
+    bookkeeping (a real Node assertion crash on the next real page action,
+    confirmed live), because real CDP genuinely supports multiple
+    simultaneous sessions on one target and Playwright's driver assumes
+    that."""
     model, ext, cdp = rig
     model.on_tab_created({"id": 1, "url": "https://example.com/"})
     asyncio.run(model.enable_auto_attach())
@@ -371,7 +418,8 @@ def test_attach_to_target_returns_the_existing_session_for_a_known_target(rig):
         )
     )
 
-    assert result == {"sessionId": tab_session.session_id}
+    assert result["sessionId"] != tab_session.session_id
+    assert result["sessionId"] in tab_session.child_sessions
 
 
 def test_attach_to_target_raises_for_an_unknown_target_id(rig):
@@ -381,3 +429,28 @@ def test_attach_to_target_raises_for_an_unknown_target_id(rig):
         asyncio.run(
             handle_cdp_command(model, "Target.attachToTarget", {"targetId": "no-such-target"}, None)
         )
+
+
+def test_attach_to_browser_target_returns_a_distinct_child_session(rig):
+    """context.new_cdp_session(page)'s actual first move (confirmed live,
+    not documented) -- chrome.debugger can never really satisfy this (a
+    real, hard "Not allowed" from Chrome for a tab-scoped debugger trying to
+    attach browser-wide), so the relay fakes it against any attached tab.
+    Must be a distinct child session id, not that tab's own main session id
+    reused — see test_attach_to_target's twin for why that corrupted
+    Playwright's driver."""
+    model, ext, cdp = rig
+    model.on_tab_created({"id": 1, "url": "https://example.com/"})
+    asyncio.run(model.enable_auto_attach())
+    tab_session = model._tab_sessions[1]
+
+    result = asyncio.run(handle_cdp_command(model, "Target.attachToBrowserTarget", {}, None))
+
+    assert result["sessionId"] != tab_session.session_id
+    assert result["sessionId"] in tab_session.child_sessions
+
+
+def test_attach_to_browser_target_raises_with_nothing_attached(rig):
+    model, ext, cdp = rig
+    with pytest.raises(RuntimeError, match="no attached tab available"):
+        asyncio.run(handle_cdp_command(model, "Target.attachToBrowserTarget", {}, None))
