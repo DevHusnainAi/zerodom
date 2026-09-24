@@ -28,3 +28,14 @@ leasteqqq.txt
 session*.md
 *session*.txt
 soc2_pitch.md
+
+# Secrets and session state — never commit. zerodom's own --storage-state files
+# hold real session cookies; keep engagement credentials out of git.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*storage-state*.json
+*storage_state*.json
+cleared.json
