@@ -1,0 +1,12 @@
+# jsintel.py is ZeroDOM's secret *detector*, so its docstring example and its
+# test must contain sample JWTs to prove detection works. Both are fake fixtures,
+# not real credentials — payloads are {"sub":"1"}, signatures are "abcdef123456".
+# Nothing to revoke or rotate. Ignored here so the scanner stops flagging its own
+# test data. Scoped to these exact values, so any real secret elsewhere still trips.
+version: 2
+secret:
+  ignored-matches:
+    - name: jsintel docstring sample JWT (fake fixture)
+      match: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.abcdef123456
+    - name: test_jsintel fixture JWT (fake fixture)
+      match: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdef123456
