@@ -230,7 +230,14 @@ class ZeroDOMParser:
         self.collapse_duplicates = collapse_duplicates
         self.offscreen_skipped = 0
         self.occluded_skipped = 0
-        self.root: HtmlElement = lxml.html.document_fromstring(html.strip() or "<html></html>")
+        try:
+            self.root: HtmlElement = lxml.html.document_fromstring(html.strip() or "<html></html>")
+        except lxml.etree.ParserError:
+            # ponytail: lxml raises "Document is empty" on degenerate fragments
+            # ('<html', a lone tag) that .strip() can't catch. Truncated responses
+            # and odd pages shouldn't crash the parse — fall back to an empty doc,
+            # same as any other unparseable input already yields (0 nodes).
+            self.root = lxml.html.document_fromstring("<html></html>")
         self.nodes: list[dict[str, Any]] = []
         # (kind, ...) -> occurrences, one pass over the tree, keyed so each kind of
         # uniqueness claim — id, (tag, name), (tag, class) — is counted separately.

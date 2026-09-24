@@ -39,7 +39,15 @@ def _goto(page, url: str) -> None:
 
 
 def _launch(pw, proxy: str | None):
-    return pw.chromium.launch(proxy={"server": proxy} if proxy else None)
+    try:
+        return pw.chromium.launch(proxy={"server": proxy} if proxy else None)
+    except Exception as exc:
+        # ponytail: turn Playwright's 10-line "Executable doesn't exist" traceback
+        # into one actionable line — the #1 first-run stumble is running a browser
+        # command (--render/--screenshot/--html) before `playwright install chromium`.
+        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc):
+            sys.exit("chromium isn't installed — run: playwright install chromium")
+        raise
 
 
 def _context(browser, *, insecure, headers, storage_state):
@@ -62,6 +70,12 @@ def _cookies_from_state(storage_state: str | None) -> list[dict]:
     return json.loads(Path(storage_state).read_text(encoding="utf-8")).get("cookies", [])
 
 
+class FetchError(Exception):
+    """A page couldn't be fetched (bad URL, dead host, refused/timeout). Carries a
+    one-line message so the CLI never shows a stranger a urllib/Playwright traceback
+    for the everyday case of a typo'd or unreachable target."""
+
+
 def fetch(
     url: str,
     render: bool,
@@ -75,7 +89,33 @@ def fetch(
     `stealth` spawns a throwaway-profile Chrome over a CDP pipe (no port, no
     Playwright driver, nothing left on disk) — see cdp_pipe.py. `proxy` routes
     traffic through Burp/Caido; `insecure` trusts the proxy's own CA; `headers`
-    adds a program's bypass header; `storage_state` reuses a cleared session."""
+    adds a program's bypass header; `storage_state` reuses a cleared session.
+
+    Raises FetchError (not a raw traceback) when the target can't be reached."""
+    try:
+        return _fetch(url, render, stealth, proxy, insecure, headers, storage_state)
+    except (urllib.error.URLError, ValueError, OSError) as exc:
+        # urllib: DNS/refused/timeout · ValueError: unknown url scheme (typo) ·
+        # OSError: socket-level. SystemExit (missing chromium) is BaseException,
+        # so it passes through untouched.
+        reason = getattr(exc, "reason", exc)
+        raise FetchError(f"could not fetch {url}: {reason}") from None
+    except Exception as exc:  # Playwright nav failures (net::ERR_*, timeouts) only —
+        if "playwright" not in type(exc).__module__:
+            raise  # a real zerodom bug shouldn't be disguised as "could not fetch"
+        first = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+        raise FetchError(f"could not fetch {url}: {first}") from None
+
+
+def _fetch(
+    url: str,
+    render: bool,
+    stealth: bool = False,
+    proxy: str | None = None,
+    insecure: bool = False,
+    headers: dict | None = None,
+    storage_state: str | None = None,
+) -> tuple[str, str]:
     if stealth:
         from .cdp_pipe import fetch as pipe_fetch
 
@@ -355,16 +395,25 @@ def inspect(
         url = Path(url).resolve().as_uri()
 
     extra = ""
-    if screenshot or html_path:
-        # One browser session for the graph and every artifact asked for.
-        graph, html, final_url, extra = capture(
-            url, screenshot, html_path, frames, proxy, insecure, headers, storage_state)
-    elif frames:
-        # Frames only exist in a live browser, so this is a --render superset.
-        graph, html, final_url = fetch_with_frames(url, proxy, insecure, headers, storage_state)
-    else:
-        html, final_url = fetch(url, render, stealth, proxy, insecure, headers, storage_state)
-        graph = ZeroDOMParser(html, final_url).parse()
+    try:
+        if screenshot or html_path:
+            # One browser session for the graph and every artifact asked for.
+            graph, html, final_url, extra = capture(
+                url, screenshot, html_path, frames, proxy, insecure, headers, storage_state)
+        elif frames:
+            # Frames only exist in a live browser, so this is a --render superset.
+            graph, html, final_url = fetch_with_frames(url, proxy, insecure, headers, storage_state)
+        else:
+            html, final_url = fetch(url, render, stealth, proxy, insecure, headers, storage_state)
+            graph = ZeroDOMParser(html, final_url).parse()
+    except FetchError as exc:
+        print(f"zerodom: {exc}", file=sys.stderr)  # dead host / typo — one line, no traceback
+        return 1
+    except Exception as exc:  # nav failure on the render/frames path (no FetchError wrap there)
+        if "playwright" not in type(exc).__module__:
+            raise
+        print(f"zerodom: could not fetch {url}: {str(exc).splitlines()[0]}", file=sys.stderr)
+        return 1
 
     if as_pipe:  # machine path: JSONL to stdout, no token report
         emit_jsonl(graph)
@@ -418,15 +467,26 @@ def scan_targets(args) -> int:
     """
     from .surfaces import evaluate, load_rules
 
-    rules = load_rules(args.rules)  # loads once; raises loudly on a bad ruleset
+    try:
+        rules = load_rules(args.rules)  # loads once; raises loudly on a bad ruleset
+    except Exception as exc:
+        # A --rules file is config: a missing file, bad YAML, or an invalid rule
+        # (load_rules' own ValueErrors are already user-readable) is a clean exit,
+        # not a traceback dumped at someone writing their first ruleset.
+        sys.exit(f"zerodom: bad rules file: {exc}")
     urls = _stdin_urls() if args.url == "-" else [args.url]
     any_finding = False
     for url in urls:
         target = url
         if "://" not in target and Path(target).exists():
             target = Path(target).resolve().as_uri()
-        html, final_url = fetch(target, args.render, args.stealth, args.proxy,
-                                args.insecure, _parse_headers(args.headers), args.storage_state)
+        try:
+            html, final_url = fetch(target, args.render, args.stealth, args.proxy,
+                                    args.insecure, _parse_headers(args.headers), args.storage_state)
+        except FetchError as exc:
+            # A dead host mid-sweep must not abort the batch — skip it, keep scanning.
+            print(f"zerodom: {exc}", file=sys.stderr)
+            continue
         graph = ZeroDOMParser(html, final_url).parse()
         findings = list(evaluate(graph, rules))
         if args.js:
@@ -642,8 +702,14 @@ def main(argv: list[str] | None = None) -> int:
         hdrs = _parse_headers(args.headers)
         urls = _stdin_urls() if args.url == "-" else [args.url]
         for url in urls:
-            result = compare_identities(url, ids, proxy=args.proxy,
-                                        insecure=args.insecure, headers=hdrs)
+            try:
+                result = compare_identities(url, ids, proxy=args.proxy,
+                                            insecure=args.insecure, headers=hdrs)
+            except (urllib.error.URLError, ValueError, OSError) as exc:
+                # Sweeping ids over a range (seq | compare -) can't die on one dead URL.
+                print(f"zerodom: could not fetch {url}: {getattr(exc, 'reason', exc)}",
+                      file=sys.stderr)
+                continue
             sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
         sys.stdout.flush()
         return 0

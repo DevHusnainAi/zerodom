@@ -1996,8 +1996,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "lxml" },
-    { name = "mcp", extras = ["cli"] },
-    { name = "playwright" },
+    { name = "mcp", extras = ["cli"], specifier = "<3" },
+    { name = "playwright", specifier = "<2" },
     { name = "pyyaml" },
     { name = "tiktoken" },
     { name = "websockets" },

@@ -214,3 +214,26 @@ def test_compare_flags_identical_body_as_possible_idor():
 def test_compare_needs_two_identities():
     with pytest.raises(SystemExit):
         cli.main(["compare", "https://x", "--as", "A=/does/not/exist.json"])
+
+
+def test_dead_host_is_a_clean_fetch_error_not_a_traceback():
+    """A typo'd or unreachable target is the everyday first-contact case; it must
+    raise FetchError (one line), never a raw urllib/ValueError traceback."""
+    with pytest.raises(cli.FetchError):
+        cli.fetch("notaurl", render=False)  # unknown url scheme
+    with pytest.raises(cli.FetchError):
+        cli.fetch("http://127.0.0.1:1/", render=False)  # connection refused
+
+
+def test_inspect_reports_a_dead_host_and_exits_nonzero(capsys):
+    rc = cli.inspect("http://127.0.0.1:1/")
+    assert rc == 1
+    assert "could not fetch" in capsys.readouterr().err
+
+
+def test_bad_rules_file_is_a_clean_exit_not_a_traceback():
+    """A missing/invalid --rules file is config error: exit with one line before
+    any fetch, never a yaml/OSError traceback at someone writing a first ruleset."""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["scan", "https://example.com", "--rules", "/no/such/rules.yaml"])
+    assert "bad rules file" in str(exc.value)

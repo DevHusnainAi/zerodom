@@ -31,8 +31,13 @@ dependencies = [
     # page, which does not fit the <50ms budget. See zerodom/parser.py.
     "lxml",
     "tiktoken",
-    "mcp[cli]",
-    "playwright",
+    # Cap the next major on the two fast-moving deps: the MCP SDK is young and
+    # `from mcp.server import MCPServer` is exactly the kind of import a major
+    # can move, and Playwright majors couple to a browser build. A breaking
+    # release must not silently break a fresh `pip install zerodom`. Tested on
+    # mcp 2.2, playwright 1.62. The stable deps stay uncapped for embeddability.
+    "mcp[cli]<3",
+    "playwright<2",
     # `zerodom scan` reads YAML surface rules (zerodom/surfaces.py).
     "pyyaml",
     # Only for `zerodom relay` (zerodom/relay.py) — the local WS bridge between

@@ -905,3 +905,12 @@ def test_challenge_pages_flag_the_vendor_in_metadata():
 def test_a_clean_page_is_not_flagged_as_blocked():
     meta = parse_html(LOGIN_FORM, "https://x.example")["metadata"]
     assert "blocked" not in meta
+
+
+def test_malformed_html_does_not_crash():
+    """Truncated/degenerate fragments ('<html', a lone tag) make lxml raise
+    'Document is empty'; the parser must fall back to an empty graph, not crash,
+    since a marketing-time user can pipe in any half-a-response."""
+    for junk in ["<html", "<html><head", "<!--", "<", "\x00"]:
+        graph = parse_html(junk, url="http://x")
+        assert graph["metadata"]["total_interactive_nodes"] == 0

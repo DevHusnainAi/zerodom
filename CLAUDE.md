@@ -159,7 +159,7 @@ first — for the FR-numbered ones it states the design constraint.
   reports `ok`/`dead`/`ambiguous`/`invalid` — the same "matches more than one element"
   failure mode `_selector()` in `parser.py` is built to avoid, but for selectors a human
   already wrote.
-- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `compare` / `extension` (prints the unpacked
+- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `extension` (prints the unpacked
   extension's path; the wheel bundles `extension/` as `zerodom/extension` via hatch `force-include`,
   and each `v*` release also attaches a zip + sha256) (entry point `zerodom`; a bare
   first arg that isn't a subcommand is rewritten to `inspect`). `capture()` shares one
