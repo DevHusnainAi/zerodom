@@ -4,7 +4,7 @@ All notable changes to ZeroDOM are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.0.9] — 2026-09-24
 
 Bug-bounty / red-team workflow: CLI recon + IDOR primitives, an MCP cross-identity
 hunting loop, and a relay hardened so it no longer wedges.
@@ -63,6 +63,22 @@ hunting loop, and a relay hardened so it no longer wedges.
   `--stealth` (they use different fetch engines).
 - The render/frames path no longer hangs 30s on a Turnstile/Cloudflare page whose
   network never goes idle; it commits on DOM-ready and bounds the settle wait.
+- **Relay recovers from a `chrome.debugger` detach instead of wedging.** A
+  navigation/redirect (or DevTools, or a tab replacement) could detach the debugger
+  while the relay↔extension socket stayed up — so `zerodom_status` read `attached=True`
+  but every command failed opaquely on a dead page. Now: `status` does a real liveness
+  probe (`page.evaluate`) and reports whether the tab actually responds; `_page()`
+  detects a closed page and reconnects; and the relay re-attaches on a recoverable
+  detach (skipping permanent cases — tab closed, DevTools, user-cancelled).
+- **First-contact robustness — one clean line, never a traceback:** malformed/truncated
+  HTML now yields an empty graph (not an lxml crash); a missing Chromium, a dead
+  host/typo (single URL *and* mid-batch, which now skips and continues), and a bad
+  `--rules` file each print a single actionable message.
+
+### Changed
+
+- Cap the two fast-moving deps — `mcp[cli]<3` and `playwright<2` — so a breaking
+  release can't silently break a fresh `pip install zerodom`.
 
 ## [0.0.8] — 2026-09-23
 
