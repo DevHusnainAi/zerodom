@@ -479,3 +479,30 @@ def test_attach_to_browser_target_raises_with_nothing_attached(rig):
     model, ext, cdp = rig
     with pytest.raises(RuntimeError, match="no attached tab available"):
         asyncio.run(handle_cdp_command(model, "Target.attachToBrowserTarget", {}, None))
+
+
+def test_detach_reattaches_only_on_recoverable_reasons(rig):
+    """A recoverable detach (navigation/redirect/crash, tab still open) must
+    re-attach so the session self-heals; a permanent one (DevTools took the slot,
+    tab closed, user cancelled) must not, or it would fight the user / loop."""
+    model, ext, cdp = rig
+
+    async def scenario():
+        model.on_tab_created({"id": 1, "url": "https://example.com/"})
+        await model.enable_auto_attach()
+        reattached: list[int] = []
+
+        async def spy(tab_id):
+            reattached.append(tab_id)
+
+        model._attach_tab_safe = spy
+
+        model.on_debugger_detach({"tabId": 1}, "replaced_with_devtools")  # permanent
+        await asyncio.sleep(0)
+        assert reattached == []
+
+        model.on_debugger_detach({"tabId": 1}, "render_process_gone")  # recoverable
+        await asyncio.sleep(0)
+        assert reattached == [1]
+
+    asyncio.run(scenario())

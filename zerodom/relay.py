@@ -18,6 +18,7 @@ Two roles, kept as separate as the reference keeps them:
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import uuid
@@ -138,10 +139,25 @@ class BrowserModel:
         session_id = source.get("sessionId") or tab_session.session_id
         self._emit({"sessionId": session_id, "method": method, "params": params})
 
-    def on_debugger_detach(self, source: dict[str, Any]) -> None:
+    def on_debugger_detach(self, source: dict[str, Any], reason: str | None = None) -> None:
         tab_id = source.get("tabId")
-        if tab_id is not None:
-            self._detach_tab(tab_id)
+        if tab_id is None:
+            return
+        self._detach_tab(tab_id)
+        # Self-heal a *recoverable* detach: the tab is still open (a same-tab
+        # navigation/redirect, or a stray banner event) so re-attach instead of
+        # leaving the session dead until a manual reconnect. Skip the cases that
+        # can't or shouldn't re-attach: the tab is gone (onTabRemoved handles it),
+        # DevTools took the one debugger slot per tab, or the user explicitly
+        # cancelled — re-attaching there would just re-prompt them in a loop.
+        if (reason not in ("target_closed", "replaced_with_devtools", "canceled_by_user")
+                and self._auto_attach and tab_id in self._known_tabs
+                and _is_attachable(self._known_tabs.get(tab_id, {}))):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return  # called outside the async handler (sync test) — nothing to schedule
+            asyncio.create_task(self._attach_tab_safe(tab_id))
 
     # ─── Playwright → model commands ───────────────────────────────────
 
@@ -506,6 +522,10 @@ class RelayServer:
         try:
             async for raw in ws:
                 self._handle_extension_message(json.loads(raw))
+        except websockets.exceptions.ConnectionClosed:
+            pass  # a client dropping (even uncleanly, no close frame) is normal,
+            # not a handler failure — swallow it so the relay logs stay readable
+            # and the finally-cleanup still runs. See _handle_cdp for the same.
         finally:
             self._extension_ws = None
             self._extension_ready.clear()
@@ -544,7 +564,8 @@ class RelayServer:
             source, cdp_method, cdp_params = (list(params) + [None, None, None])[:3]
             model.on_debugger_event(source, cdp_method, cdp_params or {})
         elif method == "chrome.debugger.onDetach":
-            model.on_debugger_detach(params[0])
+            # background.js sends [source, reason]; the reason decides recovery.
+            model.on_debugger_detach(params[0], params[1] if len(params) > 1 else None)
         elif method == "chrome.tabs.onCreated":
             model.on_tab_created(params[0])
         elif method == "chrome.tabs.onRemoved":
@@ -594,6 +615,10 @@ class RelayServer:
                 asyncio.create_task(
                     self._handle_playwright_message(send_to_cdp_client, json.loads(raw))
                 )
+        except websockets.exceptions.ConnectionClosed:
+            pass  # Playwright/driver disconnecting (incl. an unclean drop with no
+            # close frame) is a normal end-of-session, not a crash — swallow it so
+            # the connection handler doesn't log a traceback and wedge the log.
         finally:
             self._cdp_ws = None
             writer_task.cancel()
@@ -646,6 +671,16 @@ def main() -> None:
         asyncio.run(run_relay())
     except KeyboardInterrupt:
         pass
+    except OSError as exc:
+        # EADDRINUSE is the common one: a relay (or the MCP server's auto-spawned
+        # relay) is already on this port. One clean line beats an asyncio traceback.
+        if exc.errno == errno.EADDRINUSE:
+            raise SystemExit(
+                f"zerodom: port {DEFAULT_PORT} is already in use — a zerodom relay is "
+                f"probably already running (that's usually fine; stop it with Ctrl+C in "
+                f"its terminal, or `pkill -f 'zerodom relay'`, if you need to restart it)."
+            )
+        raise
 
 
 if __name__ == "__main__":

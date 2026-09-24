@@ -51,6 +51,9 @@ class FakePage:
         self.mouse = FakeMouse(self)
         self.sidebar_eval = None
 
+    def is_closed(self):
+        return False
+
     async def goto(self, url, **kw):
         self.calls.append(("goto", url))
         self.url, self.html, self.typed = url, PAGE, {}

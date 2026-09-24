@@ -144,7 +144,15 @@ async def _page() -> Any:
     every other tool at whichever tab is now active."""
     active = _session["active"]
     if active is not None and active in _session["pages"]:
-        return _session["pages"][active]
+        page = _session["pages"][active]
+        # is_closed() is a free sync check. When chrome.debugger detaches from the
+        # tab (a navigation/redirect, DevTools, the tab replaced), Playwright closes
+        # this page — but the relay↔extension socket stays up, so `attached` still
+        # read True and this cached corpse got handed back, failing every command
+        # opaquely. Detect it and reconnect instead of returning the dead page.
+        if not (hasattr(page, "is_closed") and page.is_closed()):
+            return page
+        await _teardown_active_session()
     from playwright.async_api import async_playwright
 
     pw = await async_playwright().start()
@@ -1079,7 +1087,39 @@ async def _act_drag(source_id: str, target_id: str) -> str:
 
 def _is_crash(exc: Exception) -> bool:
     text = str(exc).lower()
-    return "crash" in text or "target closed" in text or "browser has been closed" in text
+    # "session/target closed" and "detached" cover a chrome.debugger detach
+    # (navigation/redirect/DevTools) mid-operation, not just a real tab crash —
+    # both recover the same way (_restart re-connects to the live endpoint).
+    return any(s in text for s in (
+        "crash", "target closed", "session closed", "browser has been closed",
+        "detached", "connection closed",
+    ))
+
+
+async def _teardown_active_session() -> None:
+    """Drop the active tab's dead Playwright connection so the next _page() call
+    reconnects to whatever the relay is serving now. On an attached session the
+    browser is the user's own Chrome, so only pw.stop() runs (freeing the relay's
+    single CDP slot) — never .close(), which would take their browser down."""
+    attached = _session.get("attached")
+    active = _session.get("active")
+    dead_page = _session["pages"].pop(active, None) if active is not None else None
+    if active is not None:
+        _session["cdp_sessions"].pop(active, None)
+    pw, browser = _session.get("pw"), _session.get("browser")
+    if pw is not None:
+        try:
+            await pw.stop()
+        except Exception:
+            pass
+    if not attached:
+        for obj in (dead_page, browser):
+            if obj is not None:
+                try:
+                    await obj.close()
+                except Exception:
+                    pass
+    _session.update(pw=None, browser=None, attached=False, active=None)
 
 
 async def _restart(url: str) -> None:
@@ -1094,28 +1134,7 @@ async def _restart(url: str) -> None:
     Only the crashed (active) tab is torn down — a crash on one tab doesn't
     take down every other tab zerodom_new_tab opened.
     """
-    attached = _session.get("attached")
-    active = _session.get("active")
-    crashed_page = _session["pages"].pop(active, None) if active is not None else None
-    if active is not None:
-        _session["cdp_sessions"].pop(active, None)
-    pw, browser = _session.get("pw"), _session.get("browser")
-    if pw is not None:
-        try:
-            await pw.stop()
-        except Exception:
-            pass
-    if not attached:
-        for obj in (crashed_page, browser):
-            if obj is not None:
-                try:
-                    await obj.close()
-                except Exception:
-                    pass
-    _session["pw"] = None
-    _session["browser"] = None
-    _session["attached"] = False
-    _session["active"] = None
+    await _teardown_active_session()
     page = await _page()
     if url and url != "about:blank":
         await _goto(page, url)
@@ -1975,8 +1994,19 @@ async def zerodom_status() -> str:
     active = _session["active"]
     if active is not None:
         page = _session["pages"][active]
+        # Liveness probe, not the stored flag: the relay↔extension socket can be
+        # up (attached=True) while the chrome.debugger↔tab leg is dead — a
+        # navigation/redirect detached it, DevTools stole it, the tab was
+        # replaced. `page.url` is cached and won't catch that, so round-trip a
+        # trivial evaluate and report what actually answers.
+        try:
+            await asyncio.wait_for(page.evaluate("1"), timeout=3)
+            live = "responding"
+        except Exception:
+            live = "NOT responding — debugger detached from the tab (navigation/" \
+                   "DevTools/closed); re-Connect the extension in Chrome, then retry"
         lines.append(
-            f"session:  attached={_session['attached']}, active tab=[{active}], "
+            f"session:  attached={_session['attached']} ({live}), active tab=[{active}], "
             f"open tabs={len(_session['pages'])}"
         )
         lines.append(f"active url: {page.url}")

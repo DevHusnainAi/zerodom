@@ -16,6 +16,9 @@ class FakeGotoPage:
         self.networkidle_raises = networkidle_raises
         self.load_state_calls: list[tuple] = []
 
+    def is_closed(self):
+        return False
+
     async def goto(self, url, **kw):
         self.url = url
 
@@ -895,3 +898,24 @@ def test_goto_proceeds_when_networkidle_never_settles():
     asyncio.run(mcp_server._goto(page, "https://example.com"))  # must not raise
 
     assert page.url == "https://example.com"
+
+
+def test_is_crash_recognizes_a_debugger_detach():
+    """A chrome.debugger detach surfaces as 'session/target closed' / 'detached';
+    _is_crash must catch it so the read/act paths recover instead of failing raw."""
+    for msg in ("Target closed", "Session closed", "…detached from the target",
+                "Connection closed"):
+        assert mcp_server._is_crash(Exception(msg)), msg
+    assert not mcp_server._is_crash(Exception("Unknown node '99'"))
+
+
+def test_page_reconnects_when_the_cached_page_died(monkeypatch, clean_session):
+    """The bug we hit live: the relay↔extension socket stays up (attached=True)
+    but the tab's page is closed by a detach, and the cached corpse gets handed
+    back so every command fails. _page() must detect it and reconnect."""
+    _bootstrap_headless(monkeypatch)
+    first = asyncio.run(mcp_server._page())
+    first.is_closed = lambda: True  # chrome.debugger detached -> Playwright closed it
+    second = asyncio.run(mcp_server._page())
+    assert second is not first
+    assert not second.is_closed()
