@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "zerodom",
   "display_name": "ZeroDOM",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Terminal-native DOM perception for red teams and AI agents. Hook into live Chrome sessions, cut HTML tokens 98.9% (median) and map attack surfaces from the CLI.",
   "long_description": "Deterministic AppSec & AI perception layer. ZeroDOM parses a live page into a flat, addressable list of clickable/fillable nodes (`[03] button 'Sign In'`) instead of an accessibility tree or raw DOM dump. Every CSS selector it returns is checked for actual document-wide uniqueness before being trusted, not assumed from an attribute — 99.00% of 10,756 audited selectors across 111 real sites resolve to exactly one element. Requires Playwright's Chromium to be installed once (`uvx --from zerodom playwright install chromium`) before first use.",
   "author": {
