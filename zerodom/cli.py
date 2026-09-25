@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -38,16 +39,25 @@ def _goto(page, url: str) -> None:
         pass  # never idles (challenge widget / long-poll) — read the page as-is
 
 
-def _launch(pw, proxy: str | None):
+def _launch(pw, proxy: str | None, _retried: bool = False):
     try:
         return pw.chromium.launch(proxy={"server": proxy} if proxy else None)
     except Exception as exc:
-        # ponytail: turn Playwright's 10-line "Executable doesn't exist" traceback
-        # into one actionable line — the #1 first-run stumble is running a browser
-        # command (--render/--screenshot/--html) before `playwright install chromium`.
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc):
-            sys.exit("chromium isn't installed — run: playwright install chromium")
-        raise
+        # The #1 first-run stumble is a browser command (--render/--screenshot/
+        # --html/audit) before `playwright install chromium`. At an interactive
+        # terminal, install it once and retry; piped/CI runs get the one-line hint
+        # instead of a surprise 150MB download (and never Playwright's traceback).
+        if "Executable doesn't exist" not in str(exc) and "playwright install" not in str(exc):
+            raise
+        hint = "chromium isn't installed — run: playwright install chromium"
+        if _retried or not (sys.stdin.isatty() and sys.stderr.isatty()):
+            sys.exit(hint)
+        print("Installing Chromium (~150MB, first run only)…", file=sys.stderr)
+        import subprocess
+        # sys.executable, not a bare `playwright`: under uvx/pipx the CLI isn't on PATH.
+        if subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"]).returncode:
+            sys.exit(hint)
+        return _launch(pw, proxy, _retried=True)
 
 
 def _context(browser, *, insecure, headers, storage_state):
@@ -557,6 +567,77 @@ def _parse_identities(pairs: list | None) -> list[tuple[str, str]]:
     return ids
 
 
+def _chromium_installed() -> bool:
+    """True if Playwright's Chromium is on disk. Checks the browser cache rather
+    than launching the driver (which prints asyncio teardown noise). Honors
+    PLAYWRIGHT_BROWSERS_PATH; a hint, not a guarantee — _launch is the real check."""
+    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    roots = [Path(base)] if base else [
+        Path.home() / ".cache" / "ms-playwright",              # linux
+        Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
+        Path.home() / "AppData" / "Local" / "ms-playwright",   # windows
+    ]
+    return any(r.is_dir() and any(r.glob("chromium-*")) for r in roots)
+
+
+def _relay_reachable(port: int = 8765) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def setup(_args=None) -> int:
+    """Guided first-run: sequences the pieces a stranger otherwise has to find
+    across the README (Chromium, the unpacked extension, the MCP config, the
+    relay). Print-and-guide, no account, no telemetry — nothing leaves the box."""
+    out = sys.stdout
+    print("ZeroDOM setup — local, no account, nothing leaves your machine.\n", file=out)
+
+    # 1. Chromium (only needed for --render / --frames / the MCP driving path).
+    if _chromium_installed():
+        print("[1/4] Chromium: installed ✓", file=out)
+    else:
+        print("[1/4] Chromium: not installed — needed for --render and the MCP driving path.\n"
+              "      Run: playwright install chromium", file=out)
+
+    # 2. The unpacked Chrome extension (drives your real, logged-in browser).
+    try:
+        ext = extension_dir()
+        print(f"\n[2/4] Chrome extension (for driving your logged-in browser):\n"
+              f"      1. Open chrome://extensions\n"
+              f"      2. Enable 'Developer mode' (top-right)\n"
+              f"      3. 'Load unpacked' → select: {ext}\n"
+              f"      The extension auto-connects to the relay — nothing to configure.", file=out)
+    except SystemExit as exc:
+        print(f"\n[2/4] Chrome extension: {exc}", file=out)
+
+    # 3. MCP config for Claude Desktop / Cursor.
+    cfg = (
+        '{\n'
+        '  "mcpServers": {\n'
+        '    "zerodom": {\n'
+        '      "command": "uvx",\n'
+        '      "args": ["--from", "zerodom", "zerodom-mcp"]\n'
+        '    }\n'
+        '  }\n'
+        '}'
+    )
+    print("\n[3/4] MCP server — add this to your client config:\n" + cfg, file=out)
+    print("      Claude Desktop: ~/.config/Claude/claude_desktop_config.json "
+          "(macOS: ~/Library/Application Support/Claude/…)\n"
+          "      Cursor: ~/.cursor/mcp.json", file=out)
+
+    # 4. Relay reachability.
+    if _relay_reachable():
+        print("\n[4/4] Relay: reachable on :8765 ✓", file=out)
+    else:
+        print("\n[4/4] Relay: not running. The MCP server auto-spawns it, or start it yourself:\n"
+              "      zerodom relay", file=out)
+
+    print("\nDone. Quick test (no browser needed): zerodom example.com", file=out)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zerodom", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -581,6 +662,10 @@ def main(argv: list[str] | None = None) -> int:
         "extension", help="print the bundled Chrome extension's directory, for Load unpacked"
     )
     ext.add_argument("action", nargs="?", choices=["path"], default="path")
+
+    sub.add_parser(
+        "setup", help="guided first-run: Chromium, the extension, the MCP config and the relay"
+    )
 
     scan = sub.add_parser(
         "scan", help="match a page's interaction graph against client-side surface rules"
@@ -664,7 +749,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if (
         argv
-        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "crawl", "extension", "-h", "--help"}
+        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "crawl", "extension", "setup", "-h", "--help"}
         and not argv[0].startswith("-")
     ):
         argv = ["inspect", *argv]
@@ -713,6 +798,9 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
         sys.stdout.flush()
         return 0
+
+    if args.command == "setup":
+        return setup(args)
 
     if args.command == "extension":
         path = extension_dir()

@@ -78,7 +78,7 @@ class FakeChromium:
         self.launch_called = True
         return FakeBrowser(pages=[])
 
-    async def connect_over_cdp(self, endpoint):
+    async def connect_over_cdp(self, endpoint, timeout=None):
         self.connect_called_with = endpoint
         return FakeBrowser(pages=[FakeGotoPage()])  # one already-open tab
 
@@ -192,6 +192,56 @@ def test_restart_closes_a_launched_browser(monkeypatch, clean_session):
     asyncio.run(mcp_server._restart("https://example.com/"))
 
     assert browser.close_called, "a launched browser is ours to close on crash-recovery"
+
+
+def test_teardown_clears_every_tab_not_just_the_active_one(monkeypatch, clean_session):
+    """pw.stop() tears down the whole shared CDP connection, so every page handle
+    is dead afterward. Teardown must clear them all — leaving other tabs in
+    _session["pages"] pointing at a stopped driver made switch_tab fail opaquely."""
+
+    class SpyPage:
+        url = "https://example.com/"
+
+    fake_pw = FakePw()
+    mcp_server._session.update(
+        pw=fake_pw, browser=object(), attached=True,
+        pages={"0": SpyPage(), "1": SpyPage()}, active="0",
+        cdp_sessions={"0": object(), "1": object()},
+    )
+
+    asyncio.run(mcp_server._teardown_active_session())
+
+    assert mcp_server._session["pages"] == {}
+    assert mcp_server._session["cdp_sessions"] == {}
+    assert fake_pw.stopped
+
+
+def test_attach_failure_gives_a_first_run_instruction(monkeypatch, clean_session):
+    """Calling a tool before the extension is connected must fail fast with a
+    load-the-extension message, not a 30s hang or an opaque connect traceback."""
+
+    class FailingChromium:
+        launch_called = False
+        connect_called_with = None
+
+        async def connect_over_cdp(self, endpoint, timeout=None):
+            raise RuntimeError("WebSocket error: connection closed")
+
+    class FailPw:
+        def __init__(self):
+            self.chromium = FailingChromium()
+            self.stopped = False
+
+        async def stop(self):
+            self.stopped = True
+
+    fail_pw = FailPw()
+    monkeypatch.setenv("ZERODOM_CDP_ENDPOINT", "ws://127.0.0.1:8765/cdp/local")
+    _patch_async_playwright(monkeypatch, fail_pw)
+
+    with pytest.raises(RuntimeError, match="extension"):
+        asyncio.run(mcp_server._page())
+    assert fail_pw.stopped, "the freshly-started pw must be stopped on connect failure"
 
 
 class TrackingLocator:
@@ -919,3 +969,20 @@ def test_page_reconnects_when_the_cached_page_died(monkeypatch, clean_session):
     second = asyncio.run(mcp_server._page())
     assert second is not first
     assert not second.is_closed()
+
+
+def test_missing_chromium_says_what_to_run_instead_of_downloading(monkeypatch, clean_session):
+    """A 150MB download inside a tool call would time the client out, so the
+    server never auto-installs — it names the one command and stops the driver."""
+    monkeypatch.delenv("ZERODOM_CDP_ENDPOINT", raising=False)
+    fake_pw = FakePw()
+
+    async def missing():
+        raise RuntimeError("Executable doesn't exist at /root/.cache/ms-playwright/...")
+
+    fake_pw.chromium.launch = missing
+    _patch_async_playwright(monkeypatch, fake_pw)
+
+    with pytest.raises(RuntimeError, match="uvx --from zerodom playwright install chromium"):
+        asyncio.run(mcp_server._page())
+    assert fake_pw.stopped

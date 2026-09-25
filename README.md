@@ -82,6 +82,9 @@ One extra step only if you use the browser-backed features (`from_page`, `fromPa
 playwright install chromium
 ```
 
+(The `zerodom` CLI does this for you on first browser use at a terminal —
+a one-time ~150MB download.)
+
 ---
 
 ## Quickstart
@@ -154,8 +157,10 @@ that makes it clickable never enters the context window.
 
 ## 10-second MCP setup
 
+Once, before first use (the MCP server won't download it mid-tool-call):
+
 ```bash
-playwright install chromium
+uvx --from zerodom playwright install chromium
 ```
 
 **Claude Desktop** — `claude_desktop_config.json`
@@ -584,7 +589,34 @@ Known and worth knowing before you build on it:
   first, then parse.
 
 - **Anti-bot systems are out of scope, by design.** ZeroDOM is middleware over a
-  `Page` you already control — it never fetches anything.
+  `Page` you already control — it never fetches anything. Challenge pages
+  (CF/Turnstile/reCAPTCHA/hCaptcha) are *detected* and handed off, never solved —
+  the honest paths are relay mode, a `--storage-state` cleared session, or a
+  program's bypass header.
+
+- **`zerodom <url>` is a static fetch.** The bare CLI reads HTML over plain HTTP
+  (no JavaScript). For JS-rendered pages use `--render` (headless Chromium) or the
+  relay/MCP path.
+
+- **The extension is unpacked/dev-mode only.** It uses `chrome.debugger` and runs
+  over a local WebSocket, which the Chrome Web Store's remote-code and
+  powerful-permission policies preclude — so it ships as a Load-unpacked developer
+  extension (like Playwright's own CDP relay), not a store listing.
+
+- **`--stealth` is POSIX-only.** It inherits FDs 3/4 for the CDP pipe; Windows
+  raises `NotImplementedError` (only `--stealth` is affected).
+
+- **The MCP server drives one browser session at a time.** Multi-*tab* is
+  supported; concurrent independent sessions are not (a deliberate scope limit).
+
+- **`compare`'s byte-identical IDOR tell needs two real logged-in identities.**
+  It surfaces the tell — a same-response across identities, or a 403-vs-200 — for
+  *you* to confirm and exploit. It does not autonomously confirm a bug.
+
+**Safety posture (it's a security tool):** scope is enforceable and lockable
+(`ZERODOM_SCOPE` / `zerodom_set_scope` — host allowlist, destructive-action denylist,
+rate limit), undrivable targets (chrome://, the Web Store, devtools) are refused, and
+challenge pages are detected, never bypassed.
 
 Full details in [SECURITY.md](SECURITY.md).
 

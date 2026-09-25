@@ -129,6 +129,27 @@ def test_extension_prints_a_loadable_directory(capsys):
     assert (Path(capsys.readouterr().out.strip()) / "manifest.json").is_file()
 
 
+def test_setup_is_a_first_class_verb_and_sequences_the_steps(capsys, monkeypatch):
+    """`zerodom setup` must not be swallowed by the bare-URL shorthand, and it
+    walks all four steps: Chromium, extension path, MCP config, relay."""
+    monkeypatch.setattr(cli, "_chromium_installed", lambda: True)
+    monkeypatch.setattr(cli, "_relay_reachable", lambda port=8765: False)
+
+    assert cli.main(["setup"]) == 0
+    out = capsys.readouterr().out
+    assert "[1/4]" in out and "[2/4]" in out and "[3/4]" in out and "[4/4]" in out
+    assert "chrome://extensions" in out
+    assert '"zerodom-mcp"' in out
+    assert "zerodom relay" in out  # the not-running branch tells you how to start it
+
+
+def test_setup_flags_missing_chromium(capsys, monkeypatch):
+    monkeypatch.setattr(cli, "_chromium_installed", lambda: False)
+    monkeypatch.setattr(cli, "_relay_reachable", lambda port=8765: True)
+    cli.main(["setup"])
+    assert "playwright install chromium" in capsys.readouterr().out
+
+
 def test_header_and_storage_state_reach_the_server():
     """--header sends a program's bypass token; --storage-state carries a
     cleared-session cookie (cf_clearance) into the request."""
@@ -237,3 +258,39 @@ def test_bad_rules_file_is_a_clean_exit_not_a_traceback():
     with pytest.raises(SystemExit) as exc:
         cli.main(["scan", "https://example.com", "--rules", "/no/such/rules.yaml"])
     assert "bad rules file" in str(exc.value)
+
+
+class _MissingOnce:
+    def __init__(self):
+        self.calls = 0
+
+    def launch(self, **kw):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("Executable doesn't exist at /root/.cache/ms-playwright/...")
+        return "browser"
+
+
+def _pw(chromium):
+    return type("Pw", (), {"chromium": chromium})()
+
+
+def test_launch_installs_chromium_once_at_a_terminal_then_retries(monkeypatch):
+    import subprocess
+    import sys
+    ran = []
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda cmd: ran.append(cmd) or type("R", (), {"returncode": 0})())
+    chromium = _MissingOnce()
+    assert cli._launch(_pw(chromium), None) == "browser"
+    assert ran and ran[0][-3:] == ["playwright", "install", "chromium"]
+
+
+def test_launch_never_downloads_when_piped(monkeypatch):
+    import subprocess
+    import sys
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda cmd: pytest.fail("must not install when piped"))
+    with pytest.raises(SystemExit, match="playwright install chromium"):
+        cli._launch(_pw(_MissingOnce()), None)

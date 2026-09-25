@@ -500,7 +500,11 @@ class RelayServer:
         # all) — a page-origin ("http://"/"https://") gets rejected
         # outright, regardless of path.
         origin = ws.request.headers.get("Origin", "")
-        if origin.startswith("http://") or origin.startswith("https://"):
+        # A sandboxed iframe or a file:// page sends `Origin: null` rather than an
+        # http(s):// scheme — still a page origin, so reject it too. Legit callers
+        # (our extension → chrome-extension://, Playwright/Python → no Origin) are
+        # unaffected.
+        if origin.startswith("http://") or origin.startswith("https://") or origin == "null":
             await ws.close(1008, "rejected: page origins may not connect to this relay")
             return
         path = ws.request.path
@@ -583,9 +587,16 @@ class RelayServer:
         # establishExtensionConnection() already awaited readiness), zerodom's
         # MCP server and this relay are separate processes — a CDP connect
         # attempt can arrive before the extension has opened connect.html at
-        # all. Wait here rather than reject, bounded by whatever timeout the
-        # connect_over_cdp caller itself enforces.
-        await self._extension_ready.wait()
+        # all. Wait here rather than reject, but bound it: an untimed wait meant
+        # a first-run user who calls a tool before loading the extension got a
+        # ~30s hang (the connect_over_cdp caller's own timeout) and an opaque
+        # error. Close cleanly after 10s so the CDP socket isn't held open and
+        # the caller fails fast with a legible message.
+        try:
+            await asyncio.wait_for(self._extension_ready.wait(), timeout=EXTENSION_READY_TIMEOUT)
+        except asyncio.TimeoutError:
+            await ws.close(1013, "ZeroDOM extension not connected — load it (zerodom extension) and wait for the cyan tab group")
+            return
         self._cdp_ws = ws
         assert self._model is not None  # guaranteed once _extension_ready is set
 
@@ -634,6 +645,11 @@ class RelayServer:
         except Exception as exc:
             send_to_cdp_client({"id": msg_id, "sessionId": session_id, "error": {"message": str(exc)}})
 
+
+# How long a CDP client waits for the extension to attach before the relay closes
+# the socket cleanly (rather than the old untimed wait, which hung a first-run
+# caller ~30s). Module-level so tests can shrink it.
+EXTENSION_READY_TIMEOUT = 10
 
 DEFAULT_PORT = 8765  # fixed, not ephemeral: a human re-pastes the printed URL into
 # the extension popup and an env var by hand, potentially minutes apart and across

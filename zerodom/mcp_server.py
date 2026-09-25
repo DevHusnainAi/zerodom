@@ -160,11 +160,34 @@ async def _page() -> Any:
     if endpoint:
         # Fail closed: a configured-but-unreachable endpoint is an error, not
         # a reason to silently fall back to a fresh, unauthenticated browser.
-        browser = await pw.chromium.connect_over_cdp(endpoint)
+        # Bound the connect (the relay closes the CDP socket after 10s when no
+        # extension is attached) and translate the failure into a first-run
+        # instruction rather than an opaque connect_over_cdp traceback.
+        try:
+            browser = await pw.chromium.connect_over_cdp(endpoint, timeout=10000)
+        except Exception as exc:
+            await pw.stop()
+            raise RuntimeError(
+                "No ZeroDOM Chrome extension connected. Run `zerodom extension` to "
+                "load it, wait for the cyan tab group to appear, then retry — or call "
+                "zerodom_status to diagnose."
+            ) from exc
         page = browser.contexts[0].pages[0] if browser.contexts[0].pages else await browser.contexts[0].new_page()
         attached = True
     else:
-        browser = await pw.chromium.launch()
+        # Never auto-install here: a 150MB fetch inside a tool call times the
+        # client out. Say exactly what to run instead of Playwright's traceback.
+        try:
+            browser = await pw.chromium.launch()
+        except Exception as exc:
+            if "Executable doesn't exist" not in str(exc) and "playwright install" not in str(exc):
+                await pw.stop()
+                raise
+            await pw.stop()
+            raise RuntimeError(
+                "Chromium isn't installed. Run once: "
+                "uvx --from zerodom playwright install chromium"
+            ) from exc
         page = await browser.new_page()
         attached = False
     tab_key = str(_session["_next_tab"])
@@ -308,8 +331,12 @@ def _node(node_id: str) -> dict[str, Any]:
 # input type is just "text"/"tel". Not exhaustive -- a determined agent
 # ignoring its own system prompt could still work around a label it doesn't
 # recognize, but it closes the gap for the common, honest-mistake case.
+# `passw` (not `password`) mirrors graph_ui.js SENSITIVE_RE: the human is meant
+# to see exactly the fields the model is refused on (CLAUDE.md three-way contract),
+# so a passphrase/passcode field the UI flags must be refused here too — under-
+# refusal is the security-relevant direction.
 _SENSITIVE_FIELD_RE = re.compile(
-    r"password|passwd|\bpwd\b|card ?number|card ?no\b|\bcvv\b|\bcvc\b|"
+    r"passw|passwd|\bpwd\b|card ?number|card ?no\b|\bcvv\b|\bcvc\b|"
     r"security code|\bssn\b|social security|routing number|account number|"
     r"\biban\b|sort code",
     re.IGNORECASE,
@@ -1097,15 +1124,18 @@ def _is_crash(exc: Exception) -> bool:
 
 
 async def _teardown_active_session() -> None:
-    """Drop the active tab's dead Playwright connection so the next _page() call
-    reconnects to whatever the relay is serving now. On an attached session the
-    browser is the user's own Chrome, so only pw.stop() runs (freeing the relay's
-    single CDP slot) — never .close(), which would take their browser down."""
+    """Drop the dead Playwright connection so the next _page() call reconnects to
+    whatever the relay is serving now. On an attached session the browser is the
+    user's own Chrome, so only pw.stop() runs (freeing the relay's single CDP
+    slot) — never .close(), which would take their browser down.
+
+    pw.stop() tears down the whole connection, so *every* page handle is dead
+    afterward, not just the active tab's — clear them all rather than leave other
+    _session["pages"] entries pointing at a stopped driver (which then failed
+    opaquely on the next switch_tab)."""
     attached = _session.get("attached")
     active = _session.get("active")
-    dead_page = _session["pages"].pop(active, None) if active is not None else None
-    if active is not None:
-        _session["cdp_sessions"].pop(active, None)
+    dead_page = _session["pages"].get(active) if active is not None else None
     pw, browser = _session.get("pw"), _session.get("browser")
     if pw is not None:
         try:
@@ -1119,6 +1149,8 @@ async def _teardown_active_session() -> None:
                     await obj.close()
                 except Exception:
                     pass
+    _session["pages"].clear()
+    _session["cdp_sessions"].clear()
     _session.update(pw=None, browser=None, attached=False, active=None)
 
 
@@ -1131,8 +1163,10 @@ async def _restart(url: str) -> None:
     page/browser handles are dropped without .close() for that case; _page()
     reconnects to the still-live endpoint on the next call.
 
-    Only the crashed (active) tab is torn down — a crash on one tab doesn't
-    take down every other tab zerodom_new_tab opened.
+    ponytail: pw.stop() tears down the single shared CDP connection, so crash-
+    recovery rebuilds only the active tab — any other tabs zerodom_new_tab opened
+    are gone and must be reopened. Per-tab CDP sessions would be the upgrade if
+    surviving a crash with multiple tabs open ever matters.
     """
     await _teardown_active_session()
     page = await _page()

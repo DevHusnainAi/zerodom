@@ -8,13 +8,13 @@
     "url": "https://github.com/DevHusnainAi/zerodom",
     "source": "github"
   },
-  "version": "0.0.9",
+  "version": "0.1.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "zerodom",
-      "version": "0.0.9",
+      "version": "0.1.0",
       "transport": {
         "type": "stdio"
       },
@@ -25,7 +25,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@vexralabs/zerodom",
-      "version": "0.0.9",
+      "version": "0.1.0",
       "transport": {
         "type": "stdio"
       }

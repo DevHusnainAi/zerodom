@@ -15,7 +15,7 @@ uv run playwright install chromium
 OPENAI_API_KEY=... python examples/openai_tool_calling.py https://news.ycombinator.com "open the first story"
 ```
 
-For Claude/Cursor instead of raw API calls, see the [MCP server](../README.md#claude-mcp-setup) —
+For Claude/Cursor instead of raw API calls, see the [MCP server](../README.md#10-second-mcp-setup) —
 it's the same re-read-in-place pattern these scripts use, exposed as `zerodom_click_node` / `zerodom_fill_node`.
 
 For the live-browser tool set (the Chrome extension + relay, `zerodom_click_node` and friends

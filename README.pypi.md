@@ -2,6 +2,8 @@
 
 <!-- mcp-name: io.github.DevHusnainAi/zerodom -->
 
+[![ZeroDOM MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/DevHusnainAi/zerodom/badges/score.svg)](https://glama.ai/mcp/servers/DevHusnainAi/zerodom)
+
 ### Deterministic AppSec & AI perception layer.
 
 **Terminal-native DOM perception for red teams and AI agents.** Hook into live
@@ -79,6 +81,9 @@ One extra step only if you use the browser-backed features (`from_page`,
 ```bash
 playwright install chromium
 ```
+
+(The `zerodom` CLI does this for you on first browser use at a terminal —
+a one-time ~150MB download.)
 
 ## Quickstart
 

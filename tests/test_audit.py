@@ -3,6 +3,9 @@ a missed selector is a defect it silently fails to report."""
 
 from pathlib import Path
 
+import pytest
+
+from zerodom import audit
 from zerodom.audit import Finding, check, extract, report, walk
 
 SUITE = """
@@ -106,3 +109,30 @@ def test_finding_verdict_boundaries():
     assert Finding("x", matches=0).verdict == "dead"
     assert Finding("x", matches=1).verdict == "ok"
     assert Finding("x", matches=2).verdict == "ambiguous"
+
+
+def test_missing_chromium_gives_the_one_line_hint_not_a_traceback(tmp_path, monkeypatch):
+    """audit routes its launch through cli._launch, so a first-run without
+    Chromium installed prints the one actionable line every other browser
+    subcommand gives — not a raw 10-line Playwright traceback."""
+    suite = tmp_path / "t.py"
+    suite.write_text('def test(page):\n    page.click("#submit")\n')
+
+    class FakeChromium:
+        def launch(self, **kw):
+            raise RuntimeError("Executable doesn't exist at /root/.cache/ms-playwright/...")
+
+    class FakePw:
+        chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePw())
+
+    with pytest.raises(SystemExit) as exc:
+        audit.run(str(suite), "https://app.test")
+    assert "playwright install chromium" in str(exc.value)

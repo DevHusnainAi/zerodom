@@ -146,7 +146,9 @@ def run(path: str, url: str, render_wait: int = 2500) -> tuple[int, str]:
             "locator(), query_selector(), cy.get(), By.css() and page.click()."
         )
     with sync_playwright() as pw:
-        browser = pw.chromium.launch()
+        from .cli import _launch  # function-level: cli.main lazy-imports audit, avoid the cycle
+
+        browser = _launch(pw, None)  # missing-Chromium → one-line install hint, not a traceback
         page = browser.new_page()
         page.goto(url, wait_until="domcontentloaded")
         page.wait_for_timeout(render_wait)

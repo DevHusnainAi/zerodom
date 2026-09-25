@@ -228,6 +228,18 @@ def test_find_reports_a_miss_without_dumping_the_page(page):
     assert "No node matches" in out and "Go" not in out
 
 
+def test_sensitive_field_regex_matches_the_ui_prefix():
+    """The server fill-refusal must flag exactly the fields the UI marks
+    (graph_ui.js SENSITIVE_RE uses the `passw` prefix, not the full word
+    `password`). The drift this closes: a label like the German `Passwort`
+    contains `passw` — the UI refused it, the server used to fill it.
+    Under-refusal is the security-relevant direction (CLAUDE.md contract)."""
+    for label in ("Password", "Passwort", "passwd", "CVV", "IBAN"):
+        assert mcp_server._is_sensitive_field({"label": label}), label
+    # a plain field is still fillable
+    assert not mcp_server._is_sensitive_field({"label": "Search"})
+
+
 def test_find_before_any_page_is_loaded(page):
     assert "No page loaded" in asyncio.run(mcp_server.zerodom_find("x"))
 
