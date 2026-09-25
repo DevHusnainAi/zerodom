@@ -4,11 +4,12 @@
 
 [![ZeroDOM MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/DevHusnainAi/zerodom/badges/score.svg)](https://glama.ai/mcp/servers/DevHusnainAi/zerodom)
 
-### Deterministic AppSec & AI perception layer.
+### The deterministic attack-surface perception layer for AI security agents.
 
-**Terminal-native DOM perception for red teams and AI agents.** Hook into live
-Chrome sessions, cut HTML tokens 98.9% (median) and map attack surfaces from the CLI.
-No LLM in the parse.
+ZeroDOM turns a live, logged-in page into a short numbered list of everything an agent
+can act on, so the agent's context goes on reasoning about access control, not parsing
+HTML. No LLM in the parse; you confirm the bug. (Proof: median 98.9% fewer tokens than
+raw HTML, 99.00% of 10,756 selectors across 111 sites resolve to exactly one element.)
 
 ZeroDOM reduces a page to what can be acted on (the buttons, inputs and links),
 each with an id that resolves to exactly one element:

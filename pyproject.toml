@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "zerodom"
 version = "0.1.0"
-description = "Terminal-native DOM perception for red teams and AI agents. Hook into live Chrome sessions, cut HTML tokens 98.9% (median) and map attack surfaces from the CLI."
+description = "The deterministic attack-surface perception layer for AI security agents. Maps every actionable element of a live, logged-in Chrome page to a unique id; no LLM in the parse."
 # PyPI cannot resolve relative image paths, so the full
 # README's screenshots would render broken. This one is image-free.
 readme = "README.pypi.md"

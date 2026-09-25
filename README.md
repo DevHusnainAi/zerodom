@@ -19,9 +19,12 @@
 
 ---
 
-> **Deterministic AppSec & AI perception layer.** Terminal-native DOM perception for red
-> teams and AI agents. Hook into live Chrome sessions, cut HTML tokens 98.9% (median) and
-> map attack surfaces from the CLI. No LLM in the parse.
+> **The deterministic attack-surface perception layer for AI security agents.**
+> ZeroDOM turns a live, logged-in page into a short numbered list of everything an
+> agent can act on (every form, input, link and button), each id resolving to exactly
+> one element. The markup never enters the model's context, so the agent spends its
+> budget reasoning about who should be allowed to do what, not parsing HTML. No LLM in
+> the parse; you confirm the bug. [Proof ↓](#proof)
 
 - **Relay mode** attaches to the Chrome you're already logged into, over `chrome.debugger`.
   Cookies, MFA and SSO are already done.
@@ -51,7 +54,7 @@ structural CSS selectors entirely out of the context window.
   &nbsp;·&nbsp;
   <b><a href="https://zerodom.vexralabs.com/compare">Compare</a></b>
   &nbsp;·&nbsp;
-  <b><a href="#benchmarks">Benchmarks</a></b>
+  <b><a href="#proof">Proof</a></b>
 </p>
 
 ---
@@ -323,7 +326,9 @@ on. There is no page in this set where ZeroDOM costs more per action.
 
 ---
 
-## Benchmarks
+## Proof
+
+Numbers you can re-run. Every figure below has a script in `benchmarks/`.
 
 ### Measured on 111 live sites
 
