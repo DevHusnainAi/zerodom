@@ -160,6 +160,12 @@ that makes it clickable never enters the context window.
 
 ## 10-second MCP setup
 
+**New here? Run `zerodom setup`** — a guided first-run that checks for Chromium, prints
+the unpacked-extension path and the `chrome://extensions` steps, emits the MCP config
+JSON below, and reports relay reachability. It's print-and-guide: no account, no
+telemetry, nothing leaves your machine. The manual steps below are what it walks you
+through.
+
 Once, before first use (the MCP server won't download it mid-tool-call):
 
 ```bash
@@ -330,6 +336,15 @@ on. There is no page in this set where ZeroDOM costs more per action.
 
 Numbers you can re-run. Every figure below has a script in `benchmarks/`.
 
+### vs the snapshot an MCP agent actually gets
+
+`uv run benchmarks/compare_mcp.py` diffs ZeroDOM against Playwright MCP's
+`aria_snapshot(mode="ai")` across [30 public sites](benchmarks/sites.txt) — tokens each,
+and the share of ZeroDOM selectors that resolve to exactly one live element. The full
+generated table is [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md); it's ~53–96% fewer
+tokens per site, and every selector that resolved matched exactly one element on every
+site in the run.
+
 ### Measured on 111 live sites
 
 `benchmarks/benchmark_sites.py` — static pages, SPAs, web components, iframes,
@@ -466,6 +481,7 @@ A `cleared.json` is a Playwright `storage_state` (`context.storage_state(path=..
 **Relay mode (your logged-in Chrome)** needs the extension, which ships inside the package:
 
 ```bash
+zerodom setup         # guided first-run: Chromium, the extension, MCP config, relay
 zerodom extension     # prints the bundled extension's directory
 # chrome://extensions -> Developer mode -> Load unpacked -> select that directory
 zerodom relay
