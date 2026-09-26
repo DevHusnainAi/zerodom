@@ -40,7 +40,7 @@ the list an agent reads before it decides what to click.
 |---|---|---|
 | Token cost vs. Playwright's `aria_snapshot(mode="ai")` | 71.0% fewer tokens, mean across 5 real pages | [benchmarks/benchmark_vs_a11y.py](benchmarks/benchmark_vs_a11y.py) |
 | Token cost vs. raw HTML | 93.1% fewer tokens | [benchmarks/benchmark_tokens.py](benchmarks/benchmark_tokens.py) |
-| Selector correctness | 99.00% of 10,756 audited selectors across 111 real sites resolve to exactly one element | `zerodom audit` — see [README#benchmarks](README.md#benchmarks) |
+| Selector correctness | 99.00% of 10,756 audited selectors across 111 real sites resolve to exactly one element | `zerodom audit` — see [README#proof](README.md#proof) |
 | Parse latency | 10–30ms typical, ~24ms on a synthetic 5,000-node page | same benchmark scripts |
 | Parse determinism | No LLM in the parse path — byte-identical output on repeat runs | [parser.py](zerodom/parser.py) docstring (FR-1) |
 

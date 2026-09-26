@@ -4,6 +4,57 @@ All notable changes to ZeroDOM are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+## [0.1.0] — 2026-09-25
+
+Stability and first-run hardening for a hands-off release window, plus a guided
+setup. No breaking API changes (still pre-1.0).
+
+### Added
+
+- **`zerodom setup`** — a guided first-run: checks for Chromium, prints the unpacked
+  extension path and the `chrome://extensions` steps, emits the MCP config JSON for
+  Claude Desktop / Cursor, and reports relay reachability. Print-and-guide, no account,
+  no telemetry.
+
+### Changed
+
+- **Dependency bounds tightened for the freeze.** `mcp[cli]>=2.2,<3` (a lower bound so a
+  resolver can't pick a pre-`MCPServer` release and import-crash the server) and
+  `websockets<15` (the relay couples to a server API that shifted across majors). lxml/
+  tiktoken/pyyaml stay uncapped for embeddability.
+- **`.mcpb` bundle** now declares the correct `uv` server type and pins the current
+  version.
+
+### Fixed
+
+- **Missing Chromium is handled on first run.** The CLI installs it once
+  ("Installing Chromium (~150MB, first run only)…") and retries when run at a
+  terminal; piped/CI runs get the one-line install hint. The MCP server never
+  downloads mid-tool-call — it returns `Chromium isn't installed. Run once:
+  uvx --from zerodom playwright install chromium`.
+- **First-run no longer hangs.** Calling an MCP tool before the extension is connected
+  now fails fast (~10s) with a "load and connect the extension" message instead of a
+  ~30s opaque timeout; the relay closes an unattached CDP socket cleanly.
+- **Sensitive-field fill refusal** now matches the on-page UI exactly (the `passw`
+  prefix), so a field like `Passwort`/`passwd` the UI marks sensitive is also refused
+  server-side — closing an under-refusal gap.
+- **`zerodom audit`** prints the one-line `playwright install chromium` hint instead of a
+  raw traceback when Chromium isn't installed.
+- **Multi-tab crash recovery** no longer hands back dead tab handles after a restart on
+  an attached session.
+- **Relay** rejects `Origin: null` (sandboxed-iframe / `file://` page origins), closing a
+  residual of the page-origin connection guard.
+
+### Docs
+
+- Expanded the Limitations section (static-fetch vs `--render`, unpacked-only extension,
+  POSIX-only `--stealth`, single MCP session, `compare`'s two-identity requirement) and
+  added an explicit safety-posture note.
+- Honest, consistent IDOR positioning across the site — ZeroDOM provides the
+  access-control primitives and surfaces the tell; you confirm the bug.
+
 ## [0.0.9] — 2026-09-24
 
 Bug-bounty / red-team workflow: CLI recon + IDOR primitives, an MCP cross-identity

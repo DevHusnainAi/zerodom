@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 import pytest
 import websockets
 
+from zerodom import relay
 from zerodom.relay import RelayServer
 
 
@@ -187,6 +188,38 @@ def test_a_page_origin_is_rejected():
             ) as ws:
                 with pytest.raises(websockets.ConnectionClosed):
                     await ws.recv()
+
+    run(scenario())
+
+
+def test_a_null_origin_is_rejected():
+    """A sandboxed iframe or a file:// page sends `Origin: null` rather than an
+    http(s):// scheme — still a page origin driving the user's session, so it
+    must be rejected too, not just the http/https cases."""
+    async def scenario():
+        async with running_server() as server:
+            async with websockets.connect(
+                server.cdp_endpoint(),
+                additional_headers={"Origin": "null"},
+            ) as ws:
+                with pytest.raises(websockets.ConnectionClosed):
+                    await ws.recv()
+
+    run(scenario())
+
+
+def test_a_cdp_client_gives_up_when_no_extension_ever_attaches(monkeypatch):
+    """The first-run trap: a CDP connect that arrives before the extension does
+    used to wait unbounded (~30s, the caller's own timeout) and hang. Now the
+    relay closes the socket after EXTENSION_READY_TIMEOUT so the caller fails
+    fast. Shrink the timeout so the test doesn't actually wait 10s."""
+    monkeypatch.setattr(relay, "EXTENSION_READY_TIMEOUT", 0.2)
+
+    async def scenario():
+        async with running_server() as server:
+            async with websockets.connect(server.cdp_endpoint()) as ws:
+                with pytest.raises(websockets.ConnectionClosed):
+                    await asyncio.wait_for(ws.recv(), timeout=3)
 
     run(scenario())
 

@@ -19,9 +19,12 @@
 
 ---
 
-> **Deterministic AppSec & AI perception layer.** Terminal-native DOM perception for red
-> teams and AI agents. Hook into live Chrome sessions, cut HTML tokens 98.9% (median) and
-> map attack surfaces from the CLI. No LLM in the parse.
+> **The deterministic attack-surface perception layer for AI security agents.**
+> ZeroDOM turns a live, logged-in page into a short numbered list of everything an
+> agent can act on (every form, input, link and button), each id resolving to exactly
+> one element. The markup never enters the model's context, so the agent spends its
+> budget reasoning about who should be allowed to do what, not parsing HTML. No LLM in
+> the parse; you confirm the bug. [Proof ↓](#proof)
 
 - **Relay mode** attaches to the Chrome you're already logged into, over `chrome.debugger`.
   Cookies, MFA and SSO are already done.
@@ -51,7 +54,7 @@ structural CSS selectors entirely out of the context window.
   &nbsp;·&nbsp;
   <b><a href="https://zerodom.vexralabs.com/compare">Compare</a></b>
   &nbsp;·&nbsp;
-  <b><a href="#benchmarks">Benchmarks</a></b>
+  <b><a href="#proof">Proof</a></b>
 </p>
 
 ---
@@ -81,6 +84,9 @@ One extra step only if you use the browser-backed features (`from_page`, `fromPa
 ```bash
 playwright install chromium
 ```
+
+(The `zerodom` CLI does this for you on first browser use at a terminal —
+a one-time ~150MB download.)
 
 ---
 
@@ -154,8 +160,16 @@ that makes it clickable never enters the context window.
 
 ## 10-second MCP setup
 
+**New here? Run `zerodom setup`** — a guided first-run that checks for Chromium, prints
+the unpacked-extension path and the `chrome://extensions` steps, emits the MCP config
+JSON below, and reports relay reachability. It's print-and-guide: no account, no
+telemetry, nothing leaves your machine. The manual steps below are what it walks you
+through.
+
+Once, before first use (the MCP server won't download it mid-tool-call):
+
 ```bash
-playwright install chromium
+uvx --from zerodom playwright install chromium
 ```
 
 **Claude Desktop** — `claude_desktop_config.json`
@@ -318,7 +332,18 @@ on. There is no page in this set where ZeroDOM costs more per action.
 
 ---
 
-## Benchmarks
+## Proof
+
+Numbers you can re-run. Every figure below has a script in `benchmarks/`.
+
+### vs the snapshot an MCP agent actually gets
+
+`uv run benchmarks/compare_mcp.py` diffs ZeroDOM against Playwright MCP's
+`aria_snapshot(mode="ai")` across [30 public sites](benchmarks/sites.txt) — tokens each,
+and the share of ZeroDOM selectors that resolve to exactly one live element. The full
+generated table is [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md); it's ~53–96% fewer
+tokens per site, and every selector that resolved matched exactly one element on every
+site in the run.
 
 ### Measured on 111 live sites
 
@@ -456,6 +481,7 @@ A `cleared.json` is a Playwright `storage_state` (`context.storage_state(path=..
 **Relay mode (your logged-in Chrome)** needs the extension, which ships inside the package:
 
 ```bash
+zerodom setup         # guided first-run: Chromium, the extension, MCP config, relay
 zerodom extension     # prints the bundled extension's directory
 # chrome://extensions -> Developer mode -> Load unpacked -> select that directory
 zerodom relay
@@ -584,7 +610,34 @@ Known and worth knowing before you build on it:
   first, then parse.
 
 - **Anti-bot systems are out of scope, by design.** ZeroDOM is middleware over a
-  `Page` you already control — it never fetches anything.
+  `Page` you already control — it never fetches anything. Challenge pages
+  (CF/Turnstile/reCAPTCHA/hCaptcha) are *detected* and handed off, never solved —
+  the honest paths are relay mode, a `--storage-state` cleared session, or a
+  program's bypass header.
+
+- **`zerodom <url>` is a static fetch.** The bare CLI reads HTML over plain HTTP
+  (no JavaScript). For JS-rendered pages use `--render` (headless Chromium) or the
+  relay/MCP path.
+
+- **The extension is unpacked/dev-mode only.** It uses `chrome.debugger` and runs
+  over a local WebSocket, which the Chrome Web Store's remote-code and
+  powerful-permission policies preclude — so it ships as a Load-unpacked developer
+  extension (like Playwright's own CDP relay), not a store listing.
+
+- **`--stealth` is POSIX-only.** It inherits FDs 3/4 for the CDP pipe; Windows
+  raises `NotImplementedError` (only `--stealth` is affected).
+
+- **The MCP server drives one browser session at a time.** Multi-*tab* is
+  supported; concurrent independent sessions are not (a deliberate scope limit).
+
+- **`compare`'s byte-identical IDOR tell needs two real logged-in identities.**
+  It surfaces the tell — a same-response across identities, or a 403-vs-200 — for
+  *you* to confirm and exploit. It does not autonomously confirm a bug.
+
+**Safety posture (it's a security tool):** scope is enforceable and lockable
+(`ZERODOM_SCOPE` / `zerodom_set_scope` — host allowlist, destructive-action denylist,
+rate limit), undrivable targets (chrome://, the Web Store, devtools) are refused, and
+challenge pages are detected, never bypassed.
 
 Full details in [SECURITY.md](SECURITY.md).
 
