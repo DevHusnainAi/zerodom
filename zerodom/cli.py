@@ -102,6 +102,12 @@ def fetch(
     adds a program's bypass header; `storage_state` reuses a cleared session.
 
     Raises FetchError (not a raw traceback) when the target can't be reached."""
+    # Schemeless host → assume https. Everyone types `zerodom example.com`, and
+    # `setup` itself suggests it; without this urllib raises "unknown url type".
+    # scan resolves local files to file:// URIs upstream, so a schemeless arg
+    # here is always a bare host.
+    if "://" not in url:
+        url = "https://" + url
     try:
         return _fetch(url, render, stealth, proxy, insecure, headers, storage_state)
     except (urllib.error.URLError, ValueError, OSError) as exc:

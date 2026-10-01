@@ -52,6 +52,19 @@ def test_proxy_routes_the_plain_http_fetch():
     assert "ok" in html
 
 
+def test_schemeless_url_assumes_https(monkeypatch):
+    """`zerodom example.com` (and setup's own suggestion) must not die on
+    urllib's "unknown url type"; fetch prepends https for a bare host."""
+    seen = []
+    monkeypatch.setattr(
+        cli, "_fetch",
+        lambda url, *a, **k: (seen.append(url), ("<html></html>", url))[1],
+    )
+    cli.fetch("example.com", render=False)
+    cli.fetch("https://example.com", render=False)
+    assert seen == ["https://example.com", "https://example.com"]
+
+
 def test_frames_and_stealth_cannot_combine():
     with pytest.raises(SystemExit):
         cli.main(["inspect", "--frames", "--stealth", "https://example.com"])
