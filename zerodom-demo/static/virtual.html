@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Orders queue — virtualized list (T3.2 churn fixture)</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 32px; }
+  .ord { display: inline-block; width: 90px; color: #555; font-family: monospace; }
+  #vinner > div { padding: 6px 0; border-bottom: 1px solid #eee; }
+  #vinner button { margin-left: 8px; padding: 4px 10px; cursor: pointer; }
+  #refresh { margin: 12px 0; padding: 6px 14px; cursor: pointer; }
+  #hits-out { color: #0a7d38; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>Orders queue</h1>
+<p>500 orders, virtualized window of 12. React re-renders between read and click.</p>
+<button id="refresh">Refresh queue</button>
+<div id="vlist"></div>
+<div id="hits-out"></div>
+
+<script src="/static/vendor/react.production.min.js"></script>
+<script src="/static/vendor/react-dom.production.min.js"></script>
+<script>
+window.hits = [];
+var e = React.createElement;
+var TOTAL = 500, VISIBLE = 12;
+
+function orderId(i) {
+  return "ORD-" + String(i).padStart(4, "0");
+}
+function recordHit(id) {
+  window.hits.push(id);
+  document.getElementById("hits-out").textContent = "Approved " + id;
+}
+
+function App() {
+  var state = React.useState(0);        // virtual window start
+  var off = state[0], setOff = state[1];
+  var tickState = React.useState(0);    // bump to force DOM node recreation
+  var tick = tickState[0], setTick = tickState[1];
+
+  React.useEffect(function () {
+    // Reorder churn: the window slides one order forward. Every row's label
+    // shifts to a different position — a positional selector that survived the
+    // read now points at a *different* order. flushSync makes the DOM change
+    // land before eval_js returns, so the test never races the scheduler.
+    window.churn = function () {
+      ReactDOM.flushSync(function () {
+        setOff(function (o) { return (o + 1) % (TOTAL - VISIBLE); });
+      });
+    };
+    // Recreation churn: same rows, same positions, brand-new DOM nodes
+    // (new React keys) — the shape a plain re-render produces.
+    window.recreate = function () {
+      ReactDOM.flushSync(function () {
+        setTick(function (t) { return t + 1; });
+      });
+    };
+    document.getElementById("refresh").onclick = window.churn;
+  }, []);
+
+  var rows = [];
+  for (var i = off; i < off + VISIBLE; i++) {
+    (function (id) {
+      rows.push(e("div", { key: id + "@" + tick },
+        e("span", { className: "ord" }, id),
+        e("button", { onClick: function () { recordHit(id); } }, "Approve · " + id)));
+    })(orderId(i));
+  }
+  return e("div", { id: "vinner" }, rows);
+}
+
+ReactDOM.createRoot(document.getElementById("vlist")).render(e(App));
+</script>
+</body>
+</html>

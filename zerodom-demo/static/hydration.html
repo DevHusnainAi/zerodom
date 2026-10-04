@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Checkout — delayed hydration (T3.2 fixture)</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 32px; }
+  #buy { padding: 8px 16px; cursor: pointer; }
+  #track { color: #0a7d38; font-weight: bold; margin-top: 12px; }
+</style>
+</head>
+<body>
+<!-- Server-rendered markup, exactly what an agent sees before the client
+     bundle lands: the button is in the graph, its handler is not yet in the
+     page. The hydration probe flags this (__NEXT_DATA__ present, framework
+     root not mounted). -->
+<div id="__next">
+  <h1>Checkout</h1>
+  <p>Server-rendered summary — total due $42.00</p>
+  <button id="buy">Complete purchase</button>
+  <input name="email" placeholder="Receipt email">
+</div>
+<script id="__NEXT_DATA__" type="application/json">{"page":"checkout","ssr":true}</script>
+<script>
+window.hits = [];
+window.__mounted = false;
+window.__mount = function () {
+  if (window.__mounted) return;
+  window.__mounted = true;
+  var btn = document.getElementById("buy");
+  // What hydration actually does: the client handler lands on the element the
+  // server shipped. Until then a click is silently lost.
+  btn.onclick = function () {
+    window.hits.push("ssr-action");
+    var a = document.createElement("a");
+    a.id = "track";
+    a.href = "/receipt";
+    a.textContent = "View receipt";
+    document.getElementById("__next").appendChild(a);
+  };
+  // The marker playwright_wrapper's hydration probe inspects.
+  document.getElementById("__next").__reactContainer$ = { child: {} };
+};
+// Late client mount — models a Next.js bundle that lands after the agent has
+// already read (and possibly clicked) the page.
+window.addEventListener("load", function () {
+  setTimeout(window.__mount, 8000);
+});
+</script>
+</body>
+</html>

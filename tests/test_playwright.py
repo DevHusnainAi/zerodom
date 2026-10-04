@@ -242,6 +242,70 @@ def test_shadow_dom_nodes_are_found_and_click_the_right_element(browser):
     p.close()
 
 
+def test_custom_element_upgrade_appears_in_a_later_parse(browser):
+    """A web component's shadow root only exists after upgrade.
+
+    An agent that parses before `customElements.define()` runs sees the light
+    DOM alone; after upgrade the same page grows a second, identically-labelled
+    control. Both parses must resolve uniquely, and each click must reach the
+    tree its node came from — otherwise upgrade timing decides which element
+    the agent silently hits.
+    """
+    html = """<html><body>
+      <order-widget><button onclick="window.hits.push('light')">Confirm order</button></order-widget>
+      <script>
+        window.hits = [];
+        class OrderWidget extends HTMLElement {
+          connectedCallback() {
+            if (this.shadowRoot) return;
+            const r = this.attachShadow({ mode: 'open' });
+            r.innerHTML = '<slot></slot>' +
+              '<button onclick="window.hits.push(\\'shadow\\')">Confirm order</button>';
+          }
+        }
+        window.__upgrade = () => customElements.define('order-widget', OrderWidget);
+      </script>
+    </body></html>"""
+    p = browser.new_page()
+    p.set_content(html)
+
+    before = [n for n in ZeroDOM.from_page(p)["nodes"] if n["label"] == "Confirm order"]
+    assert len(before) == 1, "un-upgraded: only the light-DOM control exists"
+
+    p.evaluate("window.__upgrade()")
+    after = [n for n in ZeroDOM.from_page(p)["nodes"] if n["label"] == "Confirm order"]
+    assert len(after) == 2, "upgrade must surface the shadow control as its own node"
+    assert all(p.locator(n["selector"]).count() == 1 for n in after), [
+        (n["selector"], p.locator(n["selector"]).count()) for n in after
+    ]
+
+    for n in after:
+        p.click(n["selector"])
+    assert sorted(p.evaluate("window.hits")) == ["light", "shadow"]
+    p.close()
+
+
+def test_fill_reaches_an_input_inside_an_open_shadow_root(browser):
+    """A control you can read but not fill is half a control: `fill` must pierce
+    the same open root the graph read, and land in that input — not in a
+    same-named light-DOM field."""
+    p = browser.new_page()
+    p.set_content(
+        "<html><body><div id='card'></div><script>"
+        "card.attachShadow({mode:'open'}).innerHTML="
+        "'<input placeholder=\"Card number\">';"
+        "</script></body></html>"
+    )
+    fields = [n for n in ZeroDOM.from_page(p)["nodes"] if n["label"] == "Card number"]
+    assert len(fields) == 1
+    assert p.locator(fields[0]["selector"]).count() == 1
+    p.fill(fields[0]["selector"], "4111 1111")
+    assert p.evaluate(
+        "document.getElementById('card').shadowRoot.querySelector('input').value"
+    ) == "4111 1111"
+    p.close()
+
+
 def test_report_measures_shadow_nodes(browser):
     """A node Playwright can click must not be reported as unlocated."""
     from zerodom import report

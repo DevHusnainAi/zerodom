@@ -6,6 +6,55 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Challenge-clearance ladder — walls are now cleared, not handed off.** The
+  old detect-and-hand-off rule is reversed (docs/HYPOTHESIS-ACK-PLAN.md Phase 0).
+  A four-rung ladder runs at the three navigation choke points (`cli._goto`,
+  `mcp_server._goto`, `cdp_pipe.outer_html`): reuse carried `cf_clearance`
+  clearance → stealth hygiene on the `--stealth` transport (no more
+  `Runtime.enable`/`Runtime.evaluate` over the CDP pipe — the mid-load signal
+  bot vendors fingerprint) → bundled solver adapters (CapSolver / 2Captcha /
+  Anti-Captcha / any custom `ZERODOM_SOLVER_URL` endpoint; opt-in, scope-gated
+  like every action, `--no-solver` / `ZERODOM_NO_SOLVER` refuses, spend logged)
+  → relay hand-off to the operator. Success lands in
+  `metadata["cleared"]` (rung, wall kind, attempts, seconds, spend); a wall no
+  rung clears keeps the honest `metadata["blocked"]`. CLI gains `--no-solver`
+  and `zerodom config set/get/list` (`~/.zerodom/config.json`, env wins, keys
+  never printed).
+- **`benchmarks/benchmark_clearance.py`:** per-rung clearance rate against a
+  deterministic local fixture wall plus the authorized live wall list
+  (nowsecure.nl, turnstile/reCAPTCHA/hCaptcha demos, `ZERODOM_E2E=1`); writes
+  `benchmarks/CLEARANCE.md`. `tests/test_clearance.py` covers rung order, the
+  kill switch, scope refusal, the fake-provider solve flow, MCP surfacing, and
+  the cdp_pipe no-`Runtime.*` regression.
+- **Relay-backed crawl (Phase 1):** `zerodom crawl --relay` and the
+  `zerodom_crawl` MCP tool walk the operator's real, logged-in Chrome instead of
+  a fresh headless profile — same BFS, scope, deny regex and JSONL records;
+  challenge-interstitial nodes are recorded as `blocked` and not descended
+  into. `crawl` has no stealth transport (the CDP pipe is fetch-only) and says
+  so. Live-identity replay (Phase 2) now routes through an in-page credentialed
+  `fetch` in the attached tab, so the request leaves Chrome's own network
+  stack; registered second identities still use the HTTP client and their
+  docstrings no longer claim Chrome's fingerprint. Scope (Phase 4): `eval_js`
+  refuses obvious cross-origin navigation when a scope is locked, any
+  navigating tool re-asserts the final post-redirect URL, and
+  `tests/test_scope_escape.py` table-drives every escape vector to refusal.
+- **Dynamic-component correctness (Phase 3):** `_act`'s pre-action identity
+  check re-resolves a re-read node by *identity* (tag + input_type + label),
+  not by its positional id, so reorder churn can never mis-click — zero or
+  ambiguous matches refuse with "page changed under us". Closed shadow roots
+  surface as `metadata["closed_shadow_hosts"]` so coverage isn't overstated.
+  `zerodom-demo/` is now a fixture app (virtualized churn, open shadow root,
+  delayed hydration) with a Chromium-gated CI suite
+  `tests/test_dynamic_components.py`.
+- **`benchmarks/benchmark_session.py` / `benchmark_crawl.py`:** session-reuse
+  (headless/stealth/relay) and crawl-coverage (routes+APIs recall, framed
+  against the OWASP WSTG recon checklist) benchmarks; write `SESSION.md` /
+  `CRAWL.md`. Relay legs skip honestly when no relay is listening — they never
+  spawn one or close the operator's browser. Crawl now uses a desktop viewport
+  (1920×1080) so responsive navs are in their expanded state.
+
 ## [0.1.0] — 2026-09-25
 
 Stability and first-run hardening for a hands-off release window, plus a guided

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PO approval — shadow DOM web component (T3.2 fixture)</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 32px; }
+  order-widget { display: block; margin-top: 16px; padding: 12px; border: 1px solid #ccc; border-radius: 6px; }
+</style>
+</head>
+<body>
+<h1>Purchase order approval</h1>
+<order-widget id="ordw">
+  <!-- Light-DOM decoy: same label as the shadow control, different tree. -->
+  <button id="decoy" onclick="window.hits.push('light-confirm')">Confirm order</button>
+</order-widget>
+<script>window.hits = [];</script>
+<script src="/static/shadow_widget.js"></script>
+</body>
+</html>

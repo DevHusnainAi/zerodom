@@ -1,5 +1,9 @@
 """Turn a web page into the list of things an agent can click, and count the
-savings. `zerodom <url>` for the compact graph, --find to search it."""
+savings. `zerodom <url>` for the compact graph, --find to search it.
+
+`zerodom crawl <url>` maps an app's routes/forms/API calls as JSONL over one
+of two transports: a fresh headless Chromium (default) or your real, already-
+logged-in Chrome via the ZeroDOM relay (`--relay`)."""
 
 from __future__ import annotations
 
@@ -12,9 +16,12 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import tiktoken
+from lxml import html as lxml_html
 
+from . import clearance
 from .parser import ZeroDOMParser, compact_line, find_nodes
 from .playwright_wrapper import serialize
 
@@ -25,18 +32,30 @@ def count_tokens(text: str) -> int:
     return len(tiktoken.get_encoding("cl100k_base").encode(text))
 
 
-def _goto(page, url: str) -> None:
+def _goto(page, url: str, transport: str = "playwright") -> None:
     """Navigate without hanging on a page that never goes network-idle.
 
     `wait_until="networkidle"` hangs the full 30s on any Turnstile/CF challenge
     or long-poll page (the widget keeps a socket open forever). Commit on DOM
     ready, then give the network a short bounded window to settle for SPAs and
-    read whatever is there if it doesn't."""
+    read whatever is there if it doesn't.
+
+    Then the clearance ladder (choke point 1 of 3, see clearance.py): post-goto,
+    pre-parse, rungs 1-4 attempt the wall. The result rides in the clearance
+    module slot for whoever parses this fetch (inspect merges it into
+    metadata["cleared"]); every fetch entry consumes the slot first so a
+    plain-HTTP fetch in the same process can't inherit an earlier URL's result.
+    transport="playwright": a CLI launch is nobody's live browser tab, so rung 4
+    (human hand-off) stays off here; rung 2's ceiling on this transport is
+    documented in clearance._rung_stealth. crawl --relay passes transport="relay"
+    so the ladder treats the tab as the human's (rung 4 stays on).
+    """
     page.goto(url, wait_until="domcontentloaded", timeout=30000)
     try:
         page.wait_for_load_state("networkidle", timeout=6000)
     except Exception:
         pass  # never idles (challenge widget / long-poll) — read the page as-is
+    clearance.attempt_clearance(page, None, clearance.make_policy(url=url, transport=transport))
 
 
 def _launch(pw, proxy: str | None, _retried: bool = False):
@@ -108,6 +127,12 @@ def fetch(
     # here is always a bare host.
     if "://" not in url:
         url = "https://" + url
+    # Consume any ladder result from an earlier URL in this process — a
+    # plain-HTTP fetch navigates nothing, so it must not leave the previous
+    # URL's cleared/blocked record for inspect to pick up (stdin loops call
+    # fetch per line, some --render, some not).
+    clearance.take_cleared()
+    clearance.take_notes()
     try:
         return _fetch(url, render, stealth, proxy, insecure, headers, storage_state)
     except (urllib.error.URLError, ValueError, OSError) as exc:
@@ -228,6 +253,82 @@ def capture(
 _DEFAULT_DENY = "logout|sign-?out|delete|remove|destroy|revoke|deactivate|/api/.*(delete|remove)"
 
 
+def crawl_plan(start_url: str, scope: set[str] | None = None, deny: str = _DEFAULT_DENY):
+    """(in_scope, deny_re) for a BFS — shared by the CLI and MCP crawls so the
+    two transports can never disagree about what's followable."""
+    import re as _re
+
+    deny_re = _re.compile(deny, _re.I)
+    start_host = urlparse(start_url).netloc
+    allow = {start_host} | (scope or set())
+
+    def in_scope(u: str) -> bool:
+        h = urlparse(u).netloc
+        return h in allow and not deny_re.search(u)
+
+    return in_scope, deny_re
+
+
+def forms_of(doc, base: str) -> list[dict]:
+    """Every `<form>` on the page as {action, method, inputs} — the payload an
+    agent needs to re-submit one by hand."""
+    out = []
+    for f in doc.iter("form"):
+        inputs = [
+            {"name": i.get("name"), "type": (i.get("type") or i.tag)}
+            for i in f.iter("input", "select", "textarea") if i.get("name")
+        ]
+        out.append({
+            "action": urljoin(base, f.get("action") or base),
+            "method": (f.get("method") or "get").upper(),
+            "inputs": inputs,
+        })
+    return out
+
+
+def crawl_record(html: str, final_url: str, api_calls: list[str], in_scope) -> dict:
+    """One JSONL record for a crawled page: forms, in-scope links, fired API
+    calls, hidden fields, blocked. Shared byte-for-byte by the sync CLI crawl
+    and the async MCP crawl — both transports emit the same record."""
+    graph = ZeroDOMParser(html, final_url).parse()
+    try:
+        doc = lxml_html.fromstring(html)
+    except Exception:
+        doc = None
+    links = sorted({
+        urljoin(final_url, n["href"]) for n in graph["nodes"]
+        if n.get("href") and n["href"].split(":", 1)[0] not in ("javascript", "mailto", "tel")
+    })
+    record = {
+        "url": final_url,
+        "forms": forms_of(doc, final_url) if doc is not None else [],
+        "api_calls": sorted(set(api_calls)),
+        "hidden_fields": [h["name"] for h in graph["metadata"].get("hidden_fields", [])],
+        "links_in_scope": [l for l in links if in_scope(l)],
+    }
+    if blocked := graph["metadata"].get("blocked"):
+        record["blocked"] = blocked["kind"]
+    return record
+
+
+def _connect_relay(pw):
+    """Attach to the operator's real Chrome through the relay (connect_over_cdp),
+    mirroring mcp_server._page(): a configured-but-unreachable endpoint fails
+    closed — never a silent fallback to a fresh, unauthenticated browser."""
+    from .relay import DEFAULT_PORT
+
+    endpoint = os.environ.get("ZERODOM_CDP_ENDPOINT") or (
+        f"ws://127.0.0.1:{DEFAULT_PORT}/cdp/local" if _relay_reachable(DEFAULT_PORT) else None)
+    if not endpoint:
+        raise SystemExit(
+            "zerodom: --relay needs a relay endpoint — run `zerodom relay` with the "
+            "ZeroDOM extension connected (or set ZERODOM_CDP_ENDPOINT) and retry")
+    try:
+        return pw.chromium.connect_over_cdp(endpoint, timeout=10000)
+    except Exception as exc:
+        raise SystemExit(f"zerodom: could not connect to the relay at {endpoint}: {exc}") from None
+
+
 def crawl_site(
     start_url: str,
     *,
@@ -238,6 +339,7 @@ def crawl_site(
     insecure: bool = False,
     headers: dict | None = None,
     storage_state: str | None = None,
+    relay: bool = False,
 ):
     """Deep, authenticated, read-only recon of a real app: BFS-walk same-scope
     routes in a rendered browser (so JS SPAs actually load), and for each page
@@ -247,81 +349,80 @@ def crawl_site(
 
     Read-only by design: it navigates and reads, never submits a form or clicks a
     control matching `deny` (logout/delete/…), so it's safe to run unattended.
-    """
-    import re as _re
-    from urllib.parse import urljoin, urlparse
 
-    from lxml import html as lxml_html
+    Two transports. The default launches a fresh headless Chromium carrying the
+    engagement's copied cookies (--proxy/--header/--storage-state). `relay=True`
+    (`--relay`) attaches to the human's real, already-authenticated Chrome via
+    the ZeroDOM relay — that browser *is* the session, so the engagement flags
+    don't apply there, and their Chrome is never closed (our own tab is opened
+    and closed instead; the page they're looking at is left alone). The BFS,
+    scope check, deny regex, and per-page records are identical on both.
+    """
     from playwright.sync_api import sync_playwright
 
-    deny_re = _re.compile(deny, _re.I)
-    start_host = urlparse(start_url).netloc
-    allow = {start_host} | (scope or set())
-
-    def in_scope(u: str) -> bool:
-        h = urlparse(u).netloc
-        return h in allow and not deny_re.search(u)
-
-    def forms_of(doc, base: str) -> list[dict]:
-        out = []
-        for f in doc.iter("form"):
-            inputs = [
-                {"name": i.get("name"), "type": (i.get("type") or i.tag)}
-                for i in f.iter("input", "select", "textarea") if i.get("name")
-            ]
-            out.append({
-                "action": urljoin(base, f.get("action") or base),
-                "method": (f.get("method") or "get").upper(),
-                "inputs": inputs,
-            })
-        return out
+    in_scope, _deny_re = crawl_plan(start_url, scope, deny)
 
     seen: set[str] = set()
     queue: list[str] = [start_url]
     with sync_playwright() as pw:
-        browser = _launch(pw, proxy)
-        ctx = _context(browser, insecure=insecure, headers=headers, storage_state=storage_state)
-        page = ctx.new_page()
-        api_calls: list[str] = []
-        # XHR/fetch the page fires during a load = the app's real API surface.
-        page.on("request", lambda r: api_calls.append(f"{r.method} {r.url}")
-                if r.resource_type in ("xhr", "fetch") else None)
-        while queue and len(seen) < max_pages:
-            url = queue.pop(0)
-            if url in seen:
-                continue
-            seen.add(url)
-            api_calls.clear()
-            try:
-                _goto(page, url)
-                html, final = serialize(page), page.url
-            except Exception as exc:
-                yield {"url": url, "error": str(exc)[:200]}
-                continue
-            graph = ZeroDOMParser(html, final).parse()
-            try:
-                doc = lxml_html.fromstring(html)
-            except Exception:
-                doc = None
-            links = sorted({
-                urljoin(final, n["href"]) for n in graph["nodes"]
-                if n.get("href") and n["href"].split(":", 1)[0] not in ("javascript", "mailto", "tel")
-            })
-            forms = forms_of(doc, final) if doc is not None else []
-            record = {
-                "url": final,
-                "forms": forms,
-                "api_calls": sorted(set(api_calls)),
-                "hidden_fields": [h["name"] for h in graph["metadata"].get("hidden_fields", [])],
-                "links_in_scope": [l for l in links if in_scope(l)],
-            }
-            if blocked := graph["metadata"].get("blocked"):
-                record["blocked"] = blocked["kind"]
-            yield record
-            for l in record["links_in_scope"]:
-                if l not in seen and l not in queue:
-                    queue.append(l)
-        browser.close()
+        own_tab = None
+        if relay:
+            browser = _connect_relay(pw)
+            # Our own tab: never hijack the page the human is looking at.
+            own_tab = browser.contexts[0].new_page()
+            page = own_tab
+        else:
+            browser = _launch(pw, proxy)
+            page = _context(browser, insecure=insecure, headers=headers,
+                            storage_state=storage_state).new_page()
+        try:
+            # Desktop viewport: responsive sites expose their wide-layout navs
+            # at 1920 where 1280 shows the collapsed form. juice-shop's
+            # hamburger drawer stays closed at every width (verified 1280/1920/
+            # 2560 — its nav anchors all serialize data-zerodom-hidden), so its
+            # coverage number comes out of the interaction layer, not a width;
+            # see benchmarks/CRAWL.md. fetch/inspect keep the browser default —
+            # node counts there are token benchmarks, not coverage claims.
+            page.set_viewport_size({"width": 1920, "height": 1080})
+            # ponytail: crawl never clicks — a control that reveals links only
+            # behind an interaction (hamburger menus, tabs, carousels) is not
+            # expanded; mapping those needs the agent's _act layer, not BFS.
+            api_calls: list[str] = []
+            # XHR/fetch the page fires during a load = the app's real API surface.
+            page.on("request", lambda r: api_calls.append(f"{r.method} {r.url}")
+                    if r.resource_type in ("xhr", "fetch") else None)
+            while queue and len(seen) < max_pages:
+                url = queue.pop(0)
+                if url in seen:
+                    continue
+                seen.add(url)
+                api_calls.clear()
+                try:
+                    _goto(page, url, "relay" if relay else "playwright")
+                    html, final = serialize(page), page.url
+                except Exception as exc:
+                    yield {"url": url, "error": str(exc)[:200]}
+                    continue
+                record = crawl_record(html, final, api_calls, in_scope)
+                yield record
+                if record.get("blocked"):
+                    # A challenge interstitial's links are the wall's, not the
+                    # app's — record the block and do not descend into it.
+                    continue
+                for l in record["links_in_scope"]:
+                    if l not in seen and l not in queue:
+                        queue.append(l)
+        finally:
+            if own_tab is not None:
+                try:
+                    own_tab.close()
+                except Exception:
+                    pass
+            # Never browser.close() on a relay browser: it's the operator's
+            # real Chrome (mcp_server._teardown_active_session precedent) —
+            # leaving the with-block only stops our own driver connection.
+            if not relay:
+                browser.close()
 
 
 def compare_identities(
@@ -431,6 +532,13 @@ def inspect(
         print(f"zerodom: could not fetch {url}: {str(exc).splitlines()[0]}", file=sys.stderr)
         return 1
 
+    # Whatever the ladder did during this fetch becomes metadata["cleared"]
+    # beside the parser's metadata["blocked"], and the human-facing notes
+    # (rung 3/4) ride along for the report below.
+    if cleared := clearance.take_cleared():
+        graph["metadata"]["cleared"] = cleared
+    ladder_notes = clearance.take_notes()
+
     if as_pipe:  # machine path: JSONL to stdout, no token report
         emit_jsonl(graph)
         return 0
@@ -458,9 +566,16 @@ def inspect(
     print(f"  ZeroDOM tokens     {graph_tokens:,}  ({'json' if as_json else 'compact text'})", file=report)
     print(f"  Token savings      {savings:.1f}%", file=report)
     if blocked := graph["metadata"].get("blocked"):
-        print(f"  Blocked            {blocked['kind']} challenge detected "
-              f"(reuse a cleared session with --storage-state, or drive it in relay mode)",
+        print(f"  Blocked            {blocked['kind']} challenge — ladder did not clear it "
+              f"(reuse a cleared session with --storage-state, retry --stealth, set a solver "
+              f"provider, or drive it in relay mode; --no-solver forces rung 3 off)",
               file=report)
+    elif cleared := graph["metadata"].get("cleared"):
+        print(f"  Cleared            {cleared['wall_kind']} via rung {cleared['rung']} "
+              f"({cleared['attempts']} attempt{'s' if cleared['attempts'] != 1 else ''}, "
+              f"{cleared['seconds']}s)", file=report)
+    for note in ladder_notes:
+        print(f"  Note               {note}", file=report)
     if extra:
         print(extra, file=report)
     print("─" * 52, file=report)
@@ -545,6 +660,11 @@ def _add_fetch_flags(p) -> None:
         help="reuse a Playwright storage_state (cookies + localStorage) — carries a "
              "human-cleared session, e.g. a cf_clearance cookie, into automated reads",
     )
+    p.add_argument(
+        "--no-solver", action="store_true",
+        help="disable rung 3 (the built-in solver) of the challenge-clearance "
+             "ladder for this run — env ZERODOM_NO_SOLVER=1 does the same host-wide",
+    )
 
 
 def _parse_headers(pairs: list | None) -> dict:
@@ -556,6 +676,55 @@ def _parse_headers(pairs: list | None) -> dict:
         k, v = raw.split(":", 1)
         out[k.strip()] = v.strip()
     return out
+
+
+_CONFIG_KEYS = ("solver.provider", "solver.key", "solver.url")
+
+
+def _mask_config_value(key: str, value: str) -> str:
+    """Secrets echo masked — set/get/list all print, and stdout is history."""
+    if not key.endswith(".key"):
+        return value
+    if len(value) > 8:
+        return f"{value[:4]}…{value[-4:]} (masked)"
+    return "(masked)"
+
+
+def config_cmd(args) -> int:
+    """`zerodom config set/get/list` — the in-product half of solver setup
+    (T0.1): values land in ~/.zerodom/config.json (0600), env vars beat them,
+    and the ladder reads the result through solvers.get_solver()."""
+    from .solvers import CONFIG_PATH, load_config, save_config
+
+    if args.config_action == "list":
+        cfg = load_config()
+        found = False
+        for key in _CONFIG_KEYS:
+            section, name = key.split(".")
+            if isinstance(cfg.get(section), dict) and name in cfg[section]:
+                found = True
+                print(f"{key} = {_mask_config_value(key, str(cfg[section][name]))}")
+        if not found:
+            print(f"(nothing stored in {CONFIG_PATH})")
+        return 0
+    if args.key not in _CONFIG_KEYS:
+        raise SystemExit(f"zerodom: unknown setting {args.key!r} "
+                         f"(known: {', '.join(_CONFIG_KEYS)})")
+    if args.config_action == "set":
+        cfg = load_config()
+        section, name = args.key.split(".")
+        cfg.setdefault(section, {})[name] = args.value
+        save_config(cfg)
+        print(f"{args.key} = {_mask_config_value(args.key, args.value)}  ({CONFIG_PATH})")
+        return 0
+    cfg = load_config()
+    node: object = cfg
+    for part in args.key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            raise SystemExit(f"zerodom: {args.key} is not set")
+        node = node[part]
+    print(f"{args.key} = {_mask_config_value(args.key, str(node))}")
+    return 0
 
 
 def _parse_identities(pairs: list | None) -> list[tuple[str, str]]:
@@ -673,6 +842,17 @@ def main(argv: list[str] | None = None) -> int:
         "setup", help="guided first-run: Chromium, the extension, the MCP config and the relay"
     )
 
+    cfg = sub.add_parser(
+        "config", help="store solver settings in ~/.zerodom/config.json (env vars beat the file)"
+    )
+    cfg_sub = cfg.add_subparsers(dest="config_action", required=True)
+    cfg_set = cfg_sub.add_parser("set", help="e.g. zerodom config set solver.provider capsolver")
+    cfg_set.add_argument("key", help="solver.provider | solver.key | solver.url")
+    cfg_set.add_argument("value")
+    cfg_get = cfg_sub.add_parser("get", help="print one setting (keys are masked)")
+    cfg_get.add_argument("key")
+    cfg_sub.add_parser("list", help="print every stored setting (keys are masked)")
+
     scan = sub.add_parser(
         "scan", help="match a page's interaction graph against client-side surface rules"
     )
@@ -691,6 +871,16 @@ def main(argv: list[str] | None = None) -> int:
     crawl.add_argument("--scope", metavar="HOSTS", help="extra in-scope hosts, comma-separated")
     crawl.add_argument("--max-pages", type=int, default=40, dest="max_pages", help="page cap (default 40)")
     crawl.add_argument("--deny", default=_DEFAULT_DENY, help="regex of links to never follow (logout/delete/…)")
+    crawl.add_argument(
+        "--relay", action="store_true",
+        help="crawl through your real, logged-in Chrome via the ZeroDOM relay — an "
+             "already-authenticated session instead of a fresh headless browser",
+    )
+    crawl.add_argument(
+        "--stealth", action="store_true",
+        help="(crawl has no stealth transport — kept only so the --relay clash reports "
+             "clearly; see the error text)",
+    )
     _add_fetch_flags(crawl)
 
     cmp = sub.add_parser(
@@ -755,12 +945,17 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if (
         argv
-        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "crawl", "extension", "setup", "-h", "--help"}
+        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "crawl", "extension", "setup", "config", "-h", "--help"}
         and not argv[0].startswith("-")
     ):
         argv = ["inspect", *argv]
 
     args = parser.parse_args(argv)
+    # --no-solver reaches every fetch verb through _add_fetch_flags; set it as
+    # the process-wide default before any navigation builds a Policy.
+    clearance.set_defaults(no_solver=bool(getattr(args, "no_solver", False)))
+    if args.command == "config":
+        return config_cmd(args)
     if args.command == "audit":
         from .audit import run
 
@@ -778,11 +973,26 @@ def main(argv: list[str] | None = None) -> int:
         return scan_targets(args)
 
     if args.command == "crawl":
+        # Same shape as inspect's --frames+--stealth guard: two browser
+        # transports that can't compose say so, instead of one winning quietly.
+        if args.relay and args.stealth:
+            raise SystemExit("zerodom: --relay and --stealth can't be combined "
+                             "(--relay drives your real Chrome via the relay; --stealth is the CDP pipe)")
+        if args.stealth:
+            # crawl needs page-level request events to record API calls, and the
+            # CDP-pipe transport is one-shot (fetch only, cdp_pipe.py) — so this
+            # combination has no implementation, rather than a worse one.
+            raise SystemExit(
+                "zerodom crawl: --stealth isn't available on the crawl path — the CDP-pipe "
+                "transport is one-shot (fetch only) and crawl needs page-level request events "
+                "to record API calls. Use --relay (real authenticated session), or "
+                "`zerodom inspect --stealth <url>` for a single page.")
         scope = set(h.strip() for h in (args.scope or "").split(",") if h.strip())
         for record in crawl_site(
             args.url, scope=scope, max_pages=args.max_pages, deny=args.deny,
             proxy=args.proxy, insecure=args.insecure,
             headers=_parse_headers(args.headers), storage_state=args.storage_state,
+            relay=args.relay,
         ):
             sys.stdout.write(json.dumps(record, ensure_ascii=False) + "\n")
             sys.stdout.flush()

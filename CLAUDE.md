@@ -23,7 +23,8 @@ uv run playwright install chromium   # required once for browser-backed tests/fe
 uv run python benchmarks/benchmark_tokens.py   # token-savings report (tiktoken, cl100k_base)
 uv build                             # wheel + sdist into dist/
 
-zerodom <url>                        # = `zerodom inspect <url>`; also `audit`, `relay`, `scan`
+zerodom <url>                        # = `zerodom inspect <url>`; also audit/relay/scan/crawl/compare/extension/setup
+zerodom setup                        # guided first-run: Chromium check, extension path, MCP config, relay
 zerodom relay                        # WS bridge on :8765 for the Chrome extension
 zerodom inspect <url> --pipe         # JSONL node stream to stdout (one node per line)
 zerodom inspect --stealth <url>      # spawn throwaway Chrome over a CDP pipe (no port, no Playwright)
@@ -32,8 +33,12 @@ ZERODOM_E2E=1 uv run pytest tests/test_extension_e2e.py -v -s   # opt-in, real b
 ```
 
 CI (`.github/workflows/ci.yml`) runs `uv sync && uv run playwright install --with-deps chromium && uv run pytest`
-on Python 3.10 and 3.12, plus a separate `pip-audit` / `npm audit` job. PyPI publishes on a `v*` tag, npm on a separate `npm-v*` tag —
-the two packages version independently.
+on Python 3.10 and 3.12, plus CodeQL. **CI does not run `npm test`** — the JS port's tests
+(`js/test/parser.test.ts`, `graphUi.test.ts`) only run when you run them locally, so run them
+after touching `js/` or `graph_ui.js`. `pip-audit` / `npm audit` live in `security.yml` (also a
+weekly cron). PyPI publishes on a `v*` tag (`release.yml`, release notes are that version's
+`CHANGELOG.md` section), npm on a separate `npm-v*` tag (`publish-npm.yml`) — the two packages
+version independently.
 
 There is a parallel TypeScript port under `js/` (`@vexralabs/zerodom` on npm) that mirrors
 the Python module-for-module (`parser.ts`, `labelLinker.ts`, `playwright.ts`, `frames.ts`).
@@ -49,7 +54,8 @@ npm test                             # node --test --experimental-strip-types, m
 ### Which tests need what
 
 - `test_parser.py`, `test_audit.py`, `test_cli.py`, `test_jsintel.py`, `test_surfaces.py`, `test_graph_ui_sync.py` — pure, no browser.
-- `js/test/graphUi.test.ts` — the shared graph UI, mounted under linkedom (`cd js && npm test`).
+- `js/test/parser.test.ts` — the TS parser, case-for-case mirror of `test_parser.py`;
+  `js/test/graphUi.test.ts` — the shared graph UI, mounted under linkedom. Both via `cd js && npm test`.
 - `test_mcp.py`, `test_mcp_cdp.py` — MCP tools against a `FakePage`/`FakeGotoPage`, no browser.
 - `test_relay.py` — `BrowserModel` state machine with a `FakeExtension`; `test_relay_server.py` —
   real WebSocket round-trips through `RelayServer`, no browser. Each test runs its whole
@@ -159,7 +165,7 @@ first — for the FR-numbered ones it states the design constraint.
   reports `ok`/`dead`/`ambiguous`/`invalid` — the same "matches more than one element"
   failure mode `_selector()` in `parser.py` is built to avoid, but for selectors a human
   already wrote.
-- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `extension` (prints the unpacked
+- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `setup` / `extension` (prints the unpacked
   extension's path; the wheel bundles `extension/` as `zerodom/extension` via hatch `force-include`,
   and each `v*` release also attaches a zip + sha256) (entry point `zerodom`; a bare
   first arg that isn't a subcommand is rewritten to `inspect`). `capture()` shares one
@@ -179,7 +185,12 @@ first — for the FR-numbered ones it states the design constraint.
   `crawl_site()` (`zerodom crawl URL`) is the recon crawler: a rendered BFS over
   same-scope routes that records each page's forms, in-scope links and fired
   XHR/fetch API calls (via `page.on("request")`), read-only (skips a `--deny` regex of
-  destructive links). It's sync Playwright, so tests run it in a worker thread to dodge a
+  destructive links). Two transports: default launches its own Chromium; `--relay`
+  attaches to an already-open, human-authenticated Chrome over the relay (`--stealth`
+  is refused here — cdp_pipe is one-shot, use `--relay` or `inspect --stealth`).
+  Blocked pages (challenge) are recorded and not descended into. The same crawl
+  runs in-session as the `zerodom_crawl` MCP tool (JSONL stream of `crawl_record`s).
+  It's sync Playwright, so tests run it in a worker thread to dodge a
   leaked asyncio loop; in production it's its own process.
 
 Import order in `__init__.py` matters for avoiding circular imports:
@@ -201,8 +212,10 @@ Import order in `__init__.py` matters for avoiding circular imports:
   `APIRequestContext` in `_session["identities"]`; `zerodom_replay(url, method, body,
   header, as_identity)` is Burp Repeater for the agent; `zerodom_compare_identities(url,
   …)` fetches one URL as each identity and flags a byte-identical response as a
-  cross-tenant IDOR. Uses the request context (real session cookies), so it works past a
-  WAF/login wall where a plain fetch can't. `_reject_undrivable()` refuses chrome://,
+  cross-tenant IDOR. The live identity goes out through an in-page fetch — Chrome's own
+  network stack, fingerprint included — so it can pass a WAF that fingerprints the
+  connection; registered identities use Playwright's `APIRequestContext` (their cookies,
+  but an HTTP client's fingerprint, not Chrome's). `_reject_undrivable()` refuses chrome://,
   extension, devtools and Web Store URLs (they can't be attached and used to wedge the
   session); `relay._is_attachable()`/`create_target` enforce the same at the relay layer.
 - **Scope enforcement** (`_scope_ok`/`_enforce_action`, tool `zerodom_set_scope`, env

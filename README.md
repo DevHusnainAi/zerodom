@@ -445,11 +445,17 @@ The map a hunter builds by hand.
 zerodom crawl https://app.example.com --storage-state session.json --max-pages 60
 # {"url":".../settings","forms":[{"action":".../api/v1/profile","method":"POST","inputs":[…]}],
 #  "api_calls":["GET .../api/v1/me","GET .../api/v1/notifications"],"hidden_fields":["csrf"], …}
+
+zerodom crawl https://app.example.com --relay   # same crawl on an already-open,
+                                                # human-authenticated Chrome instead
 ```
 
 Safe to run unattended — it never submits a form or follows a destructive link
-(`logout`/`delete`/…, tune with `--deny`). Feed its `api_calls` straight into
+(`logout`/`delete`/…, tune with `--deny`), and pages blocked by a challenge are
+recorded but not descended into. Feed its `api_calls` straight into
 `zerodom compare` for the IDOR pass. Takes `--proxy` (Burp) and `--scope` too.
+The MCP server exposes the same crawl as `zerodom_crawl(url, max_pages, scope, deny)`
+— a JSONL stream of page records straight into the session.
 
 ### Cross-tenant IDOR — `zerodom compare`
 
@@ -472,11 +478,15 @@ actionable nodes each identity sees that the other doesn't — e.g. an `Admin`
 link). Emits one JSON object per URL; takes the same `--proxy`/`--header` options.
 
 **Challenge / CAPTCHA pages.** ZeroDOM detects Cloudflare, Turnstile, reCAPTCHA
-and hCaptcha and reports a `blocked` signal instead of an empty graph — it never
-solves them. The honest paths, in order: drive the page in **relay mode** (your
-own Chrome, where you already cleared it), or reuse a `cf_clearance` cookie you
-solved once via `--storage-state`, or send a program-authorized bypass header.
-A `cleared.json` is a Playwright `storage_state` (`context.storage_state(path=...)`).
+and hCaptcha, then climbs them with a scope-gated clearance ladder: reuse a
+carried `cf_clearance` session, retry over the `--stealth` transport (whose
+DOM-domain hygiene is the fix on the pipe), call a bundled solver adapter
+(CapSolver / 2Captcha / Anti-Captcha, or your own `ZERODOM_SOLVER_URL`
+endpoint — opt-in, `--no-solver` refuses, spend logged in `metadata["cleared"]`),
+or surface the widget to the operator in relay mode. A wall no rung clears
+reports an honest `blocked` signal instead of an empty graph. Program-authorized
+bypass headers (`--header`) and human-cleared sessions (`--storage-state`) work
+as before. A `cleared.json` is a Playwright `storage_state` (`context.storage_state(path=...)`).
 
 **Relay mode (your logged-in Chrome)** needs the extension, which ships inside the package:
 
@@ -609,11 +619,12 @@ Known and worth knowing before you build on it:
   `zerodom_read_page` snapshot the DOM at call time. Wait for your own condition
   first, then parse.
 
-- **Anti-bot systems are out of scope, by design.** ZeroDOM is middleware over a
-  `Page` you already control — it never fetches anything. Challenge pages
-  (CF/Turnstile/reCAPTCHA/hCaptcha) are *detected* and handed off, never solved —
-  the honest paths are relay mode, a `--storage-state` cleared session, or a
-  program's bypass header.
+- **Anti-bot systems stay engagement-scoped.** ZeroDOM is middleware over a
+  `Page` you already control — it never fetches anything on its own. Challenge
+  pages (CF/Turnstile/reCAPTCHA/hCaptcha) are detected and cleared by the
+  scope-gated ladder (reuse → stealth → opt-in solver → relay hand-off); a wall
+  no rung clears is reported as `blocked`, never worked around outside an
+  authorized target.
 
 - **`zerodom <url>` is a static fetch.** The bare CLI reads HTML over plain HTTP
   (no JavaScript). For JS-rendered pages use `--render` (headless Chromium) or the
@@ -637,7 +648,8 @@ Known and worth knowing before you build on it:
 **Safety posture (it's a security tool):** scope is enforceable and lockable
 (`ZERODOM_SCOPE` / `zerodom_set_scope` — host allowlist, destructive-action denylist,
 rate limit), undrivable targets (chrome://, the Web Store, devtools) are refused, and
-challenge pages are detected, never bypassed.
+challenge pages are cleared only through the scope-gated ladder (never outside
+a locked engagement).
 
 Full details in [SECURITY.md](SECURITY.md).
 

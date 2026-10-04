@@ -225,8 +225,9 @@ selectors are ambiguous, dead or invalid against the running app.
   hydrating — or a third-party script inserting a wrapper `<div>` — can
   invalidate one within seconds. Re-read after each action; the MCP server does
   this for you.
-- ZeroDOM operates on a `Page` you already control. It does not bypass bot
-  detection and makes no attempt to.
+- ZeroDOM operates on a `Page` you already control. Bot walls are climbed by a
+  scope-gated clearance ladder — opt-in solver, `--no-solver` to refuse, spend
+  logged — and never worked around outside an authorized target.
 
 When a graph comes back almost empty, `metadata["warning"]` says why — bot wall,
 open modal, or content behind an iframe or canvas — instead of leaving you to

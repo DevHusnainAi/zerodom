@@ -175,6 +175,26 @@ test("shadow DOM: a light element colliding with its shadow twin is scoped with 
   assert.ok(selectors.some((s) => s.endsWith(">> nth=1")), selectors.join(", "));
 });
 
+test("shadow DOM: closed-root content is never claimed as a node, the host is recorded", () => {
+  const graph = parseHtml(`
+    <div id="host"><button>Light</button><template shadowrootmode="closed">
+      <button>Secret</button></template></div>
+  `);
+  assert.ok(!graph.nodes.some((n) => n.label === "Secret"), "closed content must not become nodes");
+  assert.ok(graph.nodes.some((n) => n.label === "Light"));
+  assert.deepEqual(graph.metadata.closed_shadow_hosts, ["#host"]);
+  assert.equal(graph.metadata.closed_shadow_host_count, 1);
+});
+
+test("shadow DOM: an empty custom element host is recorded as unmapped", () => {
+  const graph = parseHtml("<x-panel></x-panel><p>hi</p>");
+  assert.equal(graph.metadata.closed_shadow_host_count, 1);
+  assert.ok(graph.metadata.closed_shadow_hosts!.some((s) => s.includes("x-panel")));
+  // with light children it is not an unmapped host
+  const withKids = parseHtml("<x-panel><button>Go</button></x-panel>");
+  assert.equal(withKids.metadata.closed_shadow_hosts, undefined);
+});
+
 test("tooltip library attributes label an icon-only button", () => {
   const graph = parseHtml('<button data-tippy-content="Close dialog"><svg></svg></button>');
   assert.equal(graph.nodes[0].label, "Close dialog");

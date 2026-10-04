@@ -160,11 +160,17 @@ export interface GraphMetadata {
   /** `<input type="hidden">` payloads, collected not pruned — see parser.py. */
   hidden_fields?: Array<Record<string, string>>;
   hidden_field_count?: number;
+  /** Hosts whose shadow content this HTML can't show us (closed roots / empty
+   * custom elements) — selectors, so the caller knows where coverage stops. */
+  closed_shadow_hosts?: string[];
+  closed_shadow_host_count?: number;
 }
 
 // Challenge/CAPTCHA fingerprints. In relay mode a hunter usually sails past these
-// because the human already cleared the session; when one *is* in the way, the
-// agent should hand off (or reuse a cleared session) instead of looping on it.
+// because the human already cleared the session; otherwise detection hands the wall
+// to the clearance ladder (clearance.py: reuse → stealth → solver → relay hand-off),
+// and a wall no rung clears stays metadata["blocked"] — an honest miss, never a
+// loop. This module only fingerprints: no browser, no network, no solving.
 // Mirror of parser.py's _CHALLENGE_MARKERS / _detect_challenge — keep in sync.
 const CHALLENGE_MARKERS: Array<[string, string[]]> = [
   ["cloudflare", ["challenge-platform", "cf-chl", "__cf_chl", "cf-mitigated",
@@ -286,6 +292,8 @@ export class ZeroDOMParser {
   occludedSkipped = 0;
   /** `<input type="hidden">` payloads — see the walk() collection. */
   hiddenFields: Array<Record<string, string>> = [];
+  /** Hosts whose shadow content this HTML can't show us — see noteClosedHost. */
+  private closedShadowHosts: string[] = [];
   // (kind:key) -> occurrences, one pass over the tree, keyed so each kind of
   // uniqueness claim — id, tag|name, tag|class — is counted separately.
   private occ: Map<string, number> | null = null;
@@ -635,6 +643,19 @@ export class ZeroDOMParser {
   }
 
   /**
+   * Record a host whose shadow content this HTML can't show us.
+   *
+   * Selector strings — the same identity the rest of the graph speaks in, so
+   * the caller reads "coverage stops at #app > user-card" instead of a bare
+   * tag it can't act on. Deduped; parse() caps the stored list at 25 (the
+   * count is always exact). Mirrors parser.py's `_note_closed_host`.
+   */
+  private noteClosedHost(host: Element): void {
+    const selector = this.selector(host);
+    if (!this.closedShadowHosts.includes(selector)) this.closedShadowHosts.push(selector);
+  }
+
+  /**
    * Single depth-first pass: prune, collect interactive nodes and labels.
    *
    * Skipping a pruned or hidden subtree outright is both the pruning rule and the
@@ -654,6 +675,16 @@ export class ZeroDOMParser {
 
     while (stack.length) {
       const [el, parentLabel, ancestorCard] = stack.pop()!;
+      // A *closed* declarative shadow root: the content is in this HTML, but
+      // mode="closed" means no API pierces it — a selector into it would
+      // resolve to nothing. Note the host (coverage stops here) and skip the
+      // subtree rather than emit nodes no action can reach. Open roots fall
+      // through to the normal walk. Mirrors parser.py's _walk.
+      if (el.localName === "template" && (el.getAttribute("shadowrootmode") || "").toLowerCase() === "closed") {
+        const host = el.parentElement;
+        if (host) this.noteClosedHost(host);
+        continue;
+      }
       // Hidden inputs aren't interactive — but they carry payload an agent
       // may need (CSRF tokens, per-view state), so collect them before the
       // prune rather than discarding them wholesale. Mirrors hidden_fields in
@@ -672,6 +703,13 @@ export class ZeroDOMParser {
         continue;
       }
       if ((PRUNE_TAGS.has(el.localName) && !isShadowRoot(el)) || ZeroDOMParser.isHidden(el)) continue;
+      // An *empty* custom element (a hyphen is what makes it one): if it
+      // renders anything, its content lives in a shadow root this serialized
+      // HTML didn't carry — closed, or attached by JS after this snapshot.
+      // Note the host too: coverage stops here. Mirrors parser.py's _walk.
+      if (el.localName.includes("-") && el.children.length === 0 && !(el.textContent || "").trim()) {
+        this.noteClosedHost(el);
+      }
 
       let ancestorLabel = parentLabel;
       if (el.localName === "label") {
@@ -808,6 +846,10 @@ export class ZeroDOMParser {
     if (this.hiddenFields.length) {
       metadata.hidden_fields = this.hiddenFields;
       metadata.hidden_field_count = this.hiddenFields.length;
+    }
+    if (this.closedShadowHosts.length) {
+      metadata.closed_shadow_hosts = this.closedShadowHosts.slice(0, 25);
+      metadata.closed_shadow_host_count = this.closedShadowHosts.length;
     }
     const dupSkipped = (this as any)._dupSkipped as number | undefined;
     if (dupSkipped) metadata.duplicates_collapsed = dupSkipped;

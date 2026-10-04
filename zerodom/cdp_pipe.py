@@ -30,6 +30,9 @@ import tempfile
 import time
 from typing import Any
 
+from . import clearance
+from .parser import _detect_challenge
+
 # Chrome's pipe transport frames each JSON-RPC message with a single trailing
 # NUL byte, in both directions. This is the wire contract — do not change it.
 _DELIM = b"\0"
@@ -162,43 +165,113 @@ class CDPPipe:
         """Navigate (if `url` given), wait for load, return (outer_html, final_url).
 
         `headers` (a program's bypass header) and `cookies` (a cleared session
-        reused from a storage_state file) are set over CDP before navigating."""
+        reused from a storage_state file) are set over CDP before navigating.
+
+        Load-wait and reads deliberately avoid the Runtime domain (rung-2
+        hygiene): bot vendors fingerprint the `Runtime.enable` + evaluate
+        pattern this path used to send mid-load (rebrowser-patches; DataDome's
+        CDP-signal research), so load state comes from the Page lifecycle
+        events and the HTML/URL from DOM.getOuterHTML + getNavigationHistory.
+
+        After the read, the clearance ladder runs (choke point 3 of 3, see
+        clearance.py) against a CDPPipe-backed page view; if it cleared the
+        wall, the HTML returned is the cleared page's, not the interstitial's.
+        """
         self.send("Page.enable", session_id=session_id)
-        self.send("Runtime.enable", session_id=session_id)
+        self.send("Page.setLifecycleEventsEnabled", {"enabled": True}, session_id=session_id)
         if headers or cookies:
             self.send("Network.enable", session_id=session_id)
         if headers:
             self.send("Network.setExtraHTTPHeaders", {"headers": headers}, session_id=session_id)
         if cookies:
             self.send("Network.setCookies", {"cookies": cookies}, session_id=session_id)
+        # Drop any lifecycle events buffered before this navigation — a stale
+        # "load" from the document we're leaving must not satisfy the wait.
+        self._purge_lifecycle(session_id)
+        loader_id = None
         if url:
-            self.send("Page.navigate", {"url": url}, session_id=session_id, timeout=timeout)
-        # Block in-page until the document is fully loaded — one awaited promise
-        # is simpler and race-free next to polling readyState from out here.
-        self.send(
-            "Runtime.evaluate",
-            {
-                "expression": (
-                    "new Promise(r=>document.readyState==='complete'"
-                    "?r():addEventListener('load',()=>r()))"
-                ),
-                "awaitPromise": True,
-            },
-            session_id=session_id,
-            timeout=timeout,
-        )
-        evaluated = self.send(
-            "Runtime.evaluate",
-            {"expression": "document.documentElement.outerHTML", "returnByValue": True},
-            session_id=session_id,
-        )
-        html = evaluated["result"]["value"]
-        loc = self.send(
-            "Runtime.evaluate",
-            {"expression": "location.href", "returnByValue": True},
-            session_id=session_id,
-        )
-        return html, loc["result"]["value"]
+            nav = self.send("Page.navigate", {"url": url}, session_id=session_id, timeout=timeout)
+            if nav.get("errorText"):
+                # Old behavior read whatever the error page rendered; the
+                # bounded load-wait below keeps that (never hang a fetch).
+                pass
+            loader_id = nav.get("loaderId")
+            self._wait_lifecycle(session_id, "load", loader_id, timeout)
+        html, final_url = self._read_document(session_id)
+        # Choke point 3 of 3: the ladder against a wall (it exits fast when
+        # the page is clean and, being sync, runs its coroutine on this
+        # thread's loop via clearance._run_sync). Re-read after any attempt —
+        # rungs 1-3 re-navigate, so the interstitial we just read may be gone.
+        policy = clearance.make_policy(transport="cdp_pipe", url=final_url)
+        clearance.attempt_clearance(_PipePage(self, session_id), None, policy)
+        if _detect_challenge(html) is not None:
+            html, final_url = self._read_document(session_id)
+        return html, final_url
+
+    # -- lifecycle / document reads (no Runtime domain) --------------------
+
+    def _purge_lifecycle(self, session_id: str) -> None:
+        self.events[:] = [
+            ev for ev in self.events
+            if not (ev.get("method") == "Page.lifecycleEvent"
+                    and ev.get("sessionId") == session_id)
+        ]
+
+    def _wait_lifecycle(
+        self, session_id: str, name: str, loader_id: str | None, timeout: float,
+    ) -> None:
+        """Bounded wait for a Page.lifecycleEvent on this session/loader.
+
+        Best-effort on timeout: like cli._goto's bounded networkidle, reading
+        whatever is there beats failing the fetch — a challenge page that
+        never fires load must still be readable (and flagged) by the parser.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            for i, ev in enumerate(self.events):
+                if self._is_lifecycle(ev, session_id, name, loader_id):
+                    del self.events[i]
+                    return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                msg = json.loads(self._read_frame(deadline))
+            except TimeoutError:
+                return
+            if self._is_lifecycle(msg, session_id, name, loader_id):
+                return
+            self.events.append(msg)
+
+    @staticmethod
+    def _is_lifecycle(msg: dict, session_id: str, name: str, loader_id: str | None) -> bool:
+        if msg.get("method") != "Page.lifecycleEvent" or msg.get("sessionId") != session_id:
+            return False
+        params = msg.get("params") or {}
+        if params.get("name") != name:
+            return False
+        return loader_id is None or params.get("loaderId") == loader_id
+
+    def _read_document(self, session_id: str) -> tuple[str, str]:
+        """(documentElement outerHTML, current URL) via the DOM + Page domains.
+
+        The HTML element is matched by nodeType 1: a DOCTYPE's nodeName is
+        also "html" (its doctype name), so nodeName alone picks the wrong node."""
+        self.send("DOM.enable", session_id=session_id)
+        root = self.send("DOM.getDocument", {"depth": 1}, session_id=session_id)
+        node_id = None
+        for child in (root.get("root") or {}).get("children") or []:
+            if child.get("nodeType") == 1 and str(child.get("nodeName", "")).upper() == "HTML":
+                node_id = child["nodeId"]
+                break
+        if node_id is None:  # no <html> yet (blank/failed doc) — read the root
+            node_id = (root.get("root") or {}).get("nodeId")
+        html = self.send(
+            "DOM.getOuterHTML", {"nodeId": node_id}, session_id=session_id
+        )["outerHTML"]
+        frame_tree = self.send("Page.getFrameTree", session_id=session_id)
+        final_url = (frame_tree.get("frameTree") or {}).get("frame", {}).get("url", "")
+        return html, final_url
 
     # -- lifecycle --------------------------------------------------------
 
@@ -225,6 +298,84 @@ class CDPPipe:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+class _PipeContext:
+    """The cookie-jar slice of a Playwright BrowserContext, over CDP — enough
+    for clearance._carries_clearance / _add_cookies on the stealth transport."""
+
+    def __init__(self, pipe: CDPPipe, session_id: str, url_getter):
+        self._pipe = pipe
+        self._sid = session_id
+        self._url = url_getter
+
+    def cookies(self) -> list[dict]:
+        try:
+            res = self._pipe.send("Network.getCookies", {}, session_id=self._sid)
+        except CDPError:
+            return []
+        return res.get("cookies") or []
+
+    def add_cookies(self, jar: list[dict]) -> None:
+        self._pipe.send("Network.enable", session_id=self._sid)  # setCookie's domain
+        for c in jar:
+            params = {k: c[k] for k in
+                      ("name", "value", "domain", "path", "expires", "httpOnly",
+                       "secure", "sameSite") if k in c}
+            if "url" not in params and "domain" not in params:
+                params["url"] = self._url() or "about:blank"
+            self._pipe.send("Network.setCookie", params, session_id=self._sid)
+
+
+class _PipePage:
+    """Duck-typed page view over CDPPipe for the clearance ladder — supplies
+    exactly the methods clearance.py calls (content/goto/evaluate + context),
+    sync, so the ladder's _aw/_run_sync plumbing drives it unchanged."""
+
+    def __init__(self, pipe: CDPPipe, session_id: str):
+        self._pipe = pipe
+        self._sid = session_id
+        self.url = ""
+        self.context = _PipeContext(pipe, session_id, lambda: self.url)
+
+    def content(self) -> str:
+        html, self.url = self._pipe._read_document(self._sid)
+        return html
+
+    def goto(self, url: str, wait_until: str | None = None, timeout: float | None = None) -> str:
+        """Page.navigate + bounded lifecycle wait — clearance._renav's contract
+        (playwright semantics: wait_until in ms, raises on navigation failure)."""
+        seconds = (timeout or 30000) / 1000
+        # Purge before navigating, never after: a fast local page emits its
+        # load event right behind the navigate response, and a purge in
+        # between would drop the very event the wait below is waiting for —
+        # burning the full timeout on a page that already loaded.
+        self._pipe._purge_lifecycle(self._sid)
+        nav = self._pipe.send("Page.navigate", {"url": url},
+                              session_id=self._sid, timeout=seconds)
+        if nav.get("errorText"):
+            raise CDPError(f"navigation to {url} failed: {nav['errorText']}")
+        # CDP's lifecycle names are camelCase ("DOMContentLoaded"), not the
+        # Playwright spelling — waiting for "domcontentloaded" matches nothing
+        # and burns the whole timeout on a page that already loaded.
+        name = "DOMContentLoaded" if wait_until == "domcontentloaded" else "load"
+        self._pipe._wait_lifecycle(self._sid, name, nav.get("loaderId"), seconds)
+        _, self.url = self._pipe._read_document(self._sid)
+        return self.url
+
+    def evaluate(self, expression: str, arg: Any = None) -> Any:
+        """Run JS post-load. A bare Runtime.evaluate (no Runtime.enable — the
+        domain stays un-enabled, so the mid-load fingerprint never happens);
+        function-source + serialized-arg mirrors Playwright's evaluate(f, arg)."""
+        expr = f"({expression})({json.dumps(arg)})" if arg is not None else expression
+        res = self._pipe.send(
+            "Runtime.evaluate",
+            {"expression": expr, "returnByValue": True, "awaitPromise": True},
+            session_id=self._sid,
+        )
+        if "exceptionDetails" in res:
+            raise CDPError(str(res["exceptionDetails"].get("text") or "evaluate failed"))
+        return res.get("result", {}).get("value")
 
 
 def spawn(
@@ -266,6 +417,10 @@ def spawn(
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-background-networking",
+        # Rung-2 hygiene: keep navigator.webdriver from announcing that this
+        # spawn is automation-controlled (the pipe hides the port; this hides
+        # the JS-visible half of the same signal).
+        "--disable-blink-features=AutomationControlled",
     ]
     if headless:
         args.append("--headless=new")

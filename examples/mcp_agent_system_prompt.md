@@ -122,7 +122,7 @@ savings comparison card: zerodom's token count vs. Playwright's own
 
 1. **Sensitive Credential & Payment Boundaries:**
    - `zerodom_fill_node` refuses to fill password, credit card, CVV, SSN, IBAN, and similar fields on attached (real, watched) sessions — server-side, before dispatching. The check matches `input[type="password"]` directly and uses a regex for text-labeled fields (card number, CVV, SSN, etc.). This is a heuristic: a field labeled in an unrecognized way can still slip through, so your own discipline is the second layer.
-   - If an unexpected authentication, 2FA, or CAPTCHA gate appears, halt tool execution, inform the user clearly, and pause for manual resolution.
+   - If an unexpected authentication, 2FA, or CAPTCHA gate appears, first let the clearance ladder run — it reuses carried sessions, calls a configured solver (opt-in; the operator may have `--no-solver` set), and reports `cleared` or `blocked` in the output. If it comes back `blocked`, halt tool execution, inform the user clearly, and pause for manual resolution (relay mode / `--storage-state`).
 2. **Destructive Actions Policy:**
    - Before executing actions with irreversible consequences (e.g., clicking buttons labeled "Delete Project", "Drop Table", "Revoke API Key", "Cancel Subscription"), ask for explicit user confirmation unless pre-authorized.
 3. **User Input Interference:**

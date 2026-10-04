@@ -251,11 +251,16 @@ class ZeroDOMParser:
         # _siblings above: rescanning per child is O(n^2) on a flat page.
         self._structural_siblings: dict[HtmlElement, Counter[tuple[str, str]]] = {}
         # `<input type="hidden">` fields, collected rather than pruned: they
-        # carry CSRF tokens and per-view state the agent may need to submit a
+        # carry CSRF tokens, per-view state the agent may need to submit a
         # form, but stay OUT of the interaction graph (they're not clickable,
         # so listing them as nodes would be pure noise). See `hidden_fields` in
         # parse().
         self.hidden_fields: list[dict[str, Any]] = []
+        # Hosts whose shadow content this HTML can't show us — closed
+        # declarative roots, and empty custom elements whose (if any) content
+        # lives in a root the serializer didn't carry. Selectors, so the
+        # caller learns *where* coverage stops. See `_note_closed_host`.
+        self.closed_shadow_hosts: list[str] = []
 
     @staticmethod
     def _is_hidden(el: HtmlElement) -> bool:
@@ -581,6 +586,18 @@ class ZeroDOMParser:
             return ""
         return f":nth-of-type({position})"
 
+    def _note_closed_host(self, host: HtmlElement) -> None:
+        """Record a host whose shadow content this HTML can't show us.
+
+        Selector strings — the same identity the rest of the graph speaks in,
+        so the caller reads "coverage stops at #app > user-card" instead of a
+        bare tag it can't act on. Deduped; parse() caps the stored list (a Lit
+        or Stencil app can carry hundreds of empty hosts) but always reports
+        the exact count."""
+        selector = self._selector(host)
+        if selector not in self.closed_shadow_hosts:
+            self.closed_shadow_hosts.append(selector)
+
     def _walk(
         self,
     ) -> tuple[list[tuple[HtmlElement, HtmlElement | None, HtmlElement | None]], dict[str, HtmlElement]]:
@@ -602,6 +619,17 @@ class ZeroDOMParser:
         while stack:
             el, ancestor_label, ancestor_card = stack.pop()
             if not isinstance(el.tag, str):  # comments, processing instructions
+                continue
+            # A *closed* declarative shadow root: the content is in this HTML,
+            # but mode="closed" means no API pierces it (documented at
+            # is_shadow_root / playwright_wrapper) — a selector into it would
+            # resolve to nothing. Note the host (coverage stops here) and skip
+            # the subtree rather than emit nodes no action can reach. Open
+            # roots fall through to the normal walk below.
+            if el.tag == "template" and (el.get("shadowrootmode") or "").lower() == "closed":
+                host = el.getparent()
+                if host is not None and isinstance(host.tag, str):
+                    self._note_closed_host(host)
                 continue
             # Hidden inputs aren't interactive — but they carry payload the agent
             # may need (CSRF tokens, per-view state), so they're collected into
@@ -630,6 +658,16 @@ class ZeroDOMParser:
                 continue
             if (el.tag in PRUNE_TAGS and not is_shadow_root(el)) or self._is_hidden(el):
                 continue
+            # An *empty* custom element (a hyphen is what makes it one): if it
+            # renders anything, its content lives in a shadow root this
+            # serialized HTML didn't carry — closed, or attached by JS after
+            # this snapshot (SERIALIZE serializes open roots, so an open one
+            # would have shown up as a template above). Note the host too:
+            # same honesty rule, coverage stops here rather than the page
+            # pretending to be fully mapped.
+            if ("-" in el.tag and not any(isinstance(ch.tag, str) for ch in el)
+                    and not (el.text or "").strip()):
+                self._note_closed_host(el)
             if el.tag == "label":
                 ancestor_label = el
                 if for_id := el.get("for"):
@@ -780,6 +818,14 @@ class ZeroDOMParser:
             # mcp_server.zerodom_hidden_fields).
             meta["hidden_fields"] = list(self.hidden_fields)
             meta["hidden_field_count"] = len(self.hidden_fields)
+        if self.closed_shadow_hosts:
+            # Coverage honesty (T3.2): hosts whose shadow content is
+            # unreachable from this HTML — the graph says so instead of
+            # pretending the page is fully mapped. List capped at 25 (the
+            # count is always exact) so a component-heavy app can't balloon
+            # the metadata.
+            meta["closed_shadow_hosts"] = self.closed_shadow_hosts[:25]
+            meta["closed_shadow_host_count"] = len(self.closed_shadow_hosts)
         if warning := self._empty_page_warning(len(self.raw_html)):
             meta["warning"] = warning
         if blocked := _detect_challenge(self.raw_html):
@@ -816,8 +862,10 @@ class ZeroDOMParser:
 
 
 # Challenge/CAPTCHA fingerprints. In relay mode a hunter usually sails past these
-# because the human already cleared the session; when one *is* in the way, the
-# agent should hand off (or reuse a cleared session) instead of looping on it.
+# because the human already cleared the session; otherwise detection hands the wall
+# to the clearance ladder (clearance.py: reuse → stealth → solver → relay hand-off),
+# and a wall no rung clears stays metadata["blocked"] — an honest miss, never a
+# loop. This module only fingerprints: no browser, no network, no solving.
 # Verified live 2026-09-23 against the vendor demo pages — see docs/PROFILE-A-PLAN.md.
 _CHALLENGE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cloudflare", ("challenge-platform", "cf-chl", "__cf_chl", "cf-mitigated",

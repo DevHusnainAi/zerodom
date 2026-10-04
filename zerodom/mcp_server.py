@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -19,10 +20,12 @@ from urllib.parse import urlsplit
 
 from mcp.server import MCPServer
 
-from . import __version__
+from . import __version__, clearance
 from .frames import locate
 from .parser import compact_line, find_nodes
 from .playwright_wrapper import ZeroDOM
+from .scope import DEFAULT_DENY as _SCOPE_DEFAULT_DENY  # the destructive denylist, shared with the ladder's gate
+from .scope import check_scope, load_scope
 
 mcp = MCPServer("zerodom", version=__version__)
 
@@ -43,11 +46,9 @@ _session: dict[str, Any] = {
     "navigated_at": 0.0,  # time.monotonic() of the last _goto() -- see _recently_navigated()
     "identities": {},  # name -> APIRequestContext, for cross-identity replay/IDOR
     "scope": None,  # None = unrestricted; else {allow, deny, max_rps, locked} — see _scope_ok
+    "clearance": None,  # last attempt_clearance() result — surfaced as metadata["cleared"]
+    "clearance_note": None,  # last ladder's human-facing note (solver/human rungs)
 }
-
-# Destructive/irreversible actions an unattended hunt must never take. Matched
-# against a URL and against a node's href+label, case-insensitively.
-_SCOPE_DEFAULT_DENY = r"logout|sign-?out|/delete|/remove|/destroy|revoke|deactivate|/api/.*(delete|remove)|\bdelete\b|\bremove\b"
 
 # How long after a fresh navigation a click that produced zero diff is worth
 # flagging as a possible SSR-hydration miss (Next.js/Remix/Nuxt: the raw HTML
@@ -217,20 +218,12 @@ def _reject_undrivable(url: str) -> None:
 def _load_scope_from_env() -> None:
     """An operator can lock scope before the agent starts by setting ZERODOM_SCOPE
     to a YAML/JSON file (allow: [host globs], deny: regex, max_rps: N). A
-    file-loaded scope is `locked` — the agent can't widen it via zerodom_set_scope."""
+    file-loaded scope is `locked` — the agent can't widen it via zerodom_set_scope.
+    Parsing is scope.load_scope's (shared with the clearance ladder's gate)."""
     path = os.environ.get("ZERODOM_SCOPE")
     if not path or _session.get("scope"):
         return
-    import yaml
-    from pathlib import Path as _P
-    data = yaml.safe_load(_P(path).read_text(encoding="utf-8")) or {}
-    _session["scope"] = {
-        "allow": [h.lower() for h in (data.get("allow") or data.get("hosts") or [])],
-        "deny": data.get("deny") or _SCOPE_DEFAULT_DENY,
-        "max_rps": data.get("max_rps"),
-        "locked": True,
-        "_last": 0.0,
-    }
+    _session["scope"] = load_scope(path)
 
 
 async def _scope_ok(url: str) -> None:
@@ -238,16 +231,9 @@ async def _scope_ok(url: str) -> None:
     and a rate throttle. No scope set → unrestricted (backward compatible)."""
     _load_scope_from_env()
     sc = _session.get("scope")
+    check_scope(url, sc)  # deny + allowlist, same errors as before the extraction
     if not sc:
         return
-    import fnmatch
-    from urllib.parse import urlparse
-    if sc.get("deny") and re.search(sc["deny"], url, re.I):
-        raise PermissionError(f"scope: refusing {url!r} — matches the destructive deny rule.")
-    host = urlparse(url).netloc.lower()
-    allow = sc.get("allow") or []
-    if host and allow and not any(fnmatch.fnmatch(host, p) for p in allow):
-        raise PermissionError(f"scope: {host} is out of scope (allowed: {allow}).")
     rps = sc.get("max_rps")
     if rps:
         wait = (1.0 / rps) - (time.monotonic() - sc.get("_last", 0.0))
@@ -272,6 +258,17 @@ async def _enforce_action(node: dict) -> None:
             "deny rule (logout/delete/…). Hand this to the operator to do by hand.")
     if "://" in href:
         await _scope_ok(href)
+
+
+async def _assert_final_url(page: Any) -> None:
+    """T4.2: a navigation's *final* post-redirect URL must still be in scope.
+
+    The pre-nav `_scope_ok(url)` can't see where a redirect lands — the
+    chrome-devtools-mcp bug this mirrors (PROFILE-A-PLAN §F2) was exactly a
+    redirect walking out of a locked scope. check_scope, not _scope_ok: the
+    throttle already ran on the target URL, and this runs on the result."""
+    _load_scope_from_env()
+    check_scope(page.url, _session.get("scope"))
 
 
 async def _goto(page: Any, url: str) -> None:
@@ -300,6 +297,41 @@ async def _goto(page: Any, url: str) -> None:
     except Exception:
         pass
     _session["navigated_at"] = time.monotonic()
+    await _attempt_clearance(page, url)
+    await _assert_final_url(page)
+
+
+async def _attempt_clearance(page: Any, url: str) -> None:
+    """Choke point 2 of 3 (see clearance.py): rungs 1-4 run post-goto,
+    pre-parse. The result rides in _session["clearance"] / ["clearance_note"]
+    for _read() to surface as metadata["cleared"] + a status line.
+
+    attempt_clearance returns an awaitable only for async pages — a FakePage
+    (tests) is sync and returns dict|None directly, so duck-type the await
+    the same way clearance._aw does."""
+    result = clearance.attempt_clearance(
+        page,
+        None,
+        clearance.make_policy(
+            # attached = the operator's own Chrome via the relay: rung 4 (clear
+            # it in your tab) is live there; a launched session has no human.
+            transport="relay" if _session.get("attached") else "playwright",
+            url=url,
+            scope=_scope_for_ladder(),
+        ),
+    )
+    if inspect.isawaitable(result):
+        result = await result
+    _session["clearance"] = result
+    _session["clearance_note"] = "; ".join(clearance.take_notes()) or None
+
+
+def _scope_for_ladder() -> dict | None:
+    """The session scope for a navigation-time ladder run: load an operator's
+    ZERODOM_SCOPE file if no tool call has touched scope yet, then hand the same
+    dict _scope_ok enforces to the solver rung's gate."""
+    _load_scope_from_env()
+    return _session.get("scope")
 
 
 def _recently_navigated() -> bool:
@@ -1004,14 +1036,154 @@ async def _unlocked_input(page: Any):
             await _set_input_ignored(page, True)
 
 
-async def _act(node_id: str, verb: str, *args: Any) -> str:
-    """Click or fill a node, retrying once if the browser drops underneath us.
+# What the element behind a node's selector says about itself *now*: tag, input
+# type, and every string that could have been its read-time label — mirroring
+# label_linker's own fallback order (aria-labelledby, associated/wrapping
+# <label>, authored attrs, adjacent caption, text, icon descendants, then the
+# href/onclick last resorts) so a label derived from any of those sources still
+# agrees with itself. Enough to tell "still the element the node described"
+# from "a different element a stale selector resolves to after a re-render".
+_IDENTITY_JS = """(el) => {
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  const labels = [];
+  const push = (s) => { s = norm(s); if (s) labels.push(s); };
+  for (const id of (el.getAttribute('aria-labelledby') || '').split(/\\s+/)) {
+    if (id) { const ref = document.getElementById(id); if (ref) push(ref.textContent); }
+  }
+  if (el.id) {
+    try {
+      const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (lab) push(lab.textContent);
+    } catch (e) {}
+  }
+  if (el.closest) { const wrap = el.closest('label'); if (wrap) push(wrap.textContent); }
+  if (el.labels) for (const l of el.labels) push(l.textContent);
+  for (const a of ['aria-label', 'placeholder', 'alt', 'title', 'value', 'name',
+                   'data-tooltip', 'data-original-title', 'data-tippy-content']) {
+    push(el.getAttribute(a));
+  }
+  push(el.textContent);
+  // Caption sitting immediately before a control (label_linker.adjacent_text).
+  const prev = el.previousElementSibling;
+  let adj = '';
+  if (prev) { const n = prev.nextSibling; if (n && n.nodeType === 3) adj = n.data; }
+  else if (el.parentElement && el.parentElement.firstChild &&
+           el.parentElement.firstChild.nodeType === 3) {
+    adj = el.parentElement.firstChild.data;
+  }
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName)) {
+    push(adj.replace(/[\\s:*>\\u2013\\u2014]+$/, ''));
+  }
+  // Icon-only controls carry the label on a descendant; a bare link may be
+  // labelled by its destination, a bare div by its handler's name.
+  for (const d of el.querySelectorAll('[aria-label],[title],[alt],[placeholder]')) {
+    for (const a of ['aria-label', 'title', 'alt', 'placeholder']) push(d.getAttribute(a));
+  }
+  push(el.getAttribute('href'));
+  push(el.getAttribute('onclick'));
+  return {
+    tag: el.tagName.toLowerCase(),
+    input_type: el.tagName === 'INPUT' ? (el.getAttribute('type') || 'text') : null,
+    labels: Array.from(new Set(labels)),
+  };
+}"""
 
-    Chromium crashed on exactly one of fifty benchmarked sites. A crash kills the
-    page but not the session, so a bare retry on a fresh page recovers the run
-    instead of ending it.
-    """
-    node = _node(node_id)
+# Icon-font glyphs are stripped from node labels (label_linker._PUA_RE) but the
+# live element still carries them — strip both sides before comparing.
+_PUA_RE = re.compile(f"[{chr(0xE000)}-{chr(0xF8FF)}]")
+
+
+def _label_agrees(label: str, candidates: list[str]) -> bool:
+    """True when the read-time label still describes this element: containment
+    either direction after whitespace-collapse and PUA-glyph stripping (a
+    node label is capped at 80 chars, so it's a prefix of the element's full
+    text, and icon glyphs sit in the middle of otherwise-equal strings).
+
+    Unverifiable cases agree — no label, "Unlabelled Element", or an element
+    that surfaced no candidate strings — because this check exists to catch a
+    *different* element, not to re-derive labels from scratch."""
+    want = " ".join(_PUA_RE.sub("", label or "").split()).rstrip("…").strip()
+    if not want or want == "Unlabelled Element" or not candidates:
+        return True
+    for cand in candidates:
+        have = " ".join(_PUA_RE.sub("", str(cand)).split())
+        if have and (want in have or have in want):
+            return True
+    return False
+
+
+async def _identity_stale(node: dict) -> bool:
+    """Pre-action identity check (T3.1): does the element `node`'s selector
+    resolves to *now* still match the node's tag + label + input_type captured
+    at read time?
+
+    Stale means the page re-rendered between read and act (React re-render,
+    virtualized list reordering, delayed hydration) — acting would hit a
+    different element than the model named. Unverifiable (a fake locator, an
+    evaluate with no result) reads as *not* stale: defer to the action itself,
+    whose timeout/strict errors are the honest signal there."""
+    page = await _page()
+    try:
+        locator = locate(page, node)
+        if await locator.count() == 0:
+            return True  # the selector no longer resolves at all
+        ident = await locator.evaluate(_IDENTITY_JS)
+    except Exception:
+        return False
+    if not isinstance(ident, dict):
+        return False
+    if ident.get("tag") and ident["tag"] != node.get("type"):
+        return True
+    if (want := node.get("input_type")) and (got := ident.get("input_type")) and want != got:
+        return True
+    return not _label_agrees(node.get("label", ""), ident.get("labels") or [])
+
+
+def _identity_agrees(node: dict, ident: dict) -> bool:
+    """Does this freshly-read node still describe the element the model named?
+    Same comparison _identity_stale makes, but against a remembered read-time
+    identity instead of the live element — the half that survives a churn."""
+    if node.get("type") != ident.get("type"):
+        return False
+    if (want := ident.get("input_type")) and (got := node.get("input_type")) and want != got:
+        return False
+    return _label_agrees(ident.get("label", ""), [node.get("label", "")])
+
+
+def _reresolve(node_id: str, ident: dict) -> dict:
+    """Chase the named element to its new slot after churn moved it.
+
+    Node ids are positional (parser.py assigns `node_NNN` in document order),
+    so a reorder hands the id to a neighbour row: search the fresh node list
+    for the node whose identity still matches instead. An exact label match
+    wins; a single containment match is accepted; zero-or-ambiguous refuses
+    with "page changed under us" rather than acting on a guessed row. Fixture:
+    zerodom-demo/static/virtual.html's window.churn()."""
+    want = " ".join(_PUA_RE.sub("", ident.get("label") or "").split()).rstrip("…").strip()
+    candidates = [n for n in _session["nodes"] if _identity_agrees(n, ident)]
+    exact = [n for n in candidates
+             if " ".join(_PUA_RE.sub("", n.get("label") or "").split()) == want]
+    if len(exact) == 1:
+        return exact[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise ValueError(
+            f"page changed under us — the element {node_id} named "
+            f"({want or ident.get('type')}) is gone after the re-read. Re-read with "
+            "zerodom_read_page and retry on the fresh node id.")
+    raise ValueError(
+        f"page changed under us — {node_id} matches {len(candidates)} elements after "
+        f"the re-read ({want or ident.get('type')} is no longer unique). Re-read with "
+        "zerodom_read_page and retry on the fresh node id.")
+
+
+async def _pre_action(node: dict, verb: str) -> None:
+    """The refusals that must hold for whatever element we finally act on:
+    scope (destructive deny / absolute href) and the attached-session
+    sensitive-fill refusal. Runs before the identity check *and* again after a
+    re-read re-resolves the node, so the replacement element gets the same
+    scrutiny as the first one."""
     await _enforce_action(node)
     if verb == "fill" and _session["attached"] and _is_sensitive_field(node):
         raise PermissionError(
@@ -1020,10 +1192,52 @@ async def _act(node_id: str, verb: str, *args: Any) -> str:
             "an attached (real, watched) session. If this is a false "
             "positive, ask the user to type it themselves."
         )
+
+
+async def _act(node_id: str, verb: str, *args: Any) -> str:
+    """Click or fill a node, retrying once if the browser drops underneath us.
+
+    Chromium crashed on exactly one of fifty benchmarked sites. A crash kills the
+    page but not the session, so a bare retry on a fresh page recovers the run
+    instead of ending it.
+
+    Before a click/fill there is also a *correctness* retry (see
+    _identity_stale): if the element the node points at no longer matches what
+    the node named, the page is re-read once and the named element re-resolved
+    by IDENTITY (tag + input_type + label — _reresolve), because the positional
+    id itself may have moved to a neighbour row under churn; a second mismatch
+    raises "page changed under us" instead of acting on a different element.
+    Deliberately separate from the crash retry below — a crash restarts the
+    browser, a mismatch re-reads the DOM.
+    """
+    node = _node(node_id)
+    await _pre_action(node, verb)
+    if verb in ("click", "fill") and await _identity_stale(node):
+        # Whom did the model name? Ids move with the rows; identity does not.
+        ident = {"type": node.get("type"),
+                 "input_type": node.get("input_type"),
+                 "label": node.get("label", "")}
+        await _read()
+        try:
+            fresh = _node(node_id)
+        except ValueError:
+            fresh = None
+        if fresh is None or not _identity_agrees(fresh, ident):
+            fresh = _reresolve(node_id, ident)
+        node = fresh
+        await _pre_action(node, verb)
+        if await _identity_stale(node):
+            raise ValueError(
+                f"page changed under us — {node_id} now resolves to a different element "
+                f"({compact_line(node)}). Re-read with zerodom_read_page and retry on the "
+                "fresh node id.")
     for attempt in (1, 2):
         page = await _page()
         try:
             locator = locate(page, node)
+            # None for a minimal fake page with no url — the post-action scope
+            # assert below then has nothing to compare and stands down.
+            before_url = getattr(page, "url", None)
             if _session["attached"]:
                 await _show_driving(locator)
             async with _unlocked_input(page):
@@ -1068,6 +1282,10 @@ async def _act(node_id: str, verb: str, *args: Any) -> str:
                         pass
                 else:
                     await getattr(locator, verb)(*args)
+            if verb in ("click", "press") and before_url is not None and page.url != before_url:
+                # A click/press can navigate, and a redirect can land anywhere —
+                # T4.2: raise if this one landed outside the locked scope.
+                await _assert_final_url(page)
             if _session["attached"]:
                 verb_past = {
                     "click": "clicked", "fill": "filled", "hover": "hovered",
@@ -1230,10 +1448,18 @@ async def _read(verbose: bool = False, diff: bool = False) -> str:
         check_occlusion=_session["check_occlusion"],
     )
     previous, url = _session["nodes"], _session["url"]
+    # Contract 2 of the ladder: cleared rides on the same metadata the parse
+    # owns (beside the parser-written blocked), and both are copied into
+    # _session so a later tool call can see the wall state without re-deriving.
+    cleared = _session.get("clearance")
+    if cleared:
+        graph["metadata"]["cleared"] = cleared
     _session.update(
         selectors=graph.selector_map(), nodes=graph["nodes"], url=page.url,
         hydration_pending=graph["metadata"].get("hydration_pending", False),
-        hidden_fields=graph["metadata"].get("hidden_fields", [])
+        hidden_fields=graph["metadata"].get("hidden_fields", []),
+        blocked=graph["metadata"].get("blocked"),
+        cleared=cleared,
     )
     compact = graph.to_compact_text()
     if _session["attached"]:
@@ -1329,12 +1555,40 @@ async def _read(verbose: bool = False, diff: bool = False) -> str:
             await page.evaluate(_SIDEBAR_DATA_JS, sidebar_nodes)
         except Exception:
             pass
+    status = _clearance_status(graph)
     if verbose:
+        # metadata.blocked/cleared travel inside the JSON; appending prose here
+        # would break the payload (contract: status lines only on text returns).
         return graph.to_json()
     # A navigation invalidates every id, so a diff against the old page is noise.
     if diff and previous and url == page.url and (delta := _diff(previous, graph["nodes"])):
-        return delta
-    return compact
+        return delta + status
+    return compact + status
+
+
+def _clearance_status(graph) -> str:
+    """The wall story as a token-cheap tail line on compact/diff returns.
+
+    Repeats on every action until the next navigation — same lifetime as the
+    metadata it mirrors, and it only exists while a wall is (or was just)
+    in the way, so clean pages pay nothing."""
+    blocked = graph["metadata"].get("blocked")
+    cleared = graph["metadata"].get("cleared")
+    lines: list[str] = []
+    if cleared and not blocked:
+        lines.append(
+            f"[cleared {cleared.get('wall_kind', 'wall')} — rung {cleared.get('rung')}, "
+            f"{cleared.get('attempts', '?')} attempt(s), {cleared.get('seconds', '?')}s]"
+        )
+    if blocked:
+        note = _session.get("clearance_note")
+        lines.append(
+            f"[blocked {blocked.get('kind', 'challenge')} challenge: {note}]"
+            if note else
+            f"[blocked {blocked.get('kind', 'challenge')} challenge — not cleared; reuse a "
+            "cleared session, drive it in relay mode, or configure a solver]"
+        )
+    return ("\n" + "\n".join(lines)) if lines else ""
 
 
 @mcp.tool()
@@ -1436,6 +1690,80 @@ async def zerodom_hidden_fields() -> str:
         name = f.get("name") or f.get("id") or "(unnamed)"
         lines.append(f"{name}: {f.get('value', '')}  (selector: {f.get('selector', '?')})")
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def zerodom_crawl(url: str, max_pages: int = 10, scope: str | None = None,
+                        deny: str | None = None) -> str:
+    """BFS-walk an app's in-scope routes and return one JSONL record per page:
+    final URL, forms, in-scope links, the XHR/fetch API calls it fired, hidden
+    fields, and `blocked` when the route is a challenge interstitial.
+
+    Recon, not action: it navigates and reads, never clicks or submits. A link
+    matching `deny` (logout/delete/… default) is never followed; a blocked route
+    is recorded but not descended into; session scope (`zerodom_set_scope`) is
+    enforced per navigated URL, including its max_rps rate limit. Runs in the
+    active tab, so on an attached session the walk resolves authenticated routes
+    the way the human's own Chrome does (CLI: `zerodom crawl --relay`).
+    `scope` adds extra in-scope hosts (comma-separated, beside the start URL's
+    host); `deny` overrides the link-follow regex. The crawl leaves the active
+    tab on the last crawled page and re-reads the graph to match — call
+    zerodom_read_page to see it.
+    """
+    from .cli import _DEFAULT_DENY, crawl_plan, crawl_record
+    from .playwright_wrapper import serialize_async
+
+    _reject_undrivable(url)
+    await _scope_ok(url)  # fail fast (and take the first throttle tick) on a bad start URL
+    extra = set(h.strip() for h in (scope or "").split(",") if h.strip())
+    in_scope, _deny_re = crawl_plan(url, extra, deny or _DEFAULT_DENY)
+
+    page = await _page()
+    api_calls: list[str] = []
+
+    def on_request(request: Any) -> None:
+        # XHR/fetch the page fires during a load = the app's real API surface.
+        if request.resource_type in ("xhr", "fetch"):
+            api_calls.append(f"{request.method} {request.url}")
+
+    seen: set[str] = set()
+    queue: list[str] = [url]
+    out: list[str] = []
+    page.on("request", on_request)
+    try:
+        while queue and len(seen) < max_pages:
+            target = queue.pop(0)
+            if target in seen:
+                continue
+            seen.add(target)
+            try:
+                if target != url:
+                    await _scope_ok(target)  # scope + max_rps per navigated URL
+                api_calls.clear()
+                await _goto(page, target)  # asserts the final post-redirect URL too
+                final = page.url
+                html = await serialize_async(page, viewport_only=False)
+            except Exception as exc:  # nav failure or scope (redirect) refusal
+                out.append(json.dumps({"url": target, "error": str(exc)[:200]}, ensure_ascii=False))
+                continue
+            record = crawl_record(html, final, api_calls, in_scope)
+            out.append(json.dumps(record, ensure_ascii=False))
+            if record.get("blocked"):
+                # A challenge interstitial's links are the wall's, not the
+                # app's — record the block and do not descend into it.
+                continue
+            for link in record["links_in_scope"]:
+                if link not in seen and link not in queue:
+                    queue.append(link)
+    finally:
+        page.remove_listener("request", on_request)
+        try:
+            # The tab now sits on the last crawled page; re-sync _session's
+            # nodes/url so every later tool sees the truth, not the pre-crawl state.
+            await _read()
+        except Exception:
+            pass
+    return "\n".join(out) or "No pages crawled."
 
 
 @mcp.tool()
@@ -1795,6 +2123,41 @@ def _decode_jwt(value: str) -> dict | None:
         return None
 
 
+# T4.1's guard keys on these navigation primitives: assignment to location/
+# location.href, the two location methods, and window.open. A deterministic
+# string check, not a sandbox — see the ponytail note in _guard_eval_navigation.
+_NAV_PRIMITIVE_RE = re.compile(
+    r"(?:window\.)?location(?:\.href)?\s*=|location\.(?:assign|replace)\s*\(|window\.open\s*\("
+)
+# Any single/double-quoted literal in the code — candidate target URLs.
+_STRING_LITERAL_RE = re.compile(r"""(['"])(.*?)\1""")
+
+
+def _guard_eval_navigation(code: str) -> None:
+    """Refuse eval_js that plainly navigates off-scope (T4.1).
+
+    # ponytail: this is a string/URL guard, not a JS sandbox — code that
+    # builds its target at runtime (`location = base + attackerHost`) still
+    # passes it. That ceiling is deliberate and documented rather than papered
+    # over: the guard stops the common accidental/obvious escape (an absolute
+    # out-of-scope URL sitting in navigation code), and eval_js remains what
+    # README already says it is — full page-context power for a caller who is
+    # inside the scope in the first place, not a boundary to be relied on
+    # against a caller actively trying to leave it."""
+    if not _NAV_PRIMITIVE_RE.search(code):
+        return  # no navigation primitive — nothing to scope-check
+    _load_scope_from_env()
+    if not _session.get("scope"):
+        return  # no scope set → unrestricted (same as every other tool)
+    for _quote, literal in _STRING_LITERAL_RE.findall(code):
+        target = literal.strip()
+        if "://" in target:
+            check_scope(target, _session.get("scope"))
+        elif target.startswith("//"):
+            check_scope("https:" + target, _session.get("scope"))
+        # relative paths / javascript: literals stay — they can't leave the origin.
+
+
 @mcp.tool()
 async def zerodom_eval_js(code: str) -> str:
     """Run arbitrary JavaScript in the active tab's real page context and
@@ -1802,8 +2165,14 @@ async def zerodom_eval_js(code: str) -> str:
     connection everything else here uses, the same power as typing into
     DevTools' own console.
     """
+    _guard_eval_navigation(code)  # refuse before running when a scope is locked
     page = await _page()
+    before = page.url
     result = await page.evaluate(code)
+    if page.url != before:
+        # A navigation that committed during the eval — T4.2 backstop for the
+        # runtime-built URLs the T4.1 string guard can't see coming.
+        await _assert_final_url(page)
     try:
         return json.dumps(result)
     except TypeError:
@@ -1883,13 +2252,94 @@ async def zerodom_set_scope(hosts: str, deny: str | None = None, max_rps: float 
 
 # ─── Cross-identity replay (the IDOR / authz hunting loop) ──────────────────
 
+# The live identity's transport: a credentialed fetch() *inside the attached
+# tab*. The request leaves through Chrome's own network stack — same TLS/HTTP2
+# fingerprint, same connection pool, same cookie jar as the human's browsing —
+# which is the whole difference from APIRequestContext below (cookies, but an
+# HTTP client's fingerprint, not Chrome's). redirect:"follow" mirrors what the
+# browser would do; errors are returned, not thrown, so a CORS refusal reads as
+# a plain failure message instead of an evaluate traceback.
+_INPAGE_FETCH_JS = """async (req) => {
+  try {
+    const init = { method: req.method, credentials: 'include', redirect: 'follow' };
+    if (req.headers) init.headers = req.headers;
+    if (req.body != null && req.method !== 'GET' && req.method !== 'HEAD') init.body = req.body;
+    const resp = await fetch(req.url, init);
+    const headers = {};
+    resp.headers.forEach((v, k) => { headers[k] = v; });
+    return { ok: true, status: resp.status, url: resp.url, headers, body: await resp.text() };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}"""
+
+
+class _InPageResponse:
+    """The response shape zerodom_replay/zerodom_compare_identities consume:
+    `status`, `await .text()` — same as an APIRequestContext response, plus the
+    post-redirect `url`/`headers` the in-page fetch can see."""
+
+    def __init__(self, status: int, body: str, url: str, headers: dict | None = None):
+        self.status = status
+        self.url = url
+        self.headers = headers or {}
+        self._body = body
+
+    async def text(self) -> str:
+        return self._body
+
+
+class _LiveIdentity:
+    """The 'live' identity: requests sent from inside the active tab.
+
+    Deliberately *not* page.context.request (Playwright's APIRequestContext) —
+    that carries the session's cookies but speaks with its own HTTP client's
+    fingerprint, which a fingerprinting WAF can tell apart from the human's
+    browser. This runs fetch() in the page itself, so the request is the real
+    browser's in every respect a server can observe.
+    """
+
+    def __init__(self, page: Any):
+        self._page = page
+
+    async def fetch(self, url: str, method: str = "GET", headers: dict | None = None,
+                    data: str | None = None) -> _InPageResponse:
+        method = (method or "GET").upper()
+        # Scope on every live fetch, at the primitive — the tools call
+        # _scope_ok too, but this guard also covers a method a plain URL check
+        # can't see (POST DELETE to a clean path is still destructive).
+        await _scope_ok(url)
+        sc = _session.get("scope")
+        if sc and sc.get("deny") and re.search(sc["deny"], f"{method} {url}", re.I):
+            raise PermissionError(
+                f"scope: refusing {method} {url!r} — matches the destructive deny rule.")
+        result = await self._page.evaluate(_INPAGE_FETCH_JS, {
+            "url": url, "method": method, "headers": headers, "body": data,
+        })
+        if not isinstance(result, dict) or "ok" not in result:
+            raise RuntimeError(
+                "live in-page fetch didn't run on this page (no JS execution surface) — "
+                "register a second identity with zerodom_add_identity and replay as that instead.")
+        if not result.get("ok"):
+            raise RuntimeError(
+                f"live fetch failed: {result.get('error')} — a cross-origin request the page "
+                "has no CORS permission for is refused by the browser itself; try a same-origin "
+                "URL, or a registered identity (zerodom_add_identity) whose requests go through "
+                "Playwright's HTTP client instead.")
+        return _InPageResponse(result["status"], result["body"], result["url"],
+                               result.get("headers"))
+
+
 async def _identity_request(name: str | None):
-    """The APIRequestContext to send a request through. name None/"live"/"me" is
-    the real logged-in session (the attached browser's own cookie jar); any other
-    name is one registered by zerodom_add_identity."""
+    """Who sends a request. None/"live"/"me"/"self" is the real logged-in
+    session — an in-page credentialed fetch leaving through Chrome's own
+    network stack, fingerprint and all: the path that can get past a WAF that
+    fingerprints the connection. Any other name was registered by
+    zerodom_add_identity and sends through Playwright's APIRequestContext:
+    that identity's cookies yes, Chrome's TLS/HTTP fingerprint no."""
     if name in (None, "live", "me", "self"):
         page = await _page()
-        return page.context.request
+        return _LiveIdentity(page)
     ctx = _session["identities"].get(name)
     if ctx is None:
         raise ValueError(
@@ -1980,8 +2430,10 @@ async def zerodom_compare_identities(url: str, method: str = "GET", body: str | 
     Sends `method` `url` through every identity in `identities` (default: the
     live session plus every registered one) and reports each response's status
     and size. **A byte-identical response under two identities on a per-user
-    resource is a cross-tenant IDOR.** Runs on the real, rendered session, so it
-    works where a plain HTTP fetch would hit a WAF or a login wall.
+    resource is a cross-tenant IDOR.** The live identity leaves through Chrome's
+    own network stack (in-page fetch), so a fingerprinting WAF sees your real
+    browser there; registered identities go through Playwright's HTTP client —
+    cookies included, Chrome's TLS fingerprint not.
     """
     _reject_undrivable(url)
     await _scope_ok(url)

@@ -488,6 +488,52 @@ def test_pages_without_shadow_roots_are_untouched():
     assert parse_html(html)["nodes"][0]["selector"] == "#d > button"
 
 
+# --- closed shadow roots (coverage honesty) ---------------------------------
+#
+# mode="closed" content is present in the serialized HTML, but no API pierces
+# a closed root — emitting nodes for it would claim coverage ZeroDOM doesn't
+# have (a selector into it resolves to nothing). The parser notes the host
+# instead, so the graph says where mapping stops.
+
+CLOSED_PAGE = """<html><body>
+  <div id="host"><button>Light</button><template shadowrootmode="closed">
+    <button>Secret</button></template></div>
+</body></html>"""
+
+
+def test_closed_shadow_content_is_not_claimed_as_nodes():
+    labels = [n["label"] for n in parse_html(CLOSED_PAGE)["nodes"]]
+    assert "Secret" not in labels  # unreachable — never a node
+    assert "Light" in labels       # the light child still is
+
+
+def test_closed_shadow_host_is_recorded_in_metadata():
+    meta = parse_html(CLOSED_PAGE)["metadata"]
+    assert meta["closed_shadow_hosts"] == ["#host"]
+    assert meta["closed_shadow_host_count"] == 1
+
+
+def test_empty_custom_element_host_is_recorded_as_unmapped():
+    """An empty hyphenated element renders nothing this HTML carries — if it
+    shows anything, it's in a shadow root we can't see, so the host is noted."""
+    meta = parse_html("<html><body><x-panel></x-panel><p>hi</p></body></html>")["metadata"]
+    assert meta["closed_shadow_host_count"] == 1
+    assert any("x-panel" in s for s in meta["closed_shadow_hosts"])
+
+
+def test_custom_element_with_light_children_is_not_flagged():
+    html = "<html><body><x-panel><button>Go</button></x-panel></body></html>"
+    meta = parse_html(html)["metadata"]
+    assert "closed_shadow_hosts" not in meta
+    assert parse_html(html)["nodes"][0]["label"] == "Go"
+
+
+def test_closed_hosts_metadata_absent_when_there_are_none():
+    meta = parse_html("<html><body><div id='d'><button>Go</button></div></body></html>")["metadata"]
+    assert "closed_shadow_hosts" not in meta
+    assert "closed_shadow_host_count" not in meta
+
+
 def test_icon_only_link_uses_descendant_title():
     """Hacker News' vote arrow: <a><div class="votearrow" title="upvote"></div></a>.
 

@@ -26,11 +26,12 @@ the list an agent reads before it decides what to click.
 
 ## When NOT to reach for it
 
-- You need the agent to *drive* the browser end-to-end (launch, navigate, solve
-  CAPTCHAs, manage sessions) — that's [browser-use](https://github.com/browser-use/browser-use),
+- You need the agent to *drive* the browser end-to-end (launch, navigate,
+  manage sessions) — that's [browser-use](https://github.com/browser-use/browser-use),
   [Stagehand](https://github.com/browserbase/stagehand), or [Skyvern](https://github.com/Skyvern-AI/skyvern).
   ZeroDOM composes with any of these as the perception step; it isn't a replacement
-  for them.
+  for them. (Clearing bot walls/CAPTCHAs ZeroDOM *does* do itself — see the
+  clearance ladder in the README.)
 - The page has fewer than ~50 interactive elements — the token savings don't
   matter enough to justify adding a dependency.
 

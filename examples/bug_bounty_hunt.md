@@ -36,10 +36,12 @@ Non-negotiable:
 - **When unsure whether an action is safe or in scope, stop and ask.** A false
   "confirmed" bug or an out-of-scope request is worse than a slower hunt.
 
-If the target shows a Cloudflare/Turnstile/CAPTCHA wall (ZeroDOM reports
-`blocked` in the graph metadata), do **not** try to defeat it. Have the operator
-clear it once in the real browser (relay mode carries the cleared session), or
-reuse a captured `--storage-state`. ZeroDOM never solves challenges.
+If the target shows a Cloudflare/Turnstile/CAPTCHA wall, let ZeroDOM's
+clearance ladder run first — it reuses a cleared session, and calls a
+configured solver only when the engagement's rules allow one (`--no-solver`
+refuses). If the ladder reports `blocked` in the graph metadata, have the
+operator clear it once in the real browser (relay mode carries the cleared
+session) or reuse a captured `--storage-state`. Never loop on a wall yourself.
 
 ---
 
@@ -223,7 +225,8 @@ proof is the whole game.
 - Don't chase XSS/SQLi/RCE by blind payload spraying here — that's Burp/manual
   territory, and this agent's edge is authorization/logic, not injection.
 - Don't enumerate real users or mass-fuzz ids.
-- Don't defeat bot walls. Detect (`blocked`) and hand off / reuse a session.
+- Don't fight bot walls by hand. Let the clearance ladder run; if it reports
+  `blocked`, hand off / reuse a session.
 - Don't act outside scope or take a destructive action to "prove" a bug.
 
 ---

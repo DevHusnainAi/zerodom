@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ZeroDOM Demo SPA - :hover Trap & Node Churn</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 40px; }
+  nav { background: #111; color: white; padding: 10px 20px; }
+  .nav-list { list-style: none; display: flex; gap: 30px; margin: 0; padding: 0; }
+  .nav-item { position: relative; padding: 8px 0; }
+  .nav-item > a { color: white; text-decoration: none; }
+  .dropdown { 
+    display: none; 
+    position: absolute; 
+    top: 100%; 
+    left: 0; 
+    background: #222; 
+    min-width: 180px; 
+    padding: 8px 0;
+    border-radius: 4px;
+  }
+  /* Strict CSS :hover trap - synthetic events do NOT change :hover pseudo-class */
+  .nav-item:hover .dropdown { display: block; }
+  .dropdown a { 
+    display: block; 
+    color: #ddd; 
+    padding: 8px 16px; 
+    text-decoration: none; 
+  }
+  .dropdown a:hover { background: #333; }
+  #success-hover { margin-top: 20px; color: green; font-weight: bold; display: none; }
+  #success-churn { margin-top: 20px; color: green; font-weight: bold; display: none; }
+
+  .churn-container { margin-top: 60px; padding: 20px; border: 1px solid #ccc; border-radius: 6px; }
+  .churn-container input { padding: 8px; width: 300px; }
+  .churn-button { 
+    margin-left: 10px; 
+    padding: 8px 16px; 
+    background: #0066cc; 
+    color: white; 
+    border: none; 
+    border-radius: 4px; 
+    cursor: pointer;
+  }
+  .churn-button:hover { background: #0052a3; }
+</style>
+</head>
+<body>
+<h1>ZeroDOM Demo SPA</h1>
+<p>This page reproduces two common agent failure modes.</p>
+
+<nav>
+  <ul class="nav-list">
+    <li class="nav-item">
+      <a href="#">Products</a>
+      <div class="dropdown">
+        <a href="#" id="hover-target" onclick="document.getElementById('success-hover').style.display='block'; return false;">Open Settings</a>
+        <a href="#">Pricing</a>
+      </div>
+    </li>
+    <li class="nav-item"><a href="#">Docs</a></li>
+  </ul>
+</nav>
+<div id="success-hover">✅ Hover menu action succeeded</div>
+
+<div class="churn-container" id="churn-root">
+  <label for="churn-input">Type to trigger node churn:</label><br><br>
+  <input type="text" id="churn-input" placeholder="Start typing...">
+  <button class="churn-button" id="churn-button" onclick="document.getElementById('success-churn').style.display='block'">Submit</button>
+  <p style="font-size:0.9em;color:#666;margin-top:10px;">When typing, the container is destroyed and recreated every 800ms simulating React hydration.</p>
+</div>
+<div id="success-churn">✅ Churn button action succeeded</div>
+
+<script>
+  // Interaction B: Virtual DOM Node Churn
+  const input = document.getElementById('churn-input');
+  const root = document.getElementById('churn-root');
+  let churnInterval = null;
+  
+  input.addEventListener('input', () => {
+    if (churnInterval) clearInterval(churnInterval);
+    // Start churn on first keystroke
+    churnInterval = setInterval(() => {
+      // Simulate React re-render: replace entire container with a fresh clone
+      // This destroys all existing DOM references and creates new nodes
+      const clone = root.cloneNode(true);
+      // Preserve the input value across re-renders
+      clone.querySelector('#churn-input').value = input.value;
+      // Replace in DOM - old nodes are garbage collected
+      root.parentNode.replaceChild(clone, root);
+      // Update references for next tick
+      // Note: after replacement, previous button references are stale
+    }, 800);
+  });
+
+  // Stop churn when input is blurred
+  input.addEventListener('blur', () => {
+    if (churnInterval) {
+      clearInterval(churnInterval);
+      churnInterval = null;
+    }
+  });
+</script>
+</body>
+</html>
