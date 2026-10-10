@@ -59,7 +59,10 @@ Repository = "https://github.com/DevHusnainAi/zerodom"
 Issues = "https://github.com/DevHusnainAi/zerodom/issues"
 
 [dependency-groups]
-dev = ["pytest"]
+# fastapi/uvicorn drive the zerodom-demo fixture app that the dynamic-component
+# correctness tests (tests/test_dynamic_components.py) run against — test-only,
+# never a runtime dep of the package.
+dev = ["pytest", "fastapi", "uvicorn"]
 
 [project.scripts]
 zerodom = "zerodom.cli:main"

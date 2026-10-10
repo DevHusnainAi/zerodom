@@ -39,6 +39,12 @@ pytestmark = pytest.mark.skipif(
     reason="chromium not installed (run: uv run playwright install chromium)",
 )
 
+# The fixture app is FastAPI on uvicorn (dev deps). Without them the fixture
+# would error at setup rather than skip — so skip the file cleanly, the same way
+# the chromium gate above does, when a partial env hasn't installed the dev group.
+pytest.importorskip("fastapi", reason="demo fixture server needs fastapi (dev dep)")
+pytest.importorskip("uvicorn", reason="demo fixture server needs uvicorn (dev dep)")
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
