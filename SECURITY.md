@@ -8,14 +8,31 @@ anything exploitable. Expect a first reply within a week.
 
 | version | supported |
 |---|---|
-| 0.0.x | ✅ |
+| 0.1.x | ✅ |
+
+## Local, accountless, zero-egress
+
+ZeroDOM needs no account, no sign-up and no API key, and sends **no telemetry** — it never
+phones home, and nothing about your session, targets or findings reaches Vexra Labs. It runs
+entirely on your machine. Outbound traffic is limited to:
+
+1. **The target you point it at** (the fetch/navigation you asked for), and
+2. **A CAPTCHA solver provider — only if you opt in.** Rung 3 of the clearance ladder
+   (`solvers.py`) is **off by default**; it makes a request to the provider you configured
+   (`ZERODOM_SOLVER_*` / `zerodom config set`) carrying the challenge's sitekey, the page URL,
+   and sometimes the widget markup. `--no-solver` or `ZERODOM_NO_SOLVER=1` disables it entirely,
+   and it is scope-gated like every other action. With no solver configured, (2) never happens
+   and the default path is fully zero-egress.
+
+Your solver API key, if set, lives in `~/.zerodom/config.json` (mode `0600`) and is never
+logged or printed.
 
 ## What ZeroDOM touches
 
-It parses HTML and drives a Playwright browser you already control. It makes no
-network requests of its own except the CLI's convenience fetch
-(`zerodom <url>` without `--render`), holds no credentials, and writes nothing to
-disk unless you pass `--screenshot` or `--html`. The MCP server keeps its
+It parses HTML and drives a Playwright browser you already control. Apart from the target
+fetch and the opt-in solver above, it makes no network requests of its own, holds no
+credentials, and writes nothing to disk unless you pass `--screenshot` or `--html` (plus the
+per-host cleared-session cache the ladder writes under `~/.zerodom/`). The MCP server keeps its
 `node_id → selector` map in memory for the life of the process.
 
 Two consequences worth stating plainly:
@@ -84,7 +101,10 @@ reporting through the process above.
 
 ## Dependencies
 
-`lxml`, `tiktoken`, `mcp`, `playwright`. Parsing runs through lxml with no network
-access and no code execution: `<script>` is pruned, never evaluated. Browser-backed
-features run Chromium via Playwright, which executes page JavaScript exactly as a
-browser would — sandbox it as you would any browser visiting an untrusted site.
+`lxml`, `tiktoken`, `mcp`, `playwright`, `pyyaml`, `websockets`. Parsing runs through lxml with
+no network access and no code execution: `<script>` is pruned, never evaluated. Browser-backed
+features run Chromium via Playwright, which executes page JavaScript exactly as a browser would
+— sandbox it as you would any browser visiting an untrusted site. If you opt into a CAPTCHA
+solver, you are also trusting that third-party provider (CapSolver / 2Captcha / Anti-Captcha, or
+your own endpoint) with the challenge data described above; that is the operator's choice, off
+by default.

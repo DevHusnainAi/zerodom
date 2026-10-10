@@ -33,6 +33,10 @@
 - **[`zerodom scan`](#attack-surface-mapping)** runs a deterministic YAML ruleset over the
   graph and emits JSONL findings.
 - **Unix pipes.** `-` reads URLs from stdin and `--pipe` streams nodes as JSONL.
+- **Local, accountless, zero-egress.** No account, no sign-up, no telemetry — the parse and
+  the relay run entirely on your machine, and the only outbound traffic is to the target you
+  point it at. (The one exception is an *opt-in* CAPTCHA solver, off by default and killable
+  with `--no-solver`.) Nothing about your session or findings ever reaches us.
 
 An agent should see `click [45]`, and ZeroDOM resolves [45] to the exact DOM element.
 No hallucinated CSS locators, no drifted pixel coordinates, no ambiguous `(role, name)`
@@ -679,7 +683,37 @@ element.** Open an issue with the URL and the output of
 
 ---
 
+## Editions
+
+ZeroDOM is **open core**. Everything in this repository — the parser, the CLI, relay mode,
+stealth, scan/crawl/compare/audit, the clearance ladder and the MCP server — is the free,
+Apache-2.0 **Core**, and it is complete on its own: a single operator can do the whole job
+locally with no account and no license key.
+
+| | **Core** (this repo, Apache-2.0) | **Enterprise** (commercial) |
+|---|---|---|
+| Deterministic parse, relay, stealth, scan, crawl, compare, audit, MCP | ✅ | ✅ |
+| Clearance ladder (incl. opt-in solvers), scope lock | ✅ | ✅ |
+| Runs fully local, zero-egress, no account | ✅ | ✅ |
+| Team fleet: many targets/agents, shared findings store, dashboard | — | ✅ |
+| Compliance export packs (SOC2 / PCI / OWASP-ASVS-mapped reports) | — | ✅ |
+| Org-wide scope policy, SSO/RBAC, audit log | — | ✅ |
+| Parallel/scheduled runs, curated rule-pack library | — | ✅ |
+| Priority support, SLA, indemnification | — | ✅ |
+
+**The promise:** the Core will always be open-source and run **fully local with zero egress and
+no account** — that is the product, not a trial. Enterprise is an *additive* layer a team
+chooses to deploy; it never gates, phones home from, or adds telemetry to the Core.
+
+## Commercial / Enterprise support
+
+Enterprise features, support contracts, and indemnification are available from Vexra Labs —
+email **contact@vexralabs.com**. (Enterprise is on the roadmap; reach out to shape it or to
+become a design partner.)
+
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE). Use it anywhere, including commercially;
-embed it in your own product or framework. ZeroDOM is a trademark of Vexra Labs.
+Apache 2.0 — see [LICENSE](LICENSE). Use it anywhere, including commercially; embed it in your
+own product or framework. ZeroDOM is a trademark of Vexra Labs; the trademark and the
+Enterprise features are not covered by the Apache grant. Contributions are accepted under the
+[Developer Certificate of Origin](CONTRIBUTING.md) (`Signed-off-by`).

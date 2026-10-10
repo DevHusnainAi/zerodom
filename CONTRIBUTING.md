@@ -102,7 +102,20 @@ already thought about:
 If you're unsure whether something falls here, open an issue before writing the
 code. A two-line question is cheaper than a rejected PR.
 
-## Licence
+## Licence & sign-off (DCO)
 
-By contributing you agree your work is licensed under
-[Apache-2.0](LICENSE), the same as the rest of the project.
+The Core is [Apache-2.0](LICENSE). By contributing you agree your work is licensed under it,
+the same as the rest of the project, and you certify the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/) — in short: the
+contribution is yours to give, or you have the right to give it, under this licence.
+
+Certify it by signing off each commit:
+
+```bash
+git commit -s      # adds a "Signed-off-by: Your Name <you@example.com>" trailer
+```
+
+ZeroDOM is **open core**: the paid Enterprise layer is a separate, independently-authored
+package, so a DCO on Core contributions is all that's needed — there is no CLA to sign and no
+copyright assignment. Your contributions stay Apache-2.0 and are never pulled into the
+proprietary tier.
