@@ -53,7 +53,7 @@ npm test                             # node --test --experimental-strip-types, m
 
 ### Which tests need what
 
-- `test_parser.py`, `test_audit.py`, `test_cli.py`, `test_jsintel.py`, `test_surfaces.py`, `test_graph_ui_sync.py` — pure, no browser.
+- `test_parser.py`, `test_audit.py`, `test_cli.py`, `test_jsintel.py`, `test_surfaces.py`, `test_graph_ui_sync.py`, `test_clearance.py`, `test_scope_escape.py` — pure, no browser (`test_clearance`/`test_scope_escape` drive the ladder + scope with fakes and local fake-solver servers).
 - `js/test/parser.test.ts` — the TS parser, case-for-case mirror of `test_parser.py`;
   `js/test/graphUi.test.ts` — the shared graph UI, mounted under linkedom. Both via `cd js && npm test`.
 - `test_mcp.py`, `test_mcp_cdp.py` — MCP tools against a `FakePage`/`FakeGotoPage`, no browser.
@@ -63,6 +63,14 @@ npm test                             # node --test --experimental-strip-types, m
   that created it).
 - `test_playwright.py` — real Chromium, auto-skipped when it isn't installed
   (`pytestmark = pytest.mark.skipif(...)` at the top of the file).
+- `test_dynamic_components.py` — real MCP session against a FastAPI/uvicorn fixture app
+  (`zerodom-demo/server.py`), proving virtual-list/shadow-DOM/hydration churn never yields a
+  wrong action. Needs chromium **and** the `fastapi`+`uvicorn` dev deps; skips cleanly without
+  either (chromium `skipif` + `importorskip`).
+- `test_clearance_live.py` — real headful Chromium driven through `clearance.attempt_clearance`
+  (rung 1 out-waits a *local synthetic* CF challenge, no third-party host). Opt-in via
+  `ZERODOM_BYPASS_LIVE=1`, needs a display, never in CI. The only real-browser cover for the
+  ladder; a real CF edge is validated by pointing `zerodom` at your *own* CF-fronted / in-scope host.
 - `test_extension_e2e.py` — real relay + real unpacked extension + headed Chromium, opt-in via
   `ZERODOM_E2E=1` and never in CI. Stop any running `zerodom relay`/`zerodom-mcp` first: the
   extension only ever dials the fixed default port. Run it manually after touching
@@ -153,12 +161,32 @@ first — for the FR-numbered ones it states the design constraint.
   count). Reuses `surfaces.Finding` so findings stream through the same JSONL
   path. Linked/bundled JS is not fetched — that's a per-script network fan-out,
   its own feature. Off unless `--js`.
-- **Blocked-state detection** (`parser._detect_challenge`) — a deterministic
-  substring match over the raw HTML for CF/Turnstile/reCAPTCHA/hCaptcha
-  fingerprints, surfaced as `metadata["blocked"] = {"kind", "marker"}`. We detect
-  and hand off, never solve; the honest paths (relay mode, `--storage-state`
-  clearance reuse, program bypass header) are the answer, not an evasion engine.
-  Markers verified live 2026-09-23 (see `docs/PROFILE-A-PLAN.md`).
+- **Blocked-state detection + clearance ladder** (`parser._detect_challenge`,
+  `clearance.py`, `solvers.py`, `scope.py`) — `_detect_challenge` is a deterministic
+  substring match over the raw HTML for CF/Turnstile/reCAPTCHA/hCaptcha fingerprints
+  (`metadata["blocked"] = {"kind", "marker"}`; markers verified live 2026-09-23, see
+  `docs/PROFILE-A-PLAN.md`). `clearance.attempt_clearance(page, kind, policy)` then climbs a
+  4-rung ladder until the wall drops: **reused** (carried `cf_clearance` / a CF interstitial
+  self-resolving — a bounded reload/poll, no new state) → **stealth** (cdp_pipe transport only:
+  its DOM-domain hygiene *is* the fix; a documented ceiling on the Playwright paths) →
+  **solver** (opt-in provider adapter, below) → **human** (relay transport: surface the widget
+  selector, re-check for a bounded window). It runs at exactly **three choke points** — post-goto,
+  pre-parse — `cli._goto`, `mcp_server._goto`, `cdp_pipe.CDPPipe.outer_html`; `parser.py` stays
+  browser/network-free, so the result rides back through a **module slot** (`take_cleared`/
+  `take_notes` → `metadata["cleared"]`), which assumes one navigation at a time (the single global
+  MCP session and one-command-at-a-time CLI guarantee it). A wall no rung clears stays recorded as
+  `blocked` — honest miss, never a fake pass. Bounded waits throughout (a ladder that hangs is worse
+  than a recorded miss). It detects both sync and async Playwright pages off `page.content`, same
+  split as `playwright_wrapper.ZeroDOM.from_page`; the sync path rides Playwright's own loop (`_run_sync`).
+  - **We never solve a CAPTCHA ourselves, and no solver fires unless the operator opts in.**
+    Rung 3 (`solvers.py`) is pluggable provider adapters — CapSolver / 2Captcha / Anti-Captcha, or a
+    custom `ZERODOM_SOLVER_URL` endpoint — configured by `ZERODOM_SOLVER_*` env or `zerodom config
+    set` (`~/.zerodom/config.json`, 0600; env wins). `ZERODOM_NO_SOLVER=1` / `--no-solver` is a kill
+    switch that beats everything; with no provider+key the rung no-ops (default path stays
+    zero-egress — nothing leaves the box). The rung is **scope-gated** (`scope.check_scope`, shared
+    with MCP) and logs spend in `metadata["cleared"]["solver"]`. This is a capability for
+    **authorized testing** — the out-wait/solve is the same line a real browser crosses, so run it
+    only against targets you're cleared to assess.
 - **`audit.py`** — `zerodom audit <dir> --url <url>`, no ZeroDOM required in the suite
   being audited. Regexes (`CALL_PATTERNS`) pull selectors out of existing Playwright/
   Puppeteer/Cypress/Selenium test code, then resolves each against a live page and

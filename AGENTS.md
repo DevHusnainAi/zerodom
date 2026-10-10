@@ -50,7 +50,7 @@ CI: `uv sync && uv run playwright install --with-deps chromium && uv run pytest`
 - `cdp_pipe.py` — `--stealth` transport: Chrome via `--remote-debugging-pipe`, raw CDP over FD 3/4 NUL-framed, POSIX-only, `close_fds=False` deliberate
 - `surfaces.py` + `surfaces.yaml` — `zerodom scan`, deterministic YAML rules, unknown key = load error
 - `jsintel.py` — `zerodom scan --js`, regex over inline JS for secrets/endpoints
-- `parser._detect_challenge` — CF/Turnstile/reCAPTCHA/hCaptcha detection → `metadata["blocked"]`, detect and hand off, never solve
+- `parser._detect_challenge` + `clearance.py`/`solvers.py`/`scope.py` — CF/Turnstile/reCAPTCHA/hCaptcha detection → `metadata["blocked"]`; `clearance.attempt_clearance` then climbs a 4-rung ladder (reused → stealth → opt-in solver → relay human) at 3 choke points (`cli._goto`/`mcp_server._goto`/`cdp_pipe.outer_html`), result via module slot → `metadata["cleared"]`. We never solve a CAPTCHA ourselves: rung 3 solvers (CapSolver/2Captcha/Anti-Captcha/custom URL) are opt-in via `ZERODOM_SOLVER_*`/`zerodom config set`, scope-gated, spend logged; `--no-solver`/`ZERODOM_NO_SOLVER=1` kill switch, default path zero-egress. Authorized targets only; unclearable wall stays `blocked` (honest miss)
 - `cli.py` — `inspect/audit/relay/scan/crawl/compare/extension/setup`; `--pipe`, `--stealth`, stdin `-`; engagement flags `--proxy/$ZERODOM_PROXY`+`--insecure`, `--header`, `--storage-state`; `--frames`+`--stealth` errors; `compare` for cross-tenant IDOR; `crawl` for attack-surface map (own Chromium, or `--relay` on an open Chrome; `crawl --stealth` errors)
 
 Import order in `__init__.py` matters: `label_linker` → `parser` → `playwright_wrapper`.
