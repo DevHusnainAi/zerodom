@@ -56,3 +56,33 @@ jobs:
           [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
           gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber \
             || gh release create "$GITHUB_REF_NAME" "${files[@]}" --notes-file notes.md
+
+  # The one-click .mcpb bundle (Claude Desktop "install extension") on the GitHub
+  # release, with a checksum. Same tag, so the bundle always matches the PyPI
+  # version it installs (mcpb/manifest.json pins `zerodom==<version>`).
+  mcpb-pack:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # The manifest version is hand-kept (not read from pyproject), so a stale
+      # one would ship a bundle that pins the wrong zerodom — fail loudly instead.
+      - name: Manifest version matches the tag
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          got=$(grep -m1 '"version"' mcpb/manifest.json | cut -d'"' -f4)
+          [ "$want" = "$got" ] || { echo "tag $want != mcpb/manifest.json $got"; exit 1; }
+      - name: Pack and checksum the .mcpb
+        run: |
+          npx -y @anthropic-ai/mcpb pack mcpb "zerodom-${GITHUB_REF_NAME}.mcpb"
+          sha256sum "zerodom-${GITHUB_REF_NAME}.mcpb" > "zerodom-${GITHUB_REF_NAME}.mcpb.sha256"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(zerodom-"${GITHUB_REF_NAME}".mcpb*)
+          awk -v v="${GITHUB_REF_NAME#v}" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber \
+            || gh release create "$GITHUB_REF_NAME" "${files[@]}" --notes-file notes.md
