@@ -1,0 +1,1 @@
+{"url": "https://0af600ac03bb29118046261f00a700ba.web-security-academy.net/admin", "identities": {"user": {"status": 401, "bytes": 2702, "nodes": 3, "sha256": "b2e9104d357858ee"}, "admin": {"status": 200, "bytes": 3219, "nodes": 6, "sha256": "3c1f1a914249a6b8"}}, "identical_body_pairs": [], "only_user": [], "only_admin": ["Admin panel", "Delete"]}

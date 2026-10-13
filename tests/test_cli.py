@@ -164,8 +164,9 @@ def test_setup_flags_missing_chromium(capsys, monkeypatch):
 
 
 def test_header_and_storage_state_reach_the_server():
-    """--header sends a program's bypass token; --storage-state carries a
-    cleared-session cookie (cf_clearance) into the request."""
+    """--header sends a program's bypass token; --storage-state carries every
+    cookie (a role cookie *and* the session) into one Cookie header — a
+    per-cookie add_header would overwrite and send only the last."""
     import http.server, threading, json, tempfile, os
     seen = {}
 
@@ -185,7 +186,8 @@ def test_header_and_storage_state_reach_the_server():
     srv = http.server.HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     st = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-    json.dump({"cookies": [{"name": "cf_clearance", "value": "abc"}], "origins": []}, st)
+    json.dump({"cookies": [{"name": "Admin", "value": "true"},
+                           {"name": "cf_clearance", "value": "abc"}], "origins": []}, st)
     st.close()
     try:
         cli.fetch(f"http://127.0.0.1:{srv.server_address[1]}/", render=False,
@@ -194,7 +196,7 @@ def test_header_and_storage_state_reach_the_server():
         srv.shutdown()
         os.unlink(st.name)
     assert seen["xbb"] == "h1-42"
-    assert seen["cookie"] == "cf_clearance=abc"
+    assert seen["cookie"] == "Admin=true; cf_clearance=abc"
 
 
 def test_bad_header_is_a_clear_error():

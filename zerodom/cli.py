@@ -181,8 +181,12 @@ def _http_fetch(url, proxy, insecure, headers, storage_state) -> tuple[int, str,
     """Plain HTTP with the engagement's proxy/headers/cookies, returning the
     status too — `compare` needs 403-vs-200, which the graph alone can't show."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-    for c in _cookies_from_state(storage_state):
-        req.add_header("Cookie", f"{c['name']}={c['value']}")
+    # One Cookie header with all pairs: add_header overwrites a repeat, so a
+    # per-cookie loop would send only the last one (dropping Admin/role cookies
+    # and silently breaking the compare IDOR diff).
+    cookies = _cookies_from_state(storage_state)
+    if cookies:
+        req.add_header("Cookie", "; ".join(f"{c['name']}={c['value']}" for c in cookies))
     hs: list = []
     if proxy:
         hs.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))

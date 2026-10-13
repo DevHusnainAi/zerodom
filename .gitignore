@@ -39,3 +39,7 @@ soc2_pitch.md
 *storage-state*.json
 *storage_state*.json
 cleared.json
+
+# Proof: per-run PortSwigger lab session states (ephemeral; recreated by run.sh)
+proof/user.json
+proof/admin.json

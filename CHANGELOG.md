@@ -6,6 +6,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-10-12
+
+The release leads with the challenge-clearance ladder — walls are cleared, not
+handed off — plus deep authenticated recon over the operator's real Chrome,
+dynamic-component correctness, and first-run / stability hardening for a
+hands-off release window. No breaking API changes (still pre-1.0).
+
 ### Added
 
 - **Challenge-clearance ladder — walls are now cleared, not handed off.** The
@@ -54,14 +61,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CRAWL.md`. Relay legs skip honestly when no relay is listening — they never
   spawn one or close the operator's browser. Crawl now uses a desktop viewport
   (1920×1080) so responsive navs are in their expanded state.
-
-## [0.1.0] — 2026-09-25
-
-Stability and first-run hardening for a hands-off release window, plus a guided
-setup. No breaking API changes (still pre-1.0).
-
-### Added
-
 - **`zerodom setup`** — a guided first-run: checks for Chromium, prints the unpacked
   extension path and the `chrome://extensions` steps, emits the MCP config JSON for
   Claude Desktop / Cursor, and reports relay reachability. Print-and-guide, no account,
@@ -95,6 +94,11 @@ setup. No breaking API changes (still pre-1.0).
   an attached session.
 - **Relay** rejects `Origin: null` (sandboxed-iframe / `file://` page origins), closing a
   residual of the page-origin connection guard.
+- **`compare` / `--storage-state` now send every cookie, not just the last.** The
+  plain-HTTP fetch built the `Cookie` header with a per-cookie `add_header`, which
+  overwrites — so a multi-cookie session (e.g. a role cookie + the session) dropped all
+  but the last, silently breaking the two-identity IDOR diff (both identities came back
+  identical). Joined into one header; regression-tested.
 
 ### Docs
 
@@ -103,6 +107,12 @@ setup. No breaking API changes (still pre-1.0).
   added an explicit safety-posture note.
 - Honest, consistent IDOR positioning across the site — ZeroDOM provides the
   access-control primitives and surfaces the tell; you confirm the bug.
+- **Open-core edition.** README now carries the local / accountless / zero-egress
+  promise, an editions table (Core = this repo, Apache-2.0; Enterprise = additive
+  team/compliance/support), and a Commercial Support section. `SECURITY.md` states
+  the egress posture honestly (zero telemetry; outbound only to your target and, if
+  opted in, the solver provider — `--no-solver` kills it); `CONTRIBUTING.md`
+  formalizes DCO sign-off.
 
 ## [0.0.9] — 2026-09-24
 
