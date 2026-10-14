@@ -156,7 +156,7 @@ async def _page() -> Any:
         await _teardown_active_session()
     from playwright.async_api import async_playwright
 
-    pw = await async_playwright().start()
+    pw = _session.get("pw") or await async_playwright().start()  # reuse one started by add_identity
     endpoint = _cdp_endpoint()
     if endpoint:
         # Fail closed: a configured-but-unreachable endpoint is an error, not
@@ -2372,8 +2372,11 @@ async def zerodom_add_identity(name: str, storage_state: str | None = None, head
     """
     pw = _session.get("pw")
     if pw is None:
-        await _page()  # bootstrap the browser/playwright
-        pw = _session["pw"]
+        # A registered identity is an HTTP client (APIRequestContext), independent
+        # of the live browser — start only Playwright, never force a browser attach
+        # (the relay/extension path can be unavailable, e.g. headless/CI or on camera).
+        from playwright.async_api import async_playwright
+        pw = _session["pw"] = await async_playwright().start()
     headers = {}
     if header:
         if ":" not in header:
@@ -2456,8 +2459,20 @@ async def zerodom_compare_identities(url: str, method: str = "GET", body: str | 
         lines.append(f"\n⚠ IDENTICAL response under {pairs} — cross-tenant IDOR if this URL "
                      f"is a per-user resource (each identity should see only its own data).")
     else:
-        lines.append("\nResponses differ across identities — properly isolated (or the "
-                     "resource isn't user-specific).")
+        # Differing bodies aren't automatically safe. A privileged status (2xx) for
+        # one identity and a denial (401/403) for another is the access-control
+        # boundary itself — and a finding when the only thing separating the
+        # identities is client-controllable (a cookie/header/param the tester set).
+        ok = [n for n in names if 200 <= per[n]["status"] < 300]
+        denied = [n for n in names if per[n]["status"] in (401, 403)]
+        if ok and denied:
+            lines.append(f"\n⚠ {'/'.join(ok)} authorized ({per[ok[0]]['status']}) where "
+                         f"{'/'.join(denied)} denied ({per[denied[0]]['status']}) — broken access "
+                         f"control if the only difference between these identities is client-"
+                         f"controllable (a cookie/header/param you set, not server-side identity).")
+        else:
+            lines.append("\nResponses differ across identities — properly isolated (or the "
+                         "resource isn't user-specific).")
     return "\n".join(lines)
 
 

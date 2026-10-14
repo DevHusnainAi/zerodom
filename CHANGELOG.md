@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.1.0] — 2026-10-12
+## [0.1.0] — 2026-10-14
 
 The release leads with the challenge-clearance ladder — walls are cleared, not
 handed off — plus deep authenticated recon over the operator's real Chrome,
@@ -99,6 +99,15 @@ hands-off release window. No breaking API changes (still pre-1.0).
   overwrites — so a multi-cookie session (e.g. a role cookie + the session) dropped all
   but the last, silently breaking the two-identity IDOR diff (both identities came back
   identical). Joined into one header; regression-tested.
+- **`zerodom_add_identity` no longer forces a browser attach.** A registered identity is
+  a pure HTTP client (Playwright `APIRequestContext`); registration used to bootstrap the
+  live browser/relay, so it failed in any session without the extension attached (headless
+  / CI). It now starts only Playwright. Regression-tested.
+- **`zerodom_compare_identities` flags the access-control boundary, not just identical
+  bodies.** When responses differ but one identity is authorized (2xx) and another denied
+  (401/403), it now calls out broken access control if the only difference between the
+  identities is client-controllable (a cookie/header/param) — it previously reported
+  "properly isolated", hiding a privilege-escalation tell.
 
 ### Docs
 

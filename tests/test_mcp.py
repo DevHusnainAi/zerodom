@@ -428,10 +428,52 @@ def test_compare_identities_reports_isolation_when_different(identities):
     assert "IDENTICAL" not in out
 
 
+def test_compare_identities_flags_authz_boundary_on_status_split(identities):
+    # Same session, Admin cookie flipped client-side: denied vs authorized.
+    identities["user"] = FakeRequestContext("<p>Unauthorized</p>", status=401)
+    identities["admin"] = FakeRequestContext("<h1>Admin panel</h1>", status=200)
+    out = asyncio.run(mcp_server.zerodom_compare_identities(
+        "https://app/admin", identities=["user", "admin"]))
+    assert "admin authorized (200)" in out
+    assert "user denied (401)" in out
+    assert "broken access control" in out
+
+
 def test_compare_identities_needs_two(identities):
     identities["alice"] = FakeRequestContext("x")
     out = asyncio.run(mcp_server.zerodom_compare_identities("https://app/x", identities=["alice"]))
     assert "at least two identities" in out
+
+
+def test_add_identity_registers_without_attaching_a_browser(identities, monkeypatch):
+    # A registered identity is an HTTP client; registering one must not force a
+    # browser attach (which needs the relay/extension — absent in headless/CI).
+    saved_pw = mcp_server._session.get("pw")
+    mcp_server._session["pw"] = None
+
+    async def no_browser(*a, **k):
+        raise AssertionError("_page() (browser attach) must not be called by add_identity")
+    monkeypatch.setattr(mcp_server, "_page", no_browser)
+
+    class FakePW:
+        class request:
+            @staticmethod
+            async def new_context(**kw):
+                return FakeRequestContext("x")
+        async def stop(self):
+            pass
+
+    class Starter:
+        async def start(self):
+            return FakePW()
+    monkeypatch.setattr("playwright.async_api.async_playwright", lambda: Starter())
+
+    try:
+        out = asyncio.run(mcp_server.zerodom_add_identity("alice", storage_state="alice.json"))
+        assert "alice" in identities
+        assert "registered" in out
+    finally:
+        mcp_server._session["pw"] = saved_pw
 
 
 def test_replay_sends_through_the_named_identity(identities):
