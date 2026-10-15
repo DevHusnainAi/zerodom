@@ -12,6 +12,12 @@ TypeScript port of [ZeroDOM](https://github.com/DevHusnainAi/zerodom)'s core eng
 same interaction graph, same selector guarantees, for the Node/TS agent stack
 (LangChain.js, the Vercel AI SDK, Playwright for Node).
 
+> This package is the **parser** (perception layer). The full security toolkit —
+> the CLI, the MCP server, `scan`, and cross-identity **authorization testing**
+> (`compare` / `sweep` for broken access control and IDOR) and the clearance
+> ladder — lives in the Python package
+> ([`pip install zerodom`](https://pypi.org/project/zerodom/)).
+
 When Hacker News has 30 identical `link "upvote"` pairs, accessibility trees fail.
 ZeroDOM assigns 1:1 deterministic handles, resolving `[45]` to the exact DOM
 element while keeping CSS selectors entirely out of the context window.
