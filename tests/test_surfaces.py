@@ -6,11 +6,23 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 
 from zerodom.cdp_pipe import CDPPipe, _DELIM
 from zerodom.surfaces import evaluate, load_rules
+
+_PACKS = sorted((Path(__file__).resolve().parent.parent / "surfaces").glob("*.yaml"))
+
+
+@pytest.mark.parametrize("pack", _PACKS, ids=lambda p: p.name)
+def test_every_community_rule_pack_loads(pack):
+    """Each surfaces/*.yaml must parse (unknown keys / bad severity raise at load),
+    so a malformed contributed rule fails CI instead of silently never firing."""
+    rules = load_rules(pack)
+    assert rules, f"{pack.name} has no rules"
+    assert all(r.id and r.description for r in rules), pack.name
 
 GRAPH = {
     "metadata": {"url": "http://x", "hidden_fields": [{"name": "session_id"}]},

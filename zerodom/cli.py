@@ -478,6 +478,100 @@ def compare_identities(
     return result
 
 
+_SWEEP_URL_CAP = 200  # ponytail: a flat cap on replayed URLs; raise/make a flag if a real engagement needs more
+
+
+def _is_2xx(status: int) -> bool:
+    return 200 <= status < 300
+
+
+def _sweep_findings(urls, identities, *, proxy=None, insecure=False, headers=None):
+    """Replay each URL under every identity and keep only the deterministic
+    access-control tells — the false-positive discipline is the point:
+
+    - **cross-identity-identical-response** (high): a byte-identical 2xx body under
+      two identities — the cross-tenant IDOR tell on a per-user resource.
+    - **access-boundary-split** (medium): one identity authorized (2xx), another
+      denied (401/403) — broken access control *if* the only difference between the
+      identities is client-controllable (a cookie/header/param). Worded as a lead to
+      confirm, never a confirmed bug, because the sweep can't know that on its own.
+
+    A non-2xx identical body (two identical error pages) is NOT a finding.
+    """
+    from .surfaces import Finding
+
+    findings = []
+    for url in urls:
+        try:
+            result = compare_identities(url, identities, proxy=proxy, insecure=insecure, headers=headers)
+        except (urllib.error.URLError, ValueError, OSError):
+            continue  # one dead URL mid-sweep must not abort the whole run
+        ids = result["identities"]
+        status = {n: ids[n]["status"] for n in ids}
+        flagged = False
+        for a, b in result.get("identical_body_pairs", []):
+            if _is_2xx(status[a]):  # identical error pages aren't a bug
+                findings.append(Finding(
+                    rule="cross-identity-identical-response", severity="high", url=url,
+                    description=(f"Byte-identical response to {a} ({status[a]}) and {b} ({status[b]}) "
+                                 "— cross-tenant IDOR if this is a per-user resource."),
+                ))
+                flagged = True
+        if flagged:
+            continue
+        names = list(ids)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                sa, sb = status[a], status[b]
+                if _is_2xx(sa) and sb in (401, 403):
+                    ok, no = a, b
+                elif _is_2xx(sb) and sa in (401, 403):
+                    ok, no = b, a
+                else:
+                    continue
+                findings.append(Finding(
+                    rule="access-boundary-split", severity="medium", url=url,
+                    description=(f"{ok} authorized ({status[ok]}) where {no} denied ({status[no]}) "
+                                 "— broken access control if the only difference between these "
+                                 "identities is client-controllable (cookie/header/param)."),
+                ))
+    return findings
+
+
+def sweep_identities(start_url, identities, *, crawl_state=None, scope=None, max_pages=40,
+                     deny=_DEFAULT_DENY, proxy=None, insecure=False, headers=None):
+    """The one-command cross-identity sweep: crawl the app as one identity to map
+    its GET surface, then replay every in-scope URL under all identities and flag
+    the access-control tells (`_sweep_findings`). "Two logins in, broken access
+    control out." Read-only throughout — only GET api_calls are replayed (a POST/
+    PUT/DELETE replay would change state) and destructive URLs are dropped.
+
+    # ponytail: v1 is GET-only + exact-URL dedup + a flat cap, no throttle on the
+    # replay loop (crawl paces itself; replay is GET reads). Upgrades when needed:
+    # path-template dedup (/orders/{id}), safe POST replay, --rps for a program's
+    # rate limit.
+    """
+    crawl_state = crawl_state or identities[0][1]  # discover the surface as the first identity
+    in_scope, deny_re = crawl_plan(start_url, scope, deny)
+    urls, seen = [], set()
+    for rec in crawl_site(start_url, scope=scope, max_pages=max_pages, deny=deny, proxy=proxy,
+                          insecure=insecure, headers=headers, storage_state=crawl_state):
+        if rec.get("error") or rec.get("blocked"):
+            continue
+        cands = [rec["url"], *rec.get("links_in_scope", [])]
+        for call in rec.get("api_calls", []):
+            method, _, u = call.partition(" ")
+            if method.upper() == "GET" and u:
+                cands.append(u)
+        for u in cands:
+            if u in seen or not in_scope(u) or deny_re.search(u):
+                continue
+            seen.add(u)
+            urls.append(u)
+    return _sweep_findings(urls[:_SWEEP_URL_CAP], identities,
+                           proxy=proxy, insecure=insecure, headers=headers)
+
+
 def emit_jsonl(graph) -> None:
     """The flattened 1D node array as clean JSONL: one page header line, then one
     node per line. Greppable, streamable, zero pretty-printing overhead."""
@@ -610,7 +704,9 @@ def scan_targets(args) -> int:
         # not a traceback dumped at someone writing their first ruleset.
         sys.exit(f"zerodom: bad rules file: {exc}")
     urls = _stdin_urls() if args.url == "-" else [args.url]
+    as_md = getattr(args, "fmt", "jsonl") == "md"
     any_finding = False
+    collected: list = []  # md buffers (a table needs every row); jsonl streams
     for url in urls:
         target = url
         if "://" not in target and Path(target).exists():
@@ -629,9 +725,33 @@ def scan_targets(args) -> int:
             findings += scan_js(html, final_url)
         for finding in findings:
             any_finding = True
-            sys.stdout.write(json.dumps(finding.to_dict(), ensure_ascii=False) + "\n")
+            if as_md:
+                collected.append(finding)
+            else:
+                sys.stdout.write(json.dumps(finding.to_dict(), ensure_ascii=False) + "\n")
+    if as_md:
+        sys.stdout.write(_findings_markdown(collected))
     sys.stdout.flush()
     return 1 if (any_finding and args.fail_on_finding) else 0
+
+
+def _findings_markdown(findings: list) -> str:
+    """Findings as a GitHub-flavoured Markdown table — pastes straight into a
+    HackerOne report, GitHub issue or Jira ticket. Pipes/newlines in a cell are
+    escaped so one description can't break the table."""
+    if not findings:
+        return "_No findings._\n"
+    def cell(v: object) -> str:
+        return str(v or "").replace("|", "\\|").replace("\n", " ").strip()
+    dicts = [f.to_dict() for f in findings]
+    # Drop columns that are empty for every finding — sweep findings have no
+    # node/label/selector, so keeping those would print dead "| |" columns.
+    cols = [c for c in ("severity", "rule", "description", "label", "selector", "url")
+            if any(cell(d.get(c)) for d in dicts)]
+    rows = ["| " + " | ".join(cols) + " |", "| " + " | ".join(["---"] * len(cols)) + " |"]
+    for d in dicts:
+        rows.append("| " + " | ".join(cell(d.get(c)) for c in cols) + " |")
+    return "\n".join(rows) + "\n"
 
 
 def extension_dir() -> Path:
@@ -742,7 +862,7 @@ def _parse_identities(pairs: list | None) -> list[tuple[str, str]]:
             raise SystemExit(f"zerodom: identity {name!r} state file not found: {path}")
         ids.append((name.strip(), path.strip()))
     if len(ids) < 2:
-        raise SystemExit("zerodom: compare needs at least two --as identities to diff")
+        raise SystemExit("zerodom: needs at least two --as identities to diff")
     return ids
 
 
@@ -866,6 +986,10 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--stealth", action="store_true", help="fetch via a throwaway-profile Chrome over a CDP pipe")
     scan.add_argument("--fail-on-finding", action="store_true", help="exit non-zero if any rule fires (for CI)")
     scan.add_argument("--js", action="store_true", help="also extract leaked secrets and endpoints from inline JS")
+    scan.add_argument(
+        "--format", choices=["jsonl", "md"], default="jsonl", dest="fmt",
+        help="jsonl (default, pipe-friendly) or md (a Markdown table to paste into a report/ticket)",
+    )
     _add_fetch_flags(scan)
 
     crawl = sub.add_parser(
@@ -896,6 +1020,24 @@ def main(argv: list[str] | None = None) -> int:
         help="a named identity and its storage_state file, repeatable — pass at least two",
     )
     _add_fetch_flags(cmp)
+
+    swp = sub.add_parser(
+        "sweep",
+        help="crawl as one identity, then replay every in-scope URL across identities to flag broken access control",
+    )
+    swp.add_argument("url", help="the start URL (crawl stays on its host by default)")
+    swp.add_argument(
+        "--as", metavar="NAME=STATE.json", action="append", dest="identities", required=True,
+        help="a named identity and its storage_state file, repeatable — pass at least two",
+    )
+    swp.add_argument("--scope", metavar="HOSTS", help="extra in-scope hosts, comma-separated")
+    swp.add_argument("--max-pages", type=int, default=40, dest="max_pages", help="crawl page cap (default 40)")
+    swp.add_argument("--deny", default=_DEFAULT_DENY, help="regex of URLs to never follow or replay (logout/delete/…)")
+    swp.add_argument(
+        "--format", choices=["jsonl", "md"], default="jsonl", dest="fmt",
+        help="jsonl (default) or md (a Markdown table for a report/ticket)",
+    )
+    _add_fetch_flags(swp)  # --storage-state here overrides the crawl identity (defaults to the first --as)
 
     insp = sub.add_parser("inspect", help="parse a URL and report token savings")
     insp.add_argument("url")
@@ -949,7 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if (
         argv
-        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "crawl", "extension", "setup", "config", "-h", "--help"}
+        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "sweep", "crawl", "extension", "setup", "config", "-h", "--help"}
         and not argv[0].startswith("-")
     ):
         argv = ["inspect", *argv]
@@ -1016,6 +1158,22 @@ def main(argv: list[str] | None = None) -> int:
                       file=sys.stderr)
                 continue
             sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+        return 0
+
+    if args.command == "sweep":
+        ids = _parse_identities(args.identities)
+        scope = set(h.strip() for h in (args.scope or "").split(",") if h.strip())
+        findings = sweep_identities(
+            args.url, ids, crawl_state=args.storage_state, scope=scope or None,
+            max_pages=args.max_pages, deny=args.deny, proxy=args.proxy,
+            insecure=args.insecure, headers=_parse_headers(args.headers),
+        )
+        if args.fmt == "md":
+            sys.stdout.write(_findings_markdown(findings))
+        else:
+            for f in findings:
+                sys.stdout.write(json.dumps(f.to_dict(), ensure_ascii=False) + "\n")
         sys.stdout.flush()
         return 0
 

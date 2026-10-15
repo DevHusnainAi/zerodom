@@ -6,6 +6,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`zerodom sweep URL --as A=a.json --as B=b.json`** — the one-command
+  cross-identity sweep: crawl the app as one identity to map its GET surface, then
+  replay every in-scope URL under all identities and report the deterministic
+  access-control tells — `cross-identity-identical-response` (byte-identical 2xx
+  body = cross-tenant IDOR) and `access-boundary-split` (2xx vs 401/403 = broken
+  access control if the only difference is client-controllable). Read-only (GET-only
+  replay, destructive URLs dropped); `--format jsonl|md`. Thin orchestration over the
+  existing `crawl` + `compare` primitives; regression-tested.
+- **Community rule packs (`surfaces/`)** — Nuclei-style, PR-able YAML detection
+  packs (`secrets.yaml`, `admin-surfaces.yaml`) loadable via `--rules`, with a
+  "write a detection in 5 lines" guide (`surfaces/README.md`, `CONTRIBUTING.md`).
+  `tests/test_surfaces.py` loads every pack so a malformed rule fails CI.
+- **`zerodom scan --format md`** — emit findings as a GitHub-flavoured Markdown
+  table (pipes/newlines in a cell escaped) that pastes straight into a HackerOne
+  report, GitHub issue or Jira ticket. Default stays `jsonl` (pipe-friendly).
+
+### Docs
+
+- **`proof/sweep.gif`** — a scripted (vhs) terminal demo of `zerodom sweep` catching
+  broken access control with two identities, reproducible from a local fixture
+  (`proof/sweep.tape` + `proof/sweep_demo/`); wired into both READMEs.
+- **Layered hero + "How it compares" table** across both READMEs: lead with
+  deterministic / local / zero-egress / token-lean, with cross-identity
+  authorization testing as the flagship use-case ("you confirm the bug," never
+  "AI finds bugs"). Pre-empts the real-Chrome/CDP security objection up front.
+- **Interception proxies (Burp / Caido / ZAP)** — a dedicated section making the
+  existing `--proxy` story discoverable: it's a standard upstream proxy, so
+  ZeroDOM's traffic shows up in whichever tool you already hunt in, no plugin
+  needed.
+
 ## [0.1.0] — 2026-10-14
 
 The release leads with the challenge-clearance ladder — walls are cleared, not

@@ -4,12 +4,23 @@
 
 [![ZeroDOM MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/DevHusnainAi/zerodom/badges/score.svg)](https://glama.ai/mcp/servers/DevHusnainAi/zerodom)
 
-### The deterministic attack-surface perception layer for AI security agents.
+### Deterministic, local, token-lean DOM perception for AI security agents — and the only one that does cross-identity authorization testing.
 
 ZeroDOM turns a live, logged-in page into a short numbered list of everything an agent
-can act on, so the agent's context goes on reasoning about access control, not parsing
-HTML. No LLM in the parse; you confirm the bug. (Proof: median 98.9% fewer tokens than
-raw HTML, 99.00% of 10,756 selectors across 111 sites resolve to exactly one element.)
+can act on, each id resolving to exactly one element. The CSS selectors stay server-side
+and **never enter the model's context** (~53–96% fewer tokens than Playwright MCP's
+snapshot), so the agent reasons about access control, not parsing HTML. No LLM in the parse.
+
+**Flagship use-case — broken access control.** Register two logged-in identities, replay a
+request as each, and compare: a byte-identical response or a 2xx-vs-401 split is the
+cross-tenant IDOR tell. *Autorize for AI agents* — deterministic, local, MCP-native. ZeroDOM
+surfaces the tell and hands you a diff to review; **you confirm the bug** — deterministic
+replay *proves*, it doesn't guess. (Proof: median 98.9% fewer tokens than raw HTML; 99.00%
+of 10,756 selectors across 111 sites resolve to exactly one element.)
+
+![An AI agent driving ZeroDOM compares two identities against /admin, catches the 200-vs-401 split, and flags authorization enforced by a client-controllable cookie.](https://raw.githubusercontent.com/DevHusnainAi/zerodom/main/proof/hunt.gif)
+
+![zerodom sweep: one command crawls as one identity and replays every in-scope URL across two identities, reporting an access-boundary-split — admin authorized (200) where user denied (401).](https://raw.githubusercontent.com/DevHusnainAi/zerodom/main/proof/sweep.gif)
 
 ZeroDOM reduces a page to what can be acted on (the buttons, inputs and links),
 each with an id that resolves to exactly one element:

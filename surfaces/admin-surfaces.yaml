@@ -1,0 +1,54 @@
+# ZeroDOM community rule pack — admin / internal / debug surfaces linked from a page.
+# Deterministic: flags a LINK the parser already found, never sends a request.
+#
+#   zerodom scan <url> --rules surfaces/admin-surfaces.yaml
+#
+# Match-key reference: the header of zerodom/surfaces.yaml. Unknown key = load error.
+rules:
+  - id: admin-panel-link
+    severity: medium
+    description: Link into an /admin surface reachable from this page.
+    match:
+      href_regex: "/admin(/|$|\\?)"
+
+  - id: debug-endpoint-link
+    severity: medium
+    description: Link into a debug / trace endpoint (debug, phpinfo, trace).
+    match:
+      href_regex: "/(debug|_debug|__debug__|trace|phpinfo)(/|$|\\?)"
+
+  - id: spring-actuator-link
+    severity: medium
+    description: Link to a Spring Boot actuator endpoint (often unauthenticated env/heapdump).
+    match:
+      href_regex: "/actuator(/|$|\\?)"
+
+  - id: api-docs-link
+    severity: low
+    description: Link to an API-docs / OpenAPI surface (swagger, redoc, api-docs).
+    match:
+      href_regex: "/(swagger|swagger-ui|api-docs|openapi\\.json|redoc)(/|$|\\?)"
+
+  - id: graphql-endpoint-link
+    severity: low
+    description: Link to a GraphQL endpoint — check whether introspection is open.
+    match:
+      href_regex: "/graphql(/|$|\\?)"
+
+  - id: git-exposure-link
+    severity: high
+    description: Link into an exposed .git directory.
+    match:
+      href_regex: "/\\.git(/|$)"
+
+  - id: dotenv-exposure-link
+    severity: high
+    description: Link to an exposed .env file.
+    match:
+      href_regex: "/\\.env(/|$|\\?)"
+
+  - id: internal-host-link
+    severity: medium
+    description: Link pointing at an internal/loopback host — a leaked internal URL or SSRF pivot.
+    match:
+      href_regex: "//(localhost|127\\.0\\.0\\.1|10\\.|192\\.168\\.|169\\.254\\.)"

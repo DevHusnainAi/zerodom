@@ -37,6 +37,33 @@ is not a failure — but please install it before submitting.
 - **Comments explain *why*, not *what*.** The code says what it does. The
   comment should say what would break if it were written the obvious way.
 
+## Contributing a detection rule (the easiest, most-wanted PR)
+
+`zerodom scan` runs deterministic YAML rules over the parsed graph. Adding one is
+the lowest-friction way to contribute, and it's where the project compounds — a
+rule you write, every user runs. A rule is five lines:
+
+```yaml
+rules:
+  - id: spring-actuator-link
+    severity: medium      # low | medium | high
+    description: Link to a Spring Boot actuator endpoint (often unauthenticated env/heapdump).
+    match:
+      href_regex: "/actuator(/|$|\\?)"
+```
+
+Add it to a pack in [`surfaces/`](surfaces/) (or start a new `surfaces/<name>.yaml`);
+the match-key reference and the full guide are in [`surfaces/README.md`](surfaces/README.md).
+Two habits that get a rule merged:
+
+- **Deterministic only.** A rule matches what the parser already found (a link,
+  an input, a prefilled value). It never sends a request — `yaml.safe_load` in,
+  `re.search` out, nothing is evaluated.
+- **Low false positives beat coverage.** One rule that cries wolf gets the whole
+  pack distrusted — the exact credibility problem heuristic authz tools have. A
+  specific regex over a broad one. `tests/test_surfaces.py` loads every pack, so a
+  malformed rule fails CI.
+
 ## Changes that need extra evidence
 
 Two files carry disproportionate risk. A change to either must be accompanied by

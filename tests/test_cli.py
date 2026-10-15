@@ -13,6 +13,43 @@ PAGE = """
 """
 
 
+def test_findings_markdown_is_a_valid_table_and_escapes_pipes():
+    """--format md must emit a table a report tool renders — and a description
+    containing a pipe or newline can't break the row structure."""
+    from zerodom.surfaces import Finding
+    md = cli._findings_markdown([
+        Finding(rule="no-csrf", severity="high",
+                description="form posts | no token\nsecond line", url="https://x/y"),
+    ])
+    lines = md.strip().splitlines()
+    assert lines[0].startswith("| severity | rule |")
+    assert set(lines[1].replace(" ", "")) <= {"|", "-"}  # separator row
+    assert "\\|" in lines[2] and "\n" not in lines[2]     # pipe escaped, newline flattened
+    assert cli._findings_markdown([]).strip() == "_No findings._"
+
+
+def test_sweep_findings_flags_idor_and_boundary_not_proper_isolation(monkeypatch):
+    """The cross-identity sweep must flag a byte-identical 2xx response (IDOR) and a
+    2xx-vs-401 boundary, but NOT two different 2xx bodies (proper isolation)."""
+    responses = {
+        ("/admin", "user.json"): (401, "Access denied"),
+        ("/admin", "admin.json"): (200, "<h1>Admin panel</h1>"),
+        ("/account/1", "user.json"): (200, "shared record"),   # identical body under both = IDOR tell
+        ("/account/1", "admin.json"): (200, "shared record"),
+        ("/me", "user.json"): (200, "user-only data"),          # different bodies, both 2xx = no finding
+        ("/me", "admin.json"): (200, "admin-only data"),
+    }
+    monkeypatch.setattr(
+        cli, "_http_fetch",
+        lambda url, proxy, insecure, headers, storage_state: (*responses[(url, storage_state)], url),
+    )
+    ids = [("user", "user.json"), ("admin", "admin.json")]
+    findings = cli._sweep_findings(["/admin", "/account/1", "/me"], ids)
+    assert sorted(f.rule for f in findings) == ["access-boundary-split", "cross-identity-identical-response"]
+    boundary = next(f for f in findings if f.rule == "access-boundary-split")
+    assert boundary.url == "/admin" and "admin authorized (200)" in boundary.description
+
+
 @pytest.fixture
 def served(monkeypatch):
     """Skip the network: the CLI's only job here is what it does with the HTML."""

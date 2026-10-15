@@ -19,24 +19,41 @@
 
 ---
 
-> **The deterministic attack-surface perception layer for AI security agents.**
-> ZeroDOM turns a live, logged-in page into a short numbered list of everything an
-> agent can act on (every form, input, link and button), each id resolving to exactly
-> one element. The markup never enters the model's context, so the agent spends its
-> budget reasoning about who should be allowed to do what, not parsing HTML. No LLM in
-> the parse; you confirm the bug. [Proof ↓](#proof)
+> **Deterministic, local, token-lean DOM perception for AI security agents — and the
+> only one that does cross-identity authorization testing.**
+> ZeroDOM turns a live, logged-in page into a short numbered list of everything an agent
+> can act on, each id resolving to exactly one element. The CSS selectors stay
+> server-side and **never enter the model's context** — ~53–96% fewer tokens than
+> Playwright MCP's accessibility snapshot — so the agent's budget goes on *who should be
+> allowed to do what*, not parsing HTML. No LLM in the parse. [Proof ↓](#proof)
+>
+> **Flagship use-case — broken access control.** Register two logged-in identities,
+> replay a request as each, and compare: a byte-identical response or a 2xx-vs-401 split
+> is the cross-tenant IDOR tell. *Autorize for AI agents* — deterministic, local,
+> MCP-native. ZeroDOM surfaces the tell and hands you a diff you can review; **you confirm
+> the bug.** (No "AI finds bugs" — deterministic replay *proves*, it doesn't guess.)
 
+- **Local, accountless, zero-egress.** No account, no sign-up, no telemetry — the parse and
+  the relay run entirely on your machine, and the only outbound traffic is to the target you
+  point it at. (The one exception is an *opt-in* CAPTCHA solver, off by default and killable
+  with `--no-solver`.) Nothing about your session or findings ever reaches us.
+- **[`zerodom sweep`](#cross-tenant-idor--zerodom-compare) / `compare`** — two identities in,
+  broken-access-control findings out: replay + response-diff, the deterministic IDOR primitive.
 - **Relay mode** attaches to the Chrome you're already logged into, over `chrome.debugger`.
   Cookies, MFA and SSO are already done.
 - **Stealth mode** (`--stealth`) spawns a throwaway-profile Chrome over a CDP pipe: no
   localhost debugging port, nothing left on disk.
 - **[`zerodom scan`](#attack-surface-mapping)** runs a deterministic YAML ruleset over the
-  graph and emits JSONL findings.
+  graph and emits JSONL findings — [community rule packs](surfaces/), Nuclei-style.
 - **Unix pipes.** `-` reads URLs from stdin and `--pipe` streams nodes as JSONL.
-- **Local, accountless, zero-egress.** No account, no sign-up, no telemetry — the parse and
-  the relay run entirely on your machine, and the only outbound traffic is to the target you
-  point it at. (The one exception is an *opt-in* CAPTCHA solver, off by default and killable
-  with `--no-solver`.) Nothing about your session or findings ever reaches us.
+
+> **Driving your *real* Chrome — what it does and doesn't expose.** Relay mode attaches to the
+> browser you're already logged into, but the page's **markup never leaves your machine** and the
+> CSS selectors are **never sent to the model** — only the short node list is. No telemetry, no
+> phone-home. Actions are **read-only by default**: destructive clicks/fills and out-of-scope
+> hosts are refused, and a file-loaded scope is *locked* so an unattended agent can't widen its
+> own bounds. Don't want to touch your real session at all? `--stealth` spawns a throwaway-profile
+> Chrome instead. Full posture: [SECURITY.md](SECURITY.md).
 
 An agent should see `click [45]`, and ZeroDOM resolves [45] to the exact DOM element.
 No hallucinated CSS locators, no drifted pixel coordinates, no ambiguous `(role, name)`
@@ -338,6 +355,20 @@ on. There is no page in this set where ZeroDOM costs more per action.
 
 ## Proof
 
+<div align="center">
+
+<img src="proof/hunt.gif" alt="An AI agent driving ZeroDOM finds a broken-access-control bug: it compares two identities against /admin, sees one authorized (200) where the other is denied (401), and flags authorization enforced by a client-controllable cookie." width="100%">
+
+<sub>An agent hunts a live target through the <code>zerodom_*</code> MCP tools — compares two identities, catches the 200-vs-401 split, and names the access-control bug. <a href="proof/hunt.mp4">Full recording (mp4)</a>.</sub>
+
+<br/><br/>
+
+<img src="proof/sweep.gif" alt="zerodom sweep run with two identities against an app: it crawls as one identity, replays /admin as both, and reports an access-boundary-split finding — admin authorized (200) where user denied (401), broken access control via a client-controllable cookie." width="100%">
+
+<sub>No agent, one command: <code>zerodom sweep URL --as user=… --as admin=…</code> crawls as one identity, replays every in-scope URL across both, and reports the access-control tells as a report-ready table. (Reproduce locally: <a href="proof/sweep.tape">proof/sweep.tape</a> + <a href="proof/sweep_demo/">proof/sweep_demo/</a>.)</sub>
+
+</div>
+
 Numbers you can re-run. Every figure below has a script in `benchmarks/`.
 
 ### vs the snapshot an MCP agent actually gets
@@ -438,6 +469,19 @@ zerodom https://app.example.com --header 'X-Bug-Bounty: h1-1234'            # a 
 zerodom https://app.example.com --render --storage-state cleared.json       # reuse a human-cleared session
 ```
 
+#### Interception proxies (Burp Suite / Caido / OWASP ZAP)
+
+`--proxy` is a standard upstream HTTP/S proxy, so ZeroDOM's traffic shows up in
+whichever interception tool you already hunt in — no plugin to install. Point it
+at the tool's listener (`--insecure` trusts the proxy's own TLS CA). `--proxy`
+works on every path: `inspect`, `scan`, `crawl`, render and stealth.
+
+```bash
+zerodom crawl https://target.com --proxy http://127.0.0.1:8080 --insecure   # Burp Suite  (127.0.0.1:8080)
+zerodom crawl https://target.com --proxy http://127.0.0.1:8080 --insecure   # Caido       (127.0.0.1:8080)
+zerodom crawl https://target.com --proxy http://127.0.0.1:8080 --insecure   # OWASP ZAP   (127.0.0.1:8080)
+```
+
 ### Map the attack surface — `zerodom crawl`
 
 Deep, authenticated, read-only recon: it walks a rendered app (real JS SPAs
@@ -481,6 +525,27 @@ It also surfaces privilege differences (`only_alice` / `only_bob` list the
 actionable nodes each identity sees that the other doesn't — e.g. an `Admin`
 link). Emits one JSON object per URL; takes the same `--proxy`/`--header` options.
 
+#### Two logins in, broken access control out — `zerodom sweep`
+
+`compare` tests one URL. **`sweep` does the whole app in one command:** it crawls as one
+identity to map the GET surface (pages + the API calls the JS fires), then replays every
+in-scope URL under *all* your identities and reports only the deterministic tells.
+
+```bash
+zerodom sweep https://app.example.com --as user=user.json --as admin=admin.json --format md
+```
+
+- **`cross-identity-identical-response`** (high) — a byte-identical 2xx body under two
+  identities: the cross-tenant IDOR tell on a per-user resource.
+- **`access-boundary-split`** (medium) — one identity authorized (2xx), another denied
+  (401/403): broken access control *if* the only difference between the identities is
+  client-controllable (a cookie/header/param) — a lead to confirm, not a confirmed bug.
+
+Read-only throughout: only GET calls are replayed (a POST/PUT/DELETE replay would change
+state) and destructive URLs are dropped (`--deny`). `--format md` emits a report table; the
+default is JSONL. This is the "point it at an app with two logins and it finds the broken
+access control" pass — the primitives exist elsewhere; packaging them into one command doesn't.
+
 **Challenge / CAPTCHA pages.** ZeroDOM detects Cloudflare, Turnstile, reCAPTCHA
 and hCaptcha, then climbs them with a scope-gated clearance ladder: reuse a
 carried `cf_clearance` session, retry over the `--stealth` transport (whose
@@ -515,16 +580,20 @@ admin/internal/debug surfaces, and sensitive-looking inputs. Rules are fixed mat
 keys, not an expression language, so nothing in a rules file gets evaluated.
 
 ```bash
-cat targets.txt | httpx -silent | zerodom scan -
-cat targets.txt | zerodom scan - --rules my-rules.yaml --fail-on-finding   # CI gate
+subfinder -d example.com | httpx -silent | zerodom scan -                 # drops into the recon pipeline you already run
+cat targets.txt | zerodom scan - --rules surfaces/admin-surfaces.yaml     # a community rule pack
+cat targets.txt | zerodom scan - --rules my-rules.yaml --fail-on-finding  # CI gate
 zerodom scan https://app.example.com --js                                 # + secrets/endpoints from inline JS
+zerodom scan https://app.example.com --format md                          # a Markdown table for a report/ticket
 ```
 
 `--js` adds a deterministic pass over the page's inline scripts for leaked
 secrets (AWS/Google/Stripe/Slack/GitHub keys, private keys, JWTs — reported
 redacted, never reprinted) and interesting endpoints (`/api`, `/admin`,
-`/internal`, `/graphql`). `scan` also takes the `--proxy` / `--header` /
-`--storage-state` options above.
+`/internal`, `/graphql`). `--format` picks the output: `jsonl` (default — one
+finding per line, for `jq` / scripts / CI) or `md`, a GitHub-flavoured Markdown
+table that pastes straight into a HackerOne report, GitHub issue or Jira ticket.
+`scan` also takes the `--proxy` / `--header` / `--storage-state` options above.
 
 Only scan targets you are authorized to test.
 
@@ -561,6 +630,27 @@ In order, first hit wins: `<label for>` → wrapping `<label>` → `aria-labelle
 own text → `name` / `value` → an image-only control's `<img alt>`.
 
 ---
+
+## How it compares
+
+Honest version: ZeroDOM **complements Burp** (it doesn't replace it) and isn't a general
+browser-automation framework. What it uniquely packages is the two-identity authorization
+method — deterministic, token-lean, and driven by an AI agent or a CLI pipeline.
+
+| | ZeroDOM | Playwright MCP | browser-use | Burp + Autorize |
+|---|:---:|:---:|:---:|:---:|
+| Page sent to the model | numbered graph, selectors server-side (**~53–96% fewer tokens**) | full a11y snapshot (50KB–540KB) | a11y/DOM, LLM every step | — (human GUI) |
+| Deterministic, no LLM in the parse | ✅ | ✅ | ❌ plans each step | ✅ |
+| Drives your real logged-in Chrome | ✅ relay | partial (CDP) | ✅ | ✅ (proxy) |
+| Cross-identity authz / IDOR, native | ✅ `compare`/`sweep` | ❌ | ❌ | ✅ (heuristic, Burp-bound GUI) |
+| Local · accountless · zero-egress | ✅ | ✅ | depends on the LLM | ✅ |
+| Agent / MCP-native | ✅ | ✅ | ✅ | ❌ |
+| Community YAML detection rules | ✅ Nuclei-style | ❌ | ❌ | — |
+
+Why not just Autorize? It's the benchmark — but it's Burp-GUI-bound, heuristic (its own README
+notes false positives / an "Is enforced???" state), and has no agent or pipeline interface.
+ZeroDOM brings the same replay-and-compare method to an AI agent and a scriptable CLI, as a
+reviewable diff.
 
 ## Core differentiators
 

@@ -23,7 +23,7 @@ uv run playwright install chromium   # required once for browser-backed tests/fe
 uv run python benchmarks/benchmark_tokens.py   # token-savings report (tiktoken, cl100k_base)
 uv build                             # wheel + sdist into dist/
 
-zerodom <url>                        # = `zerodom inspect <url>`; also audit/relay/scan/crawl/compare/extension/setup
+zerodom <url>                        # = `zerodom inspect <url>`; also audit/relay/scan/crawl/compare/sweep/extension/setup
 zerodom setup                        # guided first-run: Chromium check, extension path, MCP config, relay
 zerodom relay                        # WS bridge on :8765 for the Chrome extension
 zerodom inspect <url> --pipe         # JSONL node stream to stdout (one node per line)
@@ -153,6 +153,9 @@ first — for the FR-numbered ones it states the design constraint.
   in, `re.search` out, nothing to sandbox because nothing is evaluated. Unknown
   match keys are a load-time error, not a silent no-op. Complements `audit.py`:
   that checks selectors a human wrote, this checks the surface the parser found.
+  The bundled default is `zerodom/surfaces.yaml`; repo-root `surfaces/*.yaml` are
+  community rule packs (Nuclei-style, `--rules`-loadable, PR-able) and
+  `tests/test_surfaces.py` loads every one so a malformed contributed rule fails CI.
 - **`jsintel.py`** — `zerodom scan --js`. Deterministic regex over a page's inline
   `<script>` blocks + markup for leaked secrets (AWS/Google/Stripe/Slack/GitHub
   keys, private keys, JWTs — matched value redacted in the finding so the log
@@ -193,7 +196,7 @@ first — for the FR-numbered ones it states the design constraint.
   reports `ok`/`dead`/`ambiguous`/`invalid` — the same "matches more than one element"
   failure mode `_selector()` in `parser.py` is built to avoid, but for selectors a human
   already wrote.
-- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `setup` / `extension` (prints the unpacked
+- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `sweep` / `setup` / `extension` (prints the unpacked
   extension's path; the wheel bundles `extension/` as `zerodom/extension` via hatch `force-include`,
   and each `v*` release also attaches a zip + sha256) (entry point `zerodom`; a bare
   first arg that isn't a subcommand is rewritten to `inspect`). `capture()` shares one
@@ -210,6 +213,13 @@ first — for the FR-numbered ones it states the design constraint.
   identities is the cross-tenant IDOR tell; `only_<name>` lists the actionable
   nodes each identity sees that the other doesn't. `_http_fetch` returns the
   status (403-vs-200 is the point) where `fetch` drops it.
+  `sweep_identities()` (`zerodom sweep URL --as N=state.json …`) is the one-command
+  sweep built *on top of* `crawl_site` + `compare_identities`: crawl as one identity to
+  collect in-scope + GET-only `api_calls` URLs, then replay each across all identities and
+  keep only the deterministic tells (`_sweep_findings`): `cross-identity-identical-response`
+  (byte-identical 2xx body) and `access-boundary-split` (2xx vs 401/403). Read-only (GET
+  only; `--deny` URLs dropped), `# ponytail:` v1 = exact-URL dedup + flat cap + no replay
+  throttle. Emits `surfaces.Finding`s through the shared `_findings_markdown`/JSONL path.
   `crawl_site()` (`zerodom crawl URL`) is the recon crawler: a rendered BFS over
   same-scope routes that records each page's forms, in-scope links and fired
   XHR/fetch API calls (via `page.on("request")`), read-only (skips a `--deny` regex of
