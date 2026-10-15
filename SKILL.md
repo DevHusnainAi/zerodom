@@ -30,8 +30,10 @@ the list an agent reads before it decides what to click.
   manage sessions) — that's [browser-use](https://github.com/browser-use/browser-use),
   [Stagehand](https://github.com/browserbase/stagehand), or [Skyvern](https://github.com/Skyvern-AI/skyvern).
   ZeroDOM composes with any of these as the perception step; it isn't a replacement
-  for them. (Clearing bot walls/CAPTCHAs ZeroDOM *does* do itself — see the
-  clearance ladder in the README.)
+  for them. (Bot walls are the exception: ZeroDOM's clearance ladder reuses a
+  cleared session, out-waits a self-resolving interstitial, or hands off to the
+  operator. It never solves a CAPTCHA itself; a third-party solver runs only if
+  the operator opts in. See the clearance ladder in the README.)
 - The page has fewer than ~50 interactive elements — the token savings don't
   matter enough to justify adding a dependency.
 

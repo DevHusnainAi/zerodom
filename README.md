@@ -241,17 +241,34 @@ uvx --from zerodom playwright install chromium
 | `zerodom_close_tab(tab_id=None)` | close a tab (the active one by default) |
 | `zerodom_screenshot(path=None)` | full-page screenshot of the active tab, saved to disk |
 | `zerodom_set_viewport(width, height)` | resize the viewport for responsive-design testing |
+| `zerodom_resize_window(width, height)` | resize the real browser window (not just the page's viewport) |
 | `zerodom_get_styles(node_id)` | curated computed styles + box model for a node — design/CSS review |
 | `zerodom_network_log(clear=False)` | recent requests/responses the active tab has made |
 | `zerodom_status()` | diagnose the connection: relay/extension reachability, active tab, recent relay log |
 | `zerodom_eval_js(code)` ⚠️ | run arbitrary JS in the real page, return the result |
 | `zerodom_get_cookies()` ⚠️ | list cookies for the active tab, **including `httpOnly` ones** |
+| `zerodom_get_storage()` | list the `localStorage` / `sessionStorage` keys the active page holds |
+| `zerodom_hidden_fields()` | list the page's `<input type="hidden">` fields (CSRF tokens, per-view payload) |
+| `zerodom_crawl(url, max_pages=10, scope=None, deny=None)` | BFS-walk in-scope routes; one JSONL record per page (forms, links, fired API calls) |
+| `zerodom_set_scope(hosts, deny=None, max_rps=None)` | constrain the hunt to authorized hosts — enforced in code, not on trust |
+| `zerodom_add_identity(name, storage_state=None, header=None)` | register a second identity (e.g. user B) for cross-tenant testing |
+| `zerodom_replay(url, method="GET", body=None, header=None, as_identity=None)` | replay a request under a chosen identity — Burp Repeater for the agent |
+| `zerodom_compare_identities(url, method="GET", body=None, identities=None)` | fetch one URL as each identity and diff — flags identical responses and 2xx-vs-401/403 splits |
+| `zerodom_create_group(name, color="cyan")` | create a named, colored tab group the agent is sandboxed to; persists across a browser restart |
+| `zerodom_list_groups()` | list the agent's groups (no groups = sandbox off) |
+| `zerodom_use_group(name)` | make a group the target for new tabs |
+| `zerodom_close_group(name)` | ungroup its tabs and forget it; closing the last one turns the sandbox off |
+| `zerodom_adopt_group(name)` | hand a tab group you arranged yourself (by title) to the agent |
+| `zerodom_restore_groups()` | after a browser restart, reopen each group's remembered tabs |
+
+Tab groups are relay-mode only: once the agent owns a group, the extension refuses to attach to
+any tab outside its groups.
 
 **In an attached (real-browser) session, zerodom locks the tab while it's driving.** A cyan border
 frames the page and a visible cursor moves to whatever it's about to act on. Real clicks/scrolling
 from you are blocked at the browser level (`Input.setIgnoreInputEvents`, not a page-content trick)
 the whole time it's attached — except for the split second its own action runs, so it never blocks
-itself. A small "zerodom is driving this tab" banner marks why. See `docs/DECISIONS.md` D15.
+itself. A small "zerodom is driving this tab" banner marks why.
 
 ⚠️ **`zerodom_eval_js` and `zerodom_get_cookies` are real power, not a toy.** Both go through
 the same `chrome.debugger` connection every other tool already uses — no extra Chrome permission
@@ -260,7 +277,7 @@ cookies and run arbitrary code in their authenticated browser. That's expected a
 developer driving their own agent against their own browser (it's exactly what makes
 session-hijacking-style pentesting possible), and a real risk if `zerodom-mcp` is ever reachable
 by an untrusted or prompt-injectable MCP client. Nothing here gates that — it's a documented
-boundary, not an enforced one. See `docs/DECISIONS.md` D14.
+boundary, not an enforced one.
 
 **An agent loop shouldn't re-read the page it already has.** Two tools exist so it
 doesn't have to. `zerodom_find` answers "where's the dispatch button?" with one

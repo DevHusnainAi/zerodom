@@ -6,39 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-
-- **`zerodom sweep URL --as A=a.json --as B=b.json`** — the one-command
-  cross-identity sweep: crawl the app as one identity to map its GET surface, then
-  replay every in-scope URL under all identities and report the deterministic
-  access-control tells — `cross-identity-identical-response` (byte-identical 2xx
-  body = cross-tenant IDOR) and `access-boundary-split` (2xx vs 401/403 = broken
-  access control if the only difference is client-controllable). Read-only (GET-only
-  replay, destructive URLs dropped); `--format jsonl|md`. Thin orchestration over the
-  existing `crawl` + `compare` primitives; regression-tested.
-- **Community rule packs (`surfaces/`)** — Nuclei-style, PR-able YAML detection
-  packs (`secrets.yaml`, `admin-surfaces.yaml`) loadable via `--rules`, with a
-  "write a detection in 5 lines" guide (`surfaces/README.md`, `CONTRIBUTING.md`).
-  `tests/test_surfaces.py` loads every pack so a malformed rule fails CI.
-- **`zerodom scan --format md`** — emit findings as a GitHub-flavoured Markdown
-  table (pipes/newlines in a cell escaped) that pastes straight into a HackerOne
-  report, GitHub issue or Jira ticket. Default stays `jsonl` (pipe-friendly).
-
-### Docs
-
-- **`proof/sweep.gif`** — a scripted (vhs) terminal demo of `zerodom sweep` catching
-  broken access control with two identities, reproducible from a local fixture
-  (`proof/sweep.tape` + `proof/sweep_demo/`); wired into both READMEs.
-- **Layered hero + "How it compares" table** across both READMEs: lead with
-  deterministic / local / zero-egress / token-lean, with cross-identity
-  authorization testing as the flagship use-case ("you confirm the bug," never
-  "AI finds bugs"). Pre-empts the real-Chrome/CDP security objection up front.
-- **Interception proxies (Burp / Caido / ZAP)** — a dedicated section making the
-  existing `--proxy` story discoverable: it's a standard upstream proxy, so
-  ZeroDOM's traffic shows up in whichever tool you already hunt in, no plugin
-  needed.
-
-## [0.1.0] — 2026-10-14
+## [0.1.0] — 2026-10-15
 
 The release leads with the challenge-clearance ladder — walls are cleared, not
 handed off — plus deep authenticated recon over the operator's real Chrome,
@@ -48,7 +16,7 @@ hands-off release window. No breaking API changes (still pre-1.0).
 ### Added
 
 - **Challenge-clearance ladder — walls are now cleared, not handed off.** The
-  old detect-and-hand-off rule is reversed (docs/HYPOTHESIS-ACK-PLAN.md Phase 0).
+  old detect-and-hand-off rule is reversed.
   A four-rung ladder runs at the three navigation choke points (`cli._goto`,
   `mcp_server._goto`, `cdp_pipe.outer_html`): reuse carried `cf_clearance`
   clearance → stealth hygiene on the `--stealth` transport (no more
@@ -97,6 +65,29 @@ hands-off release window. No breaking API changes (still pre-1.0).
   extension path and the `chrome://extensions` steps, emits the MCP config JSON for
   Claude Desktop / Cursor, and reports relay reachability. Print-and-guide, no account,
   no telemetry.
+
+- **`zerodom sweep URL --as A=a.json --as B=b.json`** — the one-command
+  cross-identity sweep: crawl the app as one identity to map its GET surface, then
+  replay every in-scope URL under all identities and report the deterministic
+  access-control tells — `cross-identity-identical-response` (byte-identical 2xx
+  body = cross-tenant IDOR) and `access-boundary-split` (2xx vs 401/403 = broken
+  access control if the only difference is client-controllable). Read-only (GET-only
+  replay, destructive URLs dropped); `--format jsonl|md`. Thin orchestration over the
+  existing `crawl` + `compare` primitives; regression-tested.
+- **Community rule packs (`surfaces/`)** — Nuclei-style, PR-able YAML detection
+  packs (`secrets.yaml`, `admin-surfaces.yaml`) loadable via `--rules`, with a
+  "write a detection in 5 lines" guide (`surfaces/README.md`, `CONTRIBUTING.md`).
+  `tests/test_surfaces.py` loads every pack so a malformed rule fails CI.
+- **`zerodom scan --format md`** — emit findings as a GitHub-flavoured Markdown
+  table (pipes/newlines in a cell escaped) that pastes straight into a HackerOne
+  report, GitHub issue or Jira ticket. Default stays `jsonl` (pipe-friendly).
+- **Named, sandboxed tab groups (relay mode).** Six MCP tools —
+  `zerodom_create_group` / `list_groups` / `use_group` / `close_group` /
+  `adopt_group` / `restore_groups` — give the agent named, colored Chrome tab
+  groups that persist across a browser restart (groups and their tabs). Once the
+  agent owns a group, the extension refuses to attach to any tab outside its
+  groups; no groups = sandbox off (backward compatible). The ops ride a dedicated
+  `/control` WebSocket on the relay, since they aren't CDP.
 
 ### Changed
 
@@ -154,6 +145,17 @@ hands-off release window. No breaking API changes (still pre-1.0).
   the egress posture honestly (zero telemetry; outbound only to your target and, if
   opted in, the solver provider — `--no-solver` kills it); `CONTRIBUTING.md`
   formalizes DCO sign-off.
+- **`proof/sweep.gif`** — a scripted (vhs) terminal demo of `zerodom sweep` catching
+  broken access control with two identities, reproducible from a local fixture
+  (`proof/sweep.tape` + `proof/sweep_demo/`); wired into both READMEs.
+- **Layered hero + "How it compares" table** across both READMEs: lead with
+  deterministic / local / zero-egress / token-lean, with cross-identity
+  authorization testing as the flagship use-case ("you confirm the bug," never
+  "AI finds bugs"). Pre-empts the real-Chrome/CDP security objection up front.
+- **Interception proxies (Burp / Caido / ZAP)** — a dedicated section making the
+  existing `--proxy` story discoverable: it's a standard upstream proxy, so
+  ZeroDOM's traffic shows up in whichever tool you already hunt in, no plugin
+  needed.
 
 ## [0.0.9] — 2026-09-24
 

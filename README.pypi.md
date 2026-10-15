@@ -18,9 +18,9 @@ surfaces the tell and hands you a diff to review; **you confirm the bug** — de
 replay *proves*, it doesn't guess. (Proof: median 98.9% fewer tokens than raw HTML; 99.00%
 of 10,756 selectors across 111 sites resolve to exactly one element.)
 
-![An AI agent driving ZeroDOM compares two identities against /admin, catches the 200-vs-401 split, and flags authorization enforced by a client-controllable cookie.](https://raw.githubusercontent.com/DevHusnainAi/zerodom/main/proof/hunt.gif)
+![An AI agent driving ZeroDOM compares two identities against /admin, catches the 200-vs-401 split, and flags authorization enforced by a client-controllable cookie.](https://raw.githubusercontent.com/DevHusnainAi/zerodom/v0.1.0/proof/hunt.gif)
 
-![zerodom sweep: one command crawls as one identity and replays every in-scope URL across two identities, reporting an access-boundary-split — admin authorized (200) where user denied (401).](https://raw.githubusercontent.com/DevHusnainAi/zerodom/main/proof/sweep.gif)
+![zerodom sweep: one command crawls as one identity and replays every in-scope URL across two identities, reporting an access-boundary-split — admin authorized (200) where user denied (401).](https://raw.githubusercontent.com/DevHusnainAi/zerodom/v0.1.0/proof/sweep.gif)
 
 ZeroDOM reduces a page to what can be acted on (the buttons, inputs and links),
 each with an id that resolves to exactly one element:

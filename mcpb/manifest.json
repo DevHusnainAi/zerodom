@@ -44,6 +44,126 @@
     {
       "name": "zerodom_fill_node",
       "description": "Type text into a node by id and return a diff of what changed — e.g. a validation error appearing or an autocomplete list opening."
+    },
+    {
+      "name": "zerodom_hidden_fields",
+      "description": "List hidden `<input type=\"hidden\">` fields on the current page."
+    },
+    {
+      "name": "zerodom_crawl",
+      "description": "BFS-walk an app's in-scope routes and return one JSONL record per page: final URL, forms, in-scope links, the XHR/fetch API calls it fired, hidden fields, and `blocked` when the route is a challenge interstitial."
+    },
+    {
+      "name": "zerodom_hover",
+      "description": "Hover over a node and return what changed on the page."
+    },
+    {
+      "name": "zerodom_press_key",
+      "description": "Press a key while a node is focused and return what changed."
+    },
+    {
+      "name": "zerodom_upload_file",
+      "description": "Set a file input's value to a local file path and return what changed."
+    },
+    {
+      "name": "zerodom_drag",
+      "description": "Drag source onto target and return what changed."
+    },
+    {
+      "name": "zerodom_scroll",
+      "description": "Scroll the page and return what's newly visible."
+    },
+    {
+      "name": "zerodom_new_tab",
+      "description": "Open a new tab and make it the active one — every other tool (read, click, fill, scroll) then acts on it until you zerodom_switch_tab away."
+    },
+    {
+      "name": "zerodom_list_tabs",
+      "description": "List every open tab, marking the active one with `*`."
+    },
+    {
+      "name": "zerodom_switch_tab",
+      "description": "Make another open tab active and return its interaction graph."
+    },
+    {
+      "name": "zerodom_close_tab",
+      "description": "Close a tab — the active one by default."
+    },
+    {
+      "name": "zerodom_screenshot",
+      "description": "Full-page screenshot of the active tab, saved to disk; returns the path."
+    },
+    {
+      "name": "zerodom_set_viewport",
+      "description": "Resize the active tab's *viewport* for responsive-design testing."
+    },
+    {
+      "name": "zerodom_resize_window",
+      "description": "Resize the real browser window (not just the page's viewport)."
+    },
+    {
+      "name": "zerodom_get_styles",
+      "description": "Computed styles and box-model dimensions for a node — for design/CSS review, not just interaction."
+    },
+    {
+      "name": "zerodom_get_cookies",
+      "description": "List cookies visible to the active tab's origin."
+    },
+    {
+      "name": "zerodom_get_storage",
+      "description": "List localStorage and sessionStorage keys the active tab's page holds."
+    },
+    {
+      "name": "zerodom_eval_js",
+      "description": "Run arbitrary JavaScript in the active tab's real page context and return the result — Runtime.evaluate over the same chrome.debugger connection everything else here uses, the same power as typing into DevTools' own console."
+    },
+    {
+      "name": "zerodom_network_log",
+      "description": "Requests/responses the active tab has made since it opened (or since this was last called with clear=True) — method or status, and URL."
+    },
+    {
+      "name": "zerodom_set_scope",
+      "description": "Constrain the hunt to authorized targets — enforced in code, not on trust."
+    },
+    {
+      "name": "zerodom_create_group",
+      "description": "Create a named, colored tab group the agent is sandboxed to, and make it the target for new tabs."
+    },
+    {
+      "name": "zerodom_list_groups",
+      "description": "List the agent's named tab groups (its sandbox), as remembered across restarts."
+    },
+    {
+      "name": "zerodom_use_group",
+      "description": "Make `name` the active group — subsequent new tabs join it."
+    },
+    {
+      "name": "zerodom_close_group",
+      "description": "Close an agent group: ungroup its tabs and forget it."
+    },
+    {
+      "name": "zerodom_adopt_group",
+      "description": "Hand an existing Chrome tab group (that you created yourself, by title) to the agent: it joins the agent's sandbox and becomes the active group."
+    },
+    {
+      "name": "zerodom_restore_groups",
+      "description": "Reopen the remembered tabs of every agent group (best-effort) after a browser restart, re-grouping them under their saved name and color."
+    },
+    {
+      "name": "zerodom_add_identity",
+      "description": "Register a second identity (e.g. user B) for cross-tenant IDOR testing."
+    },
+    {
+      "name": "zerodom_replay",
+      "description": "Replay an HTTP request under a chosen identity — Burp Repeater for the agent."
+    },
+    {
+      "name": "zerodom_compare_identities",
+      "description": "Fetch one URL as each identity and diff — the cross-tenant IDOR check."
+    },
+    {
+      "name": "zerodom_status",
+      "description": "Diagnose the current connection: relay reachability, whether a browser session is attached yet, which tab is active, and the tail of the relay's own log — the single-call version of the manual WebSocket-probing and log- tailing this project's own debugging needed before this tool existed."
     }
   ],
   "compatibility": {

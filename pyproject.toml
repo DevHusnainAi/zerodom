@@ -80,4 +80,4 @@ packages = ["zerodom"]
 [tool.hatch.build.targets.sdist]
 # The README points at GitHub-hosted images, so shipping 1.5MB of PNGs in every
 # source download buys nothing.
-exclude = ["assets", "demo", ".github"]
+exclude = ["assets", "demo", "proof", ".github"]
