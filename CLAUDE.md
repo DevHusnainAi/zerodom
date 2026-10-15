@@ -22,8 +22,9 @@ uv run pytest -k test_name           # single test
 uv run playwright install chromium   # required once for browser-backed tests/features
 uv run python benchmarks/benchmark_tokens.py   # token-savings report (tiktoken, cl100k_base)
 uv build                             # wheel + sdist into dist/
+# no linter/formatter/type-checker is configured (no ruff/mypy in pyproject or CI)
 
-zerodom <url>                        # = `zerodom inspect <url>`; also audit/relay/scan/crawl/compare/sweep/extension/setup
+zerodom <url>                        # = `zerodom inspect <url>`; also audit/relay/scan/crawl/compare/sweep/extension/setup/config
 zerodom setup                        # guided first-run: Chromium check, extension path, MCP config, relay
 zerodom relay                        # WS bridge on :8765 for the Chrome extension
 zerodom inspect <url> --pipe         # JSONL node stream to stdout (one node per line)
@@ -196,7 +197,7 @@ first — for the FR-numbered ones it states the design constraint.
   reports `ok`/`dead`/`ambiguous`/`invalid` — the same "matches more than one element"
   failure mode `_selector()` in `parser.py` is built to avoid, but for selectors a human
   already wrote.
-- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `sweep` / `setup` / `extension` (prints the unpacked
+- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `sweep` / `setup` / `config` / `extension` (prints the unpacked
   extension's path; the wheel bundles `extension/` as `zerodom/extension` via hatch `force-include`,
   and each `v*` release also attaches a zip + sha256) (entry point `zerodom`; a bare
   first arg that isn't a subcommand is rewritten to `inspect`). `capture()` shares one
