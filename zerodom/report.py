@@ -202,21 +202,10 @@ _TEMPLATE = Template("""<!doctype html>
   .empty { padding:24px; color:var(--dim); }
 </style>
 <header>
-  <svg class="logo" viewBox="0 0 64 64" width="22" height="22" aria-hidden="true">
-    <g fill="currentColor" opacity=".45">
-      <circle cx="10" cy="10" r="3"/><circle cx="22" cy="10" r="3"/>
-      <circle cx="34" cy="10" r="3"/><circle cx="46" cy="10" r="3"/>
-      <circle cx="10" cy="22" r="3"/><circle cx="22" cy="22" r="3"/>
-      <circle cx="34" cy="22" r="3"/><circle cx="10" cy="34" r="3"/>
-      <circle cx="22" cy="34" r="3"/><circle cx="10" cy="46" r="3"/>
-    </g>
-    <g fill="none" stroke="$color" stroke-width="3" stroke-linecap="round">
-      <path d="M34 46 L52 34 M34 46 L52 56"/>
-    </g>
-    <g fill="$color">
-      <circle cx="34" cy="46" r="5.5"/><circle cx="53" cy="33" r="4.5"/>
-      <circle cx="53" cy="57" r="4.5"/>
-    </g>
+  <!-- The slashed-zero brand mark (assets/logo.svg), themed to the report accent. -->
+  <svg class="logo" viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+    <ellipse cx="16" cy="16" rx="7.2" ry="8.4" fill="none" stroke="$color" stroke-width="2.6"/>
+    <path d="M10 22 L22 10" fill="none" stroke="$color" stroke-width="2.6" stroke-linecap="round"/>
   </svg>
   <b>$title</b><span class="url">$url</span>
   <span class="stats">
