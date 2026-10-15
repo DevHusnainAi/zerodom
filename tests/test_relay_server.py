@@ -243,3 +243,47 @@ def test_a_non_browser_client_with_no_origin_header_still_connects():
                     assert resp["result"]["product"] == "Chrome/Extension-Bridge"
 
     run(scenario())
+
+
+def test_control_channel_forwards_group_ops_to_the_extension():
+    """The /control side channel forwards an op to the extension as a
+    zerodom.<op> command and returns its result — the path the tab-group tools
+    use, since Playwright drops non-schema method names off /cdp."""
+    async def extension_side(server, ready):
+        async with websockets.connect(server.extension_endpoint()) as ext:
+            await ext.send(json.dumps({"method": "extension.initialized", "params": []}))
+            ready.set()
+            async for raw in ext:
+                msg = json.loads(raw)
+                if msg["method"] == "zerodom.createGroup":
+                    name = msg["params"][0]["name"]
+                    await ext.send(json.dumps({"id": msg["id"],
+                                               "result": {"name": name, "color": "cyan", "active": True}}))
+
+    async def scenario():
+        async with running_server() as server:
+            ready = asyncio.Event()
+            ext_task = asyncio.create_task(extension_side(server, ready))
+            await asyncio.wait_for(ready.wait(), timeout=2)
+            async with websockets.connect(server.control_endpoint()) as ctl:
+                await ctl.send(json.dumps({"id": 1, "op": "createGroup",
+                                           "args": {"name": "recon", "color": "cyan"}}))
+                reply = await asyncio.wait_for(_recv_json(ctl), timeout=2)
+                assert reply["id"] == 1 and "error" not in reply
+                assert reply["result"]["name"] == "recon"
+            ext_task.cancel()
+
+    run(scenario())
+
+
+def test_control_channel_reports_error_when_extension_absent():
+    """With no extension connected, a control op comes back as a clean error, not
+    a dropped connection."""
+    async def scenario():
+        async with running_server() as server:
+            async with websockets.connect(server.control_endpoint()) as ctl:
+                await ctl.send(json.dumps({"id": 9, "op": "listGroups", "args": {}}))
+                reply = await asyncio.wait_for(_recv_json(ctl), timeout=2)
+                assert reply["id"] == 9 and "extension not connected" in reply["error"]
+
+    run(scenario())

@@ -519,19 +519,13 @@ async def _log_action(page: Any, text: str) -> None:
         pass
 
 
-# Real zerodom logo (assets/logo.svg), inlined as literal <svg> markup, not
-# an <img src="data:..."> -- some real sites (confirmed live on iana.org)
-# set a strict img-src CSP with no `data:` scheme, which silently blocks a
-# data-URI <img> even though the extension injected it. CSP's img-src only
-# governs fetched image *resources*; inline SVG markup is just DOM content,
-# so it renders regardless of the page's own CSP.
-_LOGO_SVG_INLINE = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="14" height="14" '
-    'style="display:block;flex:none;border-radius:3px;">'
-    '<rect width="32" height="32" rx="7" fill="#09090b"/>'
-    '<ellipse cx="16" cy="16" rx="7.2" ry="8.4" fill="none" stroke="#fafafa" stroke-width="2.6"/>'
-    '<path d="M10 22 L22 10" stroke="#fafafa" stroke-width="2.6" stroke-linecap="round"/></svg>'
-)
+# The zerodom logo (the slashed zero) is built as namespaced SVG DOM in the bar
+# injector (createElementNS, see `#zerodom-bar-logo`), not inlined here as an HTML
+# string — an <svg> parsed out of a big innerHTML blob escaped its flex pill and
+# rendered at the page's top-left on real pages. DOM construction lays out normally
+# and is immune to that and to a page's Trusted-Types sanitising. An <img src="data:">
+# is avoided too: a strict img-src CSP with no `data:` scheme (confirmed on iana.org)
+# silently blocks it, where injected DOM renders regardless of the page CSP.
 
 # Purely cosmetic now — the real user-input block is _set_input_ignored()
 # below, at the browser/CDP level, not here. A page-injected pointer-events
@@ -674,7 +668,8 @@ _DRIVING_UI_JS = """() => {
   window.__zerodomSetHTML(banner,
     '<span style="display:flex;align-items:center;gap:6px;flex:none;margin:6px 0;' +
       'padding:3px 10px;border:1px solid rgba(255,255,255,.14);border-radius:6px;">' +
-      '__LOGO_SVG__' +
+      '<span id="zerodom-bar-logo" style="display:inline-flex;align-items:center;' +
+        'flex:none;width:14px;height:14px;"></span>' +
       '<strong style="color:#e8eaed;font-weight:600;">zerodom</strong>' +
     '</span>' +
     '<span id="zerodom-bar-active" style="display:flex;align-items:center;gap:5px;' +
@@ -702,6 +697,30 @@ _DRIVING_UI_JS = """() => {
       'text-decoration:none;white-space:nowrap;">Documentation</a>'
   );
   document.body.appendChild(banner);
+
+  // The slashed-zero mark, built as real SVG DOM (createElementNS) rather than
+  // inlined in the banner's innerHTML string above — an <svg> parsed out of a
+  // large innerHTML blob was escaping its flex pill and rendering at the page's
+  // top-left corner on real pages. A namespaced DOM node lays out normally and
+  // is immune to that and to any Trusted-Types sanitising of the HTML string.
+  (function () {
+    var slot = document.getElementById('zerodom-bar-logo');
+    if (!slot) return;
+    var NS = 'http://www.w3.org/2000/svg';
+    function el(tag, attrs) {
+      var e = document.createElementNS(NS, tag);
+      for (var k in attrs) e.setAttribute(k, attrs[k]);
+      return e;
+    }
+    var svg = el('svg', { viewBox: '0 0 32 32', width: '14', height: '14' });
+    svg.style.cssText = 'display:block;border-radius:3px;';
+    svg.appendChild(el('rect', { width: '32', height: '32', rx: '7', fill: '#09090b' }));
+    svg.appendChild(el('ellipse', { cx: '16', cy: '16', rx: '7.2', ry: '8.4',
+      fill: 'none', stroke: '#fafafa', 'stroke-width': '2.6' }));
+    svg.appendChild(el('path', { d: 'M10 22 L22 10', stroke: '#fafafa',
+      'stroke-width': '2.6', 'stroke-linecap': 'round' }));
+    slot.appendChild(svg);
+  })();
 
   // ---- Graph sidebar: the popup's Graph tab, rendered on-page. Not a
   // lookalike -- it is literally graph_ui.js, the same file extension/popup.js
@@ -935,7 +954,6 @@ _DRIVING_UI_JS = """() => {
     'transition:left .15s ease,top .15s ease;pointer-events:none;z-index:2147483647;';
   document.body.appendChild(cursor);
 }"""
-_DRIVING_UI_JS = _DRIVING_UI_JS.replace("__LOGO_SVG__", _LOGO_SVG_INLINE)
 
 # The graph browser itself, shared byte-for-byte with the extension popup
 # (see zerodom/graph_ui.js's header, and tests/test_graph_ui_sync.py). Read off
@@ -2248,6 +2266,116 @@ async def zerodom_set_scope(hosts: str, deny: str | None = None, max_rps: float 
     return (f"scope set — in: {allow or 'any'}; deny: /{deny or 'default destructive rules'}/; "
             f"rate: {max_rps or 'unlimited'} req/s. Out-of-scope and destructive actions "
             "will now be refused.")
+
+
+# ─── Tab-group sandbox (named, colored, persistent groups the agent owns) ───
+
+async def _relay_control(op: str, args: dict | None = None) -> Any:
+    """Send a tab-group control op to the relay's /control side channel. These
+    aren't CDP — Playwright's driver drops any method name not in its protocol
+    schema before it reaches /cdp (see relay.py), so group ops ride their own
+    transient WS. Returns the op's result, or raises on its error."""
+    import websockets
+
+    from .relay import DEFAULT_PORT
+    cdp = _cdp_endpoint() or f"ws://127.0.0.1:{DEFAULT_PORT}/cdp/local"
+    url = cdp.replace("/cdp/", "/control/")
+    async with websockets.connect(url, open_timeout=10) as ws:
+        await ws.send(json.dumps({"id": 1, "op": op, "args": args or {}}))
+        reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+    if reply.get("error"):
+        raise RuntimeError(reply["error"])
+    return reply.get("result")
+
+
+@mcp.tool()
+async def zerodom_create_group(name: str, color: str = "cyan") -> str:
+    """Create a named, colored tab group the agent is sandboxed to, and make it the
+    target for new tabs. Persists across a browser restart (stored by the extension).
+
+    Once any agent group exists the agent may ONLY drive tabs inside its groups —
+    attaching to any other tab is refused. `color` is a Chrome tab-group color:
+    grey, blue, red, yellow, green, pink, purple, cyan or orange. Relay mode only
+    (the extension drives your real Chrome)."""
+    try:
+        res = await _relay_control("createGroup", {"name": name, "color": color})
+    except Exception as exc:
+        return f"couldn't create group {name!r}: {exc} — needs relay mode with the extension connected."
+    _session.setdefault("groups", {})[name] = {"color": res.get("color", color)}
+    _session["active_group"] = name
+    return (f"group {name!r} ({res.get('color', color)}) created and active — new tabs join it. "
+            "The agent is now sandboxed to its groups; tabs outside them are refused.")
+
+
+@mcp.tool()
+async def zerodom_list_groups() -> str:
+    """List the agent's named tab groups (its sandbox), as remembered across restarts.
+    No groups → the sandbox is off and the agent can drive any tab."""
+    try:
+        g = await _relay_control("listGroups", {})
+    except Exception as exc:
+        return f"couldn't list groups: {exc}"
+    _session["groups"] = {k: {"color": v.get("color")} for k, v in (g or {}).items()}
+    if not g:
+        return "no agent groups — sandbox off (the agent can drive any tab)."
+    lines = [f"- {name} ({d.get('color', '?')}, {d.get('source', 'agent')}; "
+             f"{len(d.get('tabs', []))} tab(s))" for name, d in g.items()]
+    return "agent groups (sandbox):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def zerodom_use_group(name: str) -> str:
+    """Make `name` the active group — subsequent new tabs join it."""
+    try:
+        await _relay_control("useGroup", {"name": name})
+    except Exception as exc:
+        return f"couldn't switch to group {name!r}: {exc}"
+    _session["active_group"] = name
+    return f"active group is now {name!r} — new tabs will join it."
+
+
+@mcp.tool()
+async def zerodom_close_group(name: str) -> str:
+    """Close an agent group: ungroup its tabs and forget it. If it was the last one,
+    the sandbox turns off (the agent can drive any tab again)."""
+    try:
+        await _relay_control("closeGroup", {"name": name})
+    except Exception as exc:
+        return f"couldn't close group {name!r}: {exc}"
+    _session.get("groups", {}).pop(name, None)
+    if _session.get("active_group") == name:
+        _session["active_group"] = None
+    return f"group {name!r} closed and forgotten."
+
+
+@mcp.tool()
+async def zerodom_adopt_group(name: str) -> str:
+    """Hand an existing Chrome tab group (that you created yourself, by title) to the
+    agent: it joins the agent's sandbox and becomes the active group. Lets you
+    pre-arrange tabs and then scope the agent to exactly them."""
+    try:
+        res = await _relay_control("adoptGroup", {"name": name})
+    except Exception as exc:
+        return f"couldn't adopt group {name!r}: {exc} — make sure a tab group titled {name!r} is open."
+    _session.setdefault("groups", {})[name] = {"color": res.get("color")}
+    _session["active_group"] = name
+    return (f"adopted group {name!r} ({res.get('color')}, {res.get('tabs', 0)} tab(s)) — now active "
+            "and part of the agent's sandbox.")
+
+
+@mcp.tool()
+async def zerodom_restore_groups() -> str:
+    """Reopen the remembered tabs of every agent group (best-effort) after a browser
+    restart, re-grouping them under their saved name and color. A tab whose URL now
+    hits a login wall or is otherwise unreachable is skipped, not fatal."""
+    try:
+        res = await _relay_control("restoreGroups", {})
+    except Exception as exc:
+        return f"couldn't restore groups: {exc}"
+    if not res:
+        return "no agent groups to restore."
+    parts = ", ".join(f"{r['name']} ({r['tabs']} tab(s))" for r in res)
+    return f"restored: {parts}."
 
 
 # ─── Cross-identity replay (the IDOR / authz hunting loop) ──────────────────

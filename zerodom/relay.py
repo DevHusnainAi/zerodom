@@ -450,6 +450,10 @@ class RelayServer:
         self._id = id or uuid.uuid4().hex
         self._cdp_path = f"/cdp/{self._id}"
         self._extension_path = f"/extension/{self._id}"
+        # A side channel for agent control ops (tab-group sandbox) that aren't
+        # CDP — Playwright's driver drops any method name not in its protocol
+        # schema before it ever reaches /cdp, so these can't ride that path.
+        self._control_path = f"/control/{self._id}"
         self._model: BrowserModel | None = None
         self._extension_ws: Any = None
         self._cdp_ws: Any = None
@@ -485,6 +489,9 @@ class RelayServer:
     def extension_endpoint(self) -> str:
         return f"ws://127.0.0.1:{self._port}{self._extension_path}"
 
+    def control_endpoint(self) -> str:
+        return f"ws://127.0.0.1:{self._port}{self._control_path}"
+
     async def _route(self, ws: Any) -> None:
         # A real vulnerability, not a theoretical one — confirmed live: any
         # public webpage's JS can open a WebSocket straight to this
@@ -512,8 +519,32 @@ class RelayServer:
             await self._handle_extension(ws)
         elif path == self._cdp_path:
             await self._handle_cdp(ws)
+        elif path == self._control_path:
+            await self._handle_control(ws)
         else:
             await ws.close(1008, "not found")
+
+    # ─── Agent control channel (tab-group sandbox ops) ─────────────────────
+
+    async def _handle_control(self, ws: Any) -> None:
+        """A tiny JSON-RPC side channel for non-CDP agent control ops. Each
+        message is {id, op, args}; the op is forwarded to the extension as a
+        `zerodom.<op>` command and the result (or error) is returned. Unlike the
+        single-client /cdp and /extension paths, control connections are transient
+        and may come and go — the MCP server opens one per op."""
+        try:
+            async for raw in ws:
+                msg = json.loads(raw)
+                mid, op, args = msg.get("id"), msg.get("op"), msg.get("args")
+                try:
+                    if self._extension_ws is None:
+                        raise RuntimeError("extension not connected")
+                    result = await self._send_to_extension(f"zerodom.{op}", [args or {}])
+                    await ws.send(json.dumps({"id": mid, "result": result}))
+                except Exception as exc:  # report the op's failure, keep the channel open
+                    await ws.send(json.dumps({"id": mid, "error": str(exc)}))
+        except websockets.exceptions.ConnectionClosed:
+            pass
 
     # ─── The extension's own connection ────────────────────────────────
 

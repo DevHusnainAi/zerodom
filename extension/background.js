@@ -530,6 +530,149 @@ async function ensureGrouped(tabId) {
   await chrome.storage.session.set({ [GROUP_KEY]: newGroupId });
 }
 
+// ─── Agent tab-group sandbox ──────────────────────────────────────────────
+// Multiple named, colored groups the agent is sandboxed to, persisted in
+// chrome.storage.local so they survive a browser restart. Chrome's groupId is
+// regenerated every session, so the stable identity is the group NAME; the live
+// groupId is reconciled per session. Distinct from the default "zerodom" UX
+// group above: the sandbox is OFF until the agent explicitly creates/adopts a
+// group (registry empty => backward-compatible, drive-any-tab behaviour).
+//
+// Registry shape (storage.local):
+//   { "<name>": { color, source: "agent"|"user", tabs: ["url",…], groupId } }
+const GROUPS_KEY = "zerodom-agent-groups";
+const ACTIVE_GROUP_KEY = "zerodom-active-group"; // storage.session: name for new tabs
+
+async function loadGroups() {
+  const { [GROUPS_KEY]: g = {} } = await chrome.storage.local.get(GROUPS_KEY);
+  return g;
+}
+async function saveGroups(g) {
+  await chrome.storage.local.set({ [GROUPS_KEY]: g });
+}
+// The sandbox is active once the agent owns at least one named group.
+async function sandboxActive() {
+  return Object.keys(await loadGroups()).length > 0;
+}
+// Live Chrome groupIds the agent owns (by reconciled name → groupId).
+async function ownedGroupIds() {
+  const g = await loadGroups();
+  const ids = new Set();
+  for (const name of Object.keys(g)) {
+    if (typeof g[name].groupId === "number") ids.add(g[name].groupId);
+  }
+  return ids;
+}
+// The sandbox check: is this tab inside one of the agent's owned groups?
+async function isOwnedTab(tabId) {
+  let tab;
+  try { tab = await chrome.tabs.get(tabId); } catch (e) { return false; }
+  // -1 == chrome.tabGroups.TAB_GROUP_ID_NONE (ungrouped).
+  if (typeof tab.groupId !== "number" || tab.groupId === -1) return false;
+  return (await ownedGroupIds()).has(tab.groupId);
+}
+async function getActiveGroupName() {
+  const { [ACTIVE_GROUP_KEY]: name } = await chrome.storage.session.get(ACTIVE_GROUP_KEY);
+  return name;
+}
+async function setActiveGroupName(name) {
+  await chrome.storage.session.set({ [ACTIVE_GROUP_KEY]: name });
+}
+// Materialize a named sandbox group by grouping `tabId` into it; reconciles the
+// live groupId (recreating the Chrome group if the stored one is gone) and keeps
+// the title+color in sync.
+async function materializeGroup(name, tabId) {
+  const g = await loadGroups();
+  const def = g[name] || { color: "cyan", source: "agent", tabs: [] };
+  let groupId;
+  try {
+    groupId = await chrome.tabs.group({
+      tabIds: [tabId],
+      groupId: typeof def.groupId === "number" ? def.groupId : undefined,
+    });
+  } catch (e) {
+    // ponytail: stored groupId is from a dead session — recreate the group.
+    groupId = await chrome.tabs.group({ tabIds: [tabId] });
+  }
+  await chrome.tabGroups.update(groupId, { title: name, color: def.color });
+  def.groupId = groupId;
+  g[name] = def;
+  await saveGroups(g);
+  return groupId;
+}
+// Put a tab into the active sandbox group (used in place of ensureGrouped when
+// the sandbox is on).
+async function assignToActiveGroup(tabId) {
+  const name = await getActiveGroupName();
+  if (!name) return;                       // no active group → leave to ensureGrouped
+  await materializeGroup(name, tabId);
+}
+
+// Keep each owned group's member URLs current in the registry so a restart can
+// reopen them. ponytail: event-driven + debounced — an abrupt crash loses changes
+// since the last snapshot; fine for best-effort restore.
+let _snapshotTimer = null;
+function scheduleSnapshot() {
+  if (_snapshotTimer) return;
+  _snapshotTimer = setTimeout(() => {
+    _snapshotTimer = null;
+    snapshotOwnedGroups().catch(() => {});
+  }, 1000);
+}
+async function snapshotOwnedGroups() {
+  const g = await loadGroups();
+  if (!Object.keys(g).length) return;
+  let changed = false;
+  for (const name of Object.keys(g)) {
+    const gid = g[name].groupId;
+    if (typeof gid !== "number") continue;
+    try {
+      const tabs = await chrome.tabs.query({ groupId: gid });
+      g[name].tabs = tabs.map((t) => t.url).filter((u) => u && /^https?:/.test(u));
+      changed = true;
+    } catch (e) { /* group no longer exists */ }
+  }
+  if (changed) await saveGroups(g);
+}
+
+// Reopen each owned group's remembered tabs (best-effort) and regroup them under
+// the saved name+color. A blocked/bad URL is skipped, never fatal.
+async function restoreGroups() {
+  const g = await loadGroups();
+  const restored = [];
+  for (const name of Object.keys(g)) {
+    const urls = (g[name].tabs || []).slice(0, 50);  // ponytail: cap the reopen storm
+    let count = 0;
+    for (const url of urls) {
+      try {
+        const tab = await chrome.tabs.create({ url, active: false });
+        await materializeGroup(name, tab.id);
+        count++;
+      } catch (e) { /* bad or blocked url — skip */ }
+    }
+    restored.push({ name, tabs: count });
+  }
+  return restored;
+}
+
+// Adopt an existing Chrome group (user-designated) into the agent's sandbox, by
+// its title. Records its current color, live groupId, and member URLs.
+async function adoptGroup(name) {
+  const groups = await chrome.tabGroups.query({ title: name });
+  if (!groups.length) throw new Error(`no existing tab group titled ${name}`);
+  const grp = groups[0];
+  const tabs = await chrome.tabs.query({ groupId: grp.id });
+  const g = await loadGroups();
+  g[name] = {
+    color: grp.color,
+    source: "user",
+    groupId: grp.id,
+    tabs: tabs.map((t) => t.url).filter((u) => u && /^https?:/.test(u)),
+  };
+  await saveGroups(g);
+  return { name, color: grp.color, tabs: g[name].tabs.length };
+}
+
 // MV3 service workers get killed after ~30s idle; an open WebSocket alone
 // doesn't reliably prevent that in every Chrome version. A small periodic
 // ping keeps real traffic flowing so Chrome doesn't reclaim us mid-session
@@ -581,9 +724,17 @@ function sendEvent(method, params) {
 
 function onTabCreated(tab) {
   sendEvent("chrome.tabs.onCreated", [tab]);
+  scheduleSnapshot();  // keep owned-group membership current for restore
 }
 function onTabRemoved(tabId, removeInfo) {
   sendEvent("chrome.tabs.onRemoved", [tabId, removeInfo]);
+  scheduleSnapshot();
+}
+function onTabUpdated(tabId, changeInfo) {
+  // A navigation or a tab joining/leaving a group changes membership/URLs.
+  if (changeInfo.status === "complete" || changeInfo.url || changeInfo.groupId !== undefined) {
+    scheduleSnapshot();
+  }
 }
 function onDebuggerEvent(source, method, params) {
   // Capture network events for the popup's Network tab — in parallel with
@@ -621,10 +772,20 @@ async function handleCommand(id, method, params) {
     let result;
     switch (method) {
       case "chrome.debugger.attach":
+        // Sandbox: once the agent owns named groups, it may only drive tabs
+        // inside them. Registry empty → unrestricted (backward compatible).
+        if (params[0].tabId !== undefined && await sandboxActive()
+            && !(await isOwnedTab(params[0].tabId))) {
+          throw new Error(
+            `zerodom sandbox: tab ${params[0].tabId} is not in an agent group — ` +
+            "refusing to attach. Create/adopt a group or open the tab inside one.");
+        }
         await chrome.debugger.attach(params[0], params[1]);
         if (params[0].tabId !== undefined) {
           await markAttached(params[0].tabId);
-          await ensureGrouped(params[0].tabId);
+          // Sandbox on → the tab is already in its owned group; don't pull it
+          // into the default "zerodom" group. Off → the usual UX grouping.
+          if (!(await sandboxActive())) await ensureGrouped(params[0].tabId);
           // Enable Network domain so we can capture request/response events
           // for the popup's Network tab. Best-effort: if this fails the tab
           // still works, we just won't see network entries.
@@ -646,8 +807,58 @@ async function handleCommand(id, method, params) {
         break;
       case "chrome.tabs.create":
         result = await chrome.tabs.create(params[0]);
-        await ensureGrouped(result.id);
+        if (await sandboxActive()) await assignToActiveGroup(result.id);
+        else await ensureGrouped(result.id);
         break;
+
+      // ─── Agent tab-group sandbox commands (ZeroDOM.* via the relay) ───────
+      case "zerodom.createGroup": {
+        const { name, color } = params[0] || {};
+        if (!name) throw new Error("zerodom.createGroup: name required");
+        const g = await loadGroups();
+        g[name] = g[name] || { color: color || "cyan", source: "agent", tabs: [] };
+        if (color) g[name].color = color;
+        await saveGroups(g);
+        await setActiveGroupName(name);   // a fresh group becomes the target for new tabs
+        result = { name, color: g[name].color, active: true };
+        break;
+      }
+      case "zerodom.listGroups":
+        result = await loadGroups();
+        break;
+      case "zerodom.useGroup": {
+        const { name } = params[0] || {};
+        const g = await loadGroups();
+        if (!g[name]) throw new Error(`zerodom.useGroup: no such agent group ${name}`);
+        await setActiveGroupName(name);
+        result = { active: name };
+        break;
+      }
+      case "zerodom.closeGroup": {
+        const { name } = params[0] || {};
+        const g = await loadGroups();
+        if (g[name] && typeof g[name].groupId === "number") {
+          try {
+            const tabs = await chrome.tabs.query({ groupId: g[name].groupId });
+            if (tabs.length) await chrome.tabs.ungroup(tabs.map((t) => t.id));
+          } catch (e) { /* group already gone */ }
+        }
+        delete g[name];
+        await saveGroups(g);
+        if (await getActiveGroupName() === name) await setActiveGroupName(undefined);
+        result = { closed: name };
+        break;
+      }
+      case "zerodom.restoreGroups":
+        result = await restoreGroups();
+        break;
+      case "zerodom.adoptGroup": {
+        const { name } = params[0] || {};
+        if (!name) throw new Error("zerodom.adoptGroup: name required");
+        result = await adoptGroup(name);
+        await setActiveGroupName(name);
+        break;
+      }
       case "chrome.tabs.remove":
         await chrome.tabs.remove(params[0]);
         result = null;
@@ -759,6 +970,7 @@ chrome.debugger.onEvent.addListener(onDebuggerEvent);
 chrome.debugger.onDetach.addListener(onDebuggerDetach);
 chrome.tabs.onCreated.addListener(onTabCreated);
 chrome.tabs.onRemoved.addListener(onTabRemoved);
+chrome.tabs.onUpdated.addListener(onTabUpdated);
 
 // ─── Popup ↔ background messaging ──────────────────────────────────────
 

@@ -262,6 +262,16 @@ Import order in `__init__.py` matters for avoiding circular imports:
   (URL host allowlist + destructive denylist + throttle) and `_act` (destructive click/fill
   refused). None = unrestricted (backward compatible). A file-loaded scope is `locked` so
   the agent can't widen its own bounds — this is what makes an unattended hunt safe.
+- **Tab-group sandbox** (relay mode; `zerodom_create_group`/`list_groups`/`use_group`/
+  `close_group`/`adopt_group`/`restore_groups`): named, colored Chrome tab groups the agent
+  is sandboxed to, persisted in the extension's `chrome.storage.local` so they survive a
+  browser restart (groups + their tabs — `restore_groups` reopens them). Once the agent owns
+  a group, `extension/background.js` refuses `chrome.debugger.attach` on any tab outside its
+  owned groups (empty registry = sandbox off, backward compatible); the extension is the
+  authoritative enforcer. These ops aren't CDP (Playwright drops non-schema method names), so
+  they ride a dedicated `/control` WebSocket on the relay (`relay._handle_control` →
+  `zerodom.<op>` → extension); the MCP side is `mcp_server._relay_control`. Group identity is
+  the **name** (Chrome's groupId is regenerated every session and reconciled per connect).
 - Connection: `ZERODOM_CDP_ENDPOINT` wins if set; otherwise `_ensure_relay_running()`
   auto-spawns `zerodom relay` on :8765 and points at it. Relay output goes to
   `~/.zerodom/relay.log` (not DEVNULL — a stuck handshake is invisible otherwise).

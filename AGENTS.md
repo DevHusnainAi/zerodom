@@ -70,6 +70,7 @@ Import order in `__init__.py` matters: `label_linker` → `parser` → `playwrig
 - Only `zerodom_parse_url` calls `page.goto`
 - Auto-starts `zerodom relay` on :8765 if `ZERODOM_CDP_ENDPOINT` not set
 - Scope enforcement via `zerodom_set_scope` / `ZERODOM_SCOPE`: host allowlist, destructive denylist, rate throttle; locked scope can't be widened
+- Tab-group sandbox (relay mode): `zerodom_create_group`/`list_groups`/`use_group`/`close_group`/`adopt_group`/`restore_groups` — named, colored, persistent (storage.local) Chrome groups the agent is sandboxed to; once a group exists the extension refuses attach on tabs outside owned groups. Ops ride a `/control` WS (not CDP — Playwright drops non-schema methods); extension is the enforcer
 - Undrivable targets refused: chrome:// etc.
 - `ZERODOM_PROXY`, `ZERODOM_SCOPE`, `ZERODOM_CDP_ENDPOINT`, `ZERODOM_E2E` env vars
 
