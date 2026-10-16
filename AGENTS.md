@@ -13,20 +13,22 @@ uv run playwright install chromium   # required once for browser-backed tests/fe
 uv run python benchmarks/benchmark_tokens.py   # token-savings report
 uv build                             # wheel + sdist into dist/
 
-# TypeScript port
+# TypeScript port (`@vexralabs/zerodom`, module-for-module mirror of the Python package)
 cd js && npm install
 npm run build                        # tsc
-npm test                             # mirrors tests/test_parser.py
+npm test                             # node --test; parser.test.ts mirrors test_parser.py, + graphUi.test.ts
 
 # CLI
 zerodom <url>                        # inspect
+zerodom setup                        # guided first-run: Chromium, extension path, MCP config, relay
 zerodom relay                        # WS bridge :8765 for Chrome extension
 zerodom inspect <url> --pipe         # JSONL node stream
 zerodom inspect --stealth <url>      # throwaway Chrome over CDP pipe, no port
 cat targets.txt | zerodom scan -     # surfaces.yaml findings as JSONL
 ZERODOM_E2E=1 uv run pytest tests/test_extension_e2e.py -v -s   # opt-in e2e
 ```
-CI: `uv sync && uv run playwright install --with-deps chromium && uv run pytest` on Python 3.10/3.12.
+No linter/formatter/type-checker is configured — no ruff/mypy/black in pyproject or CI; don't guess one.
+CI: `uv sync && uv run playwright install --with-deps chromium && uv run pytest` on Python 3.10/3.12. CI does **not** run `npm test` — run the JS suite locally after touching `js/` or `graph_ui.js`. Publish: PyPI on a `v*` tag, npm on a separate `npm-v*` tag (the two versions move independently); `security.yml` runs pip-audit/npm audit weekly.
 
 ## Test suite
 - `test_parser.py` — deterministic parser, no browser
@@ -34,10 +36,12 @@ CI: `uv sync && uv run playwright install --with-deps chromium && uv run pytest`
 - `test_playwright.py` — browser-backed, auto-skipped if Chromium missing
 - `test_relay.py` / `test_relay_server.py` — relay/extension protocol
 - `test_mcp_cdp.py` — MCP + CDP integration
-- `test_audit.py` / `test_cli.py` — no browser
+- `test_audit.py` / `test_cli.py` / `test_jsintel.py` / `test_surfaces.py` / `test_graph_ui_sync.py` — no browser
 - `test_clearance.py` — ladder order, kill switch, solver flow, cdp_pipe hygiene
 - `test_scope_escape.py` — table-driven refusal of every scope-escape vector
-- `test_dynamic_components.py` — churn/shadow/hydration fixture, Chromium-gated
+- `test_dynamic_components.py` — churn/shadow/hydration fixture; Chromium + fastapi/uvicorn gated
+- `test_clearance_live.py` — opt-in `ZERODOM_BYPASS_LIVE=1`, headful Chrome + display, never CI
+- `test_extension_e2e.py` — opt-in `ZERODOM_E2E=1`, real extension+Chromium, never CI; stop any running `zerodom relay`/`zerodom-mcp` first (extension only dials the fixed port)
 
 ## Architecture
 - `parser.py` (FR-1) — core DFS, unique CSS selector generation
@@ -58,8 +62,9 @@ Import order in `__init__.py` matters: `label_linker` → `parser` → `playwrig
 ## Conventions
 - `# ponytail:` comments = deliberate scope limit, not a bug
 - No LLM/network calls in `parser.py` or `label_linker.py` — parse must stay deterministic
-- Selector/label logic duplicated by hand in `js/src/` — fix Python → mirror in TypeScript
-- Version from `importlib.metadata.version("zerodom")` — never hardcode
+- **Hand-kept mirrors — a fix isn't done until every copy has it:** (1) `parser.py`/`label_linker.py` → `js/src/parser.ts`/`labelLinker.ts` + a case in `js/test/parser.test.ts`; (2) browser-side `SERIALIZE` stamping (`playwright_wrapper.py`) → the `data-zerodom-*` reader in `parser.py` *and* `js/src/parser.ts`; (3) the sensitive-field regex in `_SENSITIVE_FIELD_RE` (`mcp_server.py`) and `SENSITIVE_RE` (`graph_ui.js`) — the human must see exactly the fields the model is refused on
+- `zerodom/graph_ui.{js,css}` is canonical; `extension/` holds a byte-identical copy (an MV3 popup can't load files outside its dir). `test_graph_ui_sync.py` fails if they differ — resync with `cp zerodom/graph_ui.js extension/graph_ui.js` (same for `.css`). **Never edit the `extension/` copy.**
+- Version from `importlib.metadata.version("zerodom")` (reads pyproject) — never hardcode. `js/package.json`, `server.json`, `mcpb/manifest.json` carry their own hand-bumped copies
 - Every non-obvious selector/label decision has a comment anchored to a real page
 - `docs/` is gitignored; `docs/DECISIONS.md` numbers product decisions D1+
 
@@ -90,6 +95,7 @@ Import order in `__init__.py` matters: `label_linker` → `parser` → `playwrig
 - HTML comments and Lit hydration markers leak into labels if not filtered
 - Icon-font PUA glyphs U+E000-F8FF stripped in label_linker
 - `<body tabindex="-1">` was misclassified as clickable with raw `<script>` label
+- Editing `graph_ui.js` does **not** affect a running `zerodom-mcp` — `_GRAPH_UI_JS` is read at import time, so restart the server; the extension popup re-reads it off disk on each open, so reloading the unpacked extension is enough there
 
 ## Live debugging
 - `zerodom_status()` — relay reachability, session state, active tab, relay log tail
@@ -97,7 +103,7 @@ Import order in `__init__.py` matters: `label_linker` → `parser` → `playwrig
 - Restart Claude Code session to pick up new MCP tools after `mcp_server.py` changes
 
 ## When editing parser/label logic
-1. Check `README.md` "Design notes" for documented edge cases
+1. Check `README.md` ("How labels are resolved" / "Limitations") and the code's own anchored comments for documented edge cases
 2. Run `tests/test_parser.py` — one test per edge case
 3. Mirror fix in `js/src/parser.ts` / `labelLinker.ts` and `js/test/parser.test.ts`
 
