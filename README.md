@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/banner.png" alt="ZeroDOM: your headless browser forgets who's logged in. ZeroDOM doesn't. Deterministic DOM perception for AppSec and AI agents." width="100%">
+<img src="assets/banner.png" alt="ZeroDOM: two logins in, broken access control out. Cross-identity authorization testing for AI agents: zerodom sweep flags /admin authorized for admin (200) but denied for user (401)." width="100%">
 
 <br/>
 
