@@ -622,15 +622,27 @@ function scheduleSnapshot() {
 async function snapshotOwnedGroups() {
   const g = await loadGroups();
   if (!Object.keys(g).length) return;
+  // Reconcile each owned group's live groupId by TITLE, not by the stored id:
+  // Chrome regenerates groupIds across a restart, and tabs.query() on a stale id
+  // returns [] (it does not throw), which used to overwrite the remembered URLs
+  // with an empty list — destroying exactly what restore needs. A group that is
+  // not currently present (e.g. right after a restart, before restore runs) is
+  // left untouched so its remembered tabs survive.
+  let live = [];
+  try { live = await chrome.tabGroups.query({}); } catch (e) { return; }
+  const byTitle = {};
+  for (const grp of live) if (grp.title) byTitle[grp.title] = grp.id;
   let changed = false;
   for (const name of Object.keys(g)) {
-    const gid = g[name].groupId;
-    if (typeof gid !== "number") continue;
+    const gid = byTitle[name];
+    if (typeof gid !== "number") continue;   // not live now → keep remembered tabs
+    g[name].groupId = gid;                    // re-link to the current session's id
     try {
       const tabs = await chrome.tabs.query({ groupId: gid });
-      g[name].tabs = tabs.map((t) => t.url).filter((u) => u && /^https?:/.test(u));
+      const urls = tabs.map((t) => t.url).filter((u) => u && /^https?:/.test(u));
+      if (urls.length) { g[name].tabs = urls; }  // only ever overwrite with real data
       changed = true;
-    } catch (e) { /* group no longer exists */ }
+    } catch (e) { /* group vanished mid-query */ }
   }
   if (changed) await saveGroups(g);
 }
