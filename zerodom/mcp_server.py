@@ -699,10 +699,13 @@ _DRIVING_UI_JS = """() => {
   document.body.appendChild(banner);
 
   // The slashed-zero mark, built as real SVG DOM (createElementNS) rather than
-  // inlined in the banner's innerHTML string above — an <svg> parsed out of a
-  // large innerHTML blob was escaping its flex pill and rendering at the page's
-  // top-left corner on real pages. A namespaced DOM node lays out normally and
-  // is immune to that and to any Trusted-Types sanitising of the HTML string.
+  // inlined in the banner's innerHTML string above — a namespaced DOM node lays
+  // out normally and is immune to any Trusted-Types sanitising of the string.
+  // The bar lives in the page's LIGHT dom, so a site's own global `svg {}` rule
+  // leaks into our logo: example.com's `svg{margin:-2.75em auto 0;opacity:.55}`
+  // shoved the mark up out of the pill into the top-left corner and dimmed it.
+  // Pin every geometry prop with !important so no page rule (even !important)
+  // can move, resize, dim or transform it.
   (function () {
     var slot = document.getElementById('zerodom-bar-logo');
     if (!slot) return;
@@ -713,7 +716,11 @@ _DRIVING_UI_JS = """() => {
       return e;
     }
     var svg = el('svg', { viewBox: '0 0 32 32', width: '14', height: '14' });
-    svg.style.cssText = 'display:block;border-radius:3px;';
+    svg.style.cssText = 'display:block!important;width:14px!important;' +
+      'height:14px!important;margin:0!important;padding:0!important;' +
+      'opacity:1!important;vertical-align:middle!important;transform:none!important;' +
+      'filter:none!important;position:static!important;max-width:none!important;' +
+      'border-radius:3px;';
     svg.appendChild(el('rect', { width: '32', height: '32', rx: '7', fill: '#09090b' }));
     svg.appendChild(el('ellipse', { cx: '16', cy: '16', rx: '7.2', ry: '8.4',
       fill: 'none', stroke: '#fafafa', 'stroke-width': '2.6' }));
