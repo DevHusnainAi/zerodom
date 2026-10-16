@@ -208,7 +208,11 @@ _UNDRIVABLE = ("chrome://", "chrome-extension://", "chrome-untrusted://",
 
 def _reject_undrivable(url: str) -> None:
     u = (url or "").strip().lower()
-    if u.startswith(_UNDRIVABLE) or "chromewebstore.google.com" in u:
+    # Exact host, not a substring: a substring match would also refuse an
+    # unrelated host that merely contains the string (harmless here since this
+    # is a denylist, but it trips CodeQL's URL-sanitization query).
+    host = urlsplit(u).hostname or ""
+    if u.startswith(_UNDRIVABLE) or host == "chromewebstore.google.com":
         raise ValueError(
             f"zerodom can't drive {url!r} — chrome://, extension, devtools and Web Store "
             "pages block the debugger. Open a normal http(s) page (or a local file)."

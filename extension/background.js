@@ -545,7 +545,17 @@ const ACTIVE_GROUP_KEY = "zerodom-active-group"; // storage.session: name for ne
 
 async function loadGroups() {
   const { [GROUPS_KEY]: g = {} } = await chrome.storage.local.get(GROUPS_KEY);
-  return g;
+  // Null-prototype so a group name can never reach Object.prototype through
+  // g[name] writes (defense in depth behind assertSafeName at the entry points).
+  return Object.assign(Object.create(null), g);
+}
+// A group name is a user/agent-controlled key written as g[name]; reject the
+// reserved keys so it can never pollute the registry object's prototype.
+function assertSafeName(name) {
+  if (typeof name !== "string" || !name)
+    throw new Error("group name required");
+  if (name === "__proto__" || name === "constructor" || name === "prototype")
+    throw new Error(`group name '${name}' is reserved`);
 }
 async function saveGroups(g) {
   await chrome.storage.local.set({ [GROUPS_KEY]: g });
@@ -826,7 +836,7 @@ async function handleCommand(id, method, params) {
       // ─── Agent tab-group sandbox commands (ZeroDOM.* via the relay) ───────
       case "zerodom.createGroup": {
         const { name, color } = params[0] || {};
-        if (!name) throw new Error("zerodom.createGroup: name required");
+        assertSafeName(name);
         const g = await loadGroups();
         g[name] = g[name] || { color: color || "cyan", source: "agent", tabs: [] };
         if (color) g[name].color = color;
@@ -840,6 +850,7 @@ async function handleCommand(id, method, params) {
         break;
       case "zerodom.useGroup": {
         const { name } = params[0] || {};
+        assertSafeName(name);
         const g = await loadGroups();
         if (!g[name]) throw new Error(`zerodom.useGroup: no such agent group ${name}`);
         await setActiveGroupName(name);
@@ -866,7 +877,7 @@ async function handleCommand(id, method, params) {
         break;
       case "zerodom.adoptGroup": {
         const { name } = params[0] || {};
-        if (!name) throw new Error("zerodom.adoptGroup: name required");
+        assertSafeName(name);
         result = await adoptGroup(name);
         await setActiveGroupName(name);
         break;
