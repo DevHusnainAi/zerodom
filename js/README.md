@@ -7,6 +7,7 @@ Terminal-native DOM perception for red teams and AI agents: cut HTML tokens
 
 [![npm version](https://img.shields.io/npm/v/%40vexralabs%2Fzerodom)](https://www.npmjs.com/package/@vexralabs/zerodom)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](../LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/tVRznUb5Ez)
 
 TypeScript port of [ZeroDOM](https://github.com/DevHusnainAi/zerodom)'s core engine —
 same interaction graph, same selector guarantees, for the Node/TS agent stack

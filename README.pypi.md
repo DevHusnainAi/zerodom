@@ -248,6 +248,7 @@ guess whether the page or the parser was at fault.
 
 - **Source, full README and benchmarks:**
   https://github.com/DevHusnainAi/zerodom
+- **Community & help:** [Discord](https://discord.gg/tVRznUb5Ez)
 - **Issues:** https://github.com/DevHusnainAi/zerodom/issues
 - **License:** Apache 2.0 — use it anywhere, including commercially, and embed
   it in your own product or framework.
