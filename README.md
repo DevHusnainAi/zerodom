@@ -11,6 +11,8 @@ requests as each, and flags where one user reaches what another can't —
 **IDOR / broken access control**, caught deterministically.
 Open-core, runs local, no account, no API key, nothing leaves your machine.
 
+<sub>Under the hunt is a deterministic, token-lean perception engine for AI agents — the same core powers <code>scan</code>, <code>crawl</code> and any browser-driving task. IDOR is just where it bites hardest.</sub>
+
 [![PyPI](https://img.shields.io/pypi/v/zerodom?label=pypi&color=3775A9)](https://pypi.org/project/zerodom/)
 [![npm](https://img.shields.io/npm/v/%40vexralabs%2Fzerodom?label=npm&color=CB3837)](https://www.npmjs.com/package/@vexralabs/zerodom)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -178,24 +180,41 @@ Once before first use (so the server never downloads mid-tool-call):
 
 | tool | what it does |
 |---|---|
-| `zerodom_parse_url(url, …)` | navigate, return the compact graph; `frames=True` reads iframes |
-| `zerodom_read_page()` | re-read the live DOM **without navigating** |
+| `zerodom_parse_url(url, verbose=False, frames=False, viewport_only=False, check_occlusion=False)` | navigate, return the compact graph; `frames=True` also reads same- and cross-origin iframes (auth portals, payment fields) |
+| `zerodom_read_page(verbose=False)` | re-read the live DOM **without navigating** |
 | `zerodom_find(query)` | return only the nodes matching a phrase |
-| `zerodom_click_node(node_id)` | click, return **what changed** (flags likely hydration misses) |
-| `zerodom_fill_node(node_id, text)` | type via real keystrokes (works in `contenteditable` editors) |
-| `zerodom_hover` / `press_key` / `scroll` / `drag` / `upload_file` | the rest of the interaction set |
-| `zerodom_new_tab` / `list_tabs` / `switch_tab` / `close_tab` | multi-tab control |
-| `zerodom_screenshot` / `set_viewport` / `resize_window` / `get_styles` | capture & layout |
-| `zerodom_network_log` / `status` | recent requests; connection diagnostics |
-| `zerodom_eval_js(code)` ⚠️ | run arbitrary JS in the real page |
-| `zerodom_get_cookies()` ⚠️ | list cookies, **including `httpOnly`** |
-| `zerodom_get_storage` / `hidden_fields` | local/session storage; `<input type=hidden>` (CSRF) |
-| `zerodom_crawl(url, …)` | BFS-walk in-scope routes; JSONL per page (forms, links, API calls) |
-| `zerodom_set_scope(hosts, …)` | constrain the hunt to authorized hosts — enforced in code |
-| `zerodom_add_identity(name, storage_state, …)` | register a second identity |
-| `zerodom_replay(url, …, as_identity)` | replay a request as one identity — Burp Repeater for the agent |
-| `zerodom_compare_identities(url, …)` | fetch as each identity and diff — the IDOR check |
-| `zerodom_create_group` / `use_group` / `list_groups` / `close_group` / `adopt_group` / `restore_groups` | named, colored tab groups the agent is **sandboxed** to; persist across restarts |
+| `zerodom_click_node(node_id)` | click, then return **what changed** — flags a same-page no-op shortly after navigation as a possible hydration miss |
+| `zerodom_fill_node(node_id, text)` | type via real keystrokes — works in `contenteditable` editors (Notion, Slack, Discord, Jira) |
+| `zerodom_hover(node_id)` | hover, revealing hover-triggered menus/tooltips |
+| `zerodom_press_key(node_id, key)` | press a key on a focused node (Enter, Escape, Tab, …) |
+| `zerodom_upload_file(node_id, path)` | set a file input's value to a local path |
+| `zerodom_drag(source_node_id, target_node_id)` | drag one node onto another |
+| `zerodom_scroll(direction, amount=800)` | scroll, return what's newly visible |
+| `zerodom_new_tab(url=None)` | open a tab and make it active |
+| `zerodom_list_tabs()` | list every open tab, marking the active one |
+| `zerodom_switch_tab(tab_id)` | make another open tab active |
+| `zerodom_close_tab(tab_id=None)` | close a tab (the active one by default) |
+| `zerodom_screenshot(path=None)` | full-page screenshot of the active tab, saved to disk |
+| `zerodom_set_viewport(width, height)` | resize the viewport for responsive-design testing |
+| `zerodom_resize_window(width, height)` | resize the real browser window (not just the page viewport) |
+| `zerodom_get_styles(node_id)` | curated computed styles + box model for a node — design/CSS review |
+| `zerodom_network_log(clear=False)` | recent requests/responses the active tab has made |
+| `zerodom_status()` | diagnose the connection: relay/extension reachability, active tab, recent relay log |
+| `zerodom_eval_js(code)` ⚠️ | run arbitrary JS in the real page, return the result |
+| `zerodom_get_cookies()` ⚠️ | list cookies for the active tab, **including `httpOnly` ones** |
+| `zerodom_get_storage()` | list the `localStorage` / `sessionStorage` keys the active page holds |
+| `zerodom_hidden_fields()` | list the page's `<input type="hidden">` fields (CSRF tokens, per-view payload) |
+| `zerodom_crawl(url, max_pages=10, scope=None, deny=None)` | BFS-walk in-scope routes; one JSONL record per page (forms, links, fired API calls) |
+| `zerodom_set_scope(hosts, deny=None, max_rps=None)` | constrain the hunt to authorized hosts — enforced in code, not on trust |
+| `zerodom_add_identity(name, storage_state=None, header=None)` | register a second identity (e.g. user B) for cross-tenant testing |
+| `zerodom_replay(url, method="GET", body=None, header=None, as_identity=None)` | replay a request under a chosen identity — Burp Repeater for the agent |
+| `zerodom_compare_identities(url, method="GET", body=None, identities=None)` | fetch one URL as each identity and diff — flags identical responses and 2xx-vs-401/403 splits |
+| `zerodom_create_group(name, color="cyan")` | create a named, colored tab group the agent is sandboxed to; persists across a browser restart |
+| `zerodom_list_groups()` | list the agent's groups (no groups = sandbox off) |
+| `zerodom_use_group(name)` | make a group the target for new tabs |
+| `zerodom_close_group(name)` | ungroup its tabs and forget it; closing the last one turns the sandbox off |
+| `zerodom_adopt_group(name)` | hand a tab group you arranged yourself (by title) to the agent |
+| `zerodom_restore_groups()` | after a browser restart, reopen each group's remembered tabs |
 
 ⚠️ `zerodom_eval_js` and `zerodom_get_cookies` can read a live session's cookies and run code
 in an authenticated browser — expected power for a developer driving their own agent against
