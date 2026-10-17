@@ -1,6 +1,6 @@
 ---
 name: zerodom
-description: Use when a browser-automation agent needs to see what's clickable/fillable on a page — token-optimized interaction graph, unique-by-construction CSS selectors, MCP server for Claude/Cursor.
+description: Use when an agent needs cheap, unambiguous browser perception (token-optimized interaction graph, unique-by-construction CSS selectors) — or cross-identity authorization testing for broken access control / IDOR (replay a request as two logged-in identities, flag the 200-vs-401 split). MCP server for Claude/Cursor.
 ---
 
 # ZeroDOM
