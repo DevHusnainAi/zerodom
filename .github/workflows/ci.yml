@@ -22,3 +22,16 @@ jobs:
       - run: uv sync
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest
+
+  examples:
+    # Syntax-check the example scripts. We don't install the (fast-moving) agent
+    # frameworks here on purpose: their runtime MCP wiring is verified by hand
+    # (all four load the 35-tool set), and a full import test would turn CI red
+    # whenever LangChain / CrewAI / Pydantic AI ship a breaking release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m py_compile examples/*.py examples/integrations/*.py
