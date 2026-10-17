@@ -355,8 +355,11 @@ added. Restart the MCP server. The extension popup has the opposite behaviour: i
   of `cli.py`.
 - `__init__.py`'s version comes from `importlib.metadata.version("zerodom")`, reading
   `pyproject.toml` — never hardcode a version string elsewhere in the Python package.
-  `js/package.json`, `server.json` and `mcpb/manifest.json` carry their own copies and are
-  bumped by hand.
+  `js/package.json` and `mcpb/manifest.json` carry their own copies and are bumped by hand.
+  `server.json`'s versions are **auto-synced in CI** from `pyproject.toml` (pypi) and
+  `js/package.json` (npm) by `.github/workflows/publish-mcp-registry.yml`, which publishes the
+  MCP Registry entry on a `v*`/`npm-v*` tag — so no manual `server.json` bump is needed (the
+  committed copy may lag; CI rewrites it at publish time).
 - **Three hand-kept mirrors, no shared source of truth.** A fix isn't done until every
   copy has it: (1) `parser.py`/`label_linker.py` → `js/src/parser.ts`/`labelLinker.ts` plus
   a case in `js/test/parser.test.ts`; (2) browser-side stamping in `SERIALIZE`

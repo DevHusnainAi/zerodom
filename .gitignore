@@ -43,3 +43,6 @@ cleared.json
 # Proof: per-run PortSwigger lab session states (ephemeral; recreated by run.sh)
 proof/user.json
 proof/admin.json
+
+# demo recording working files (the README uses assets/idor-demo.* instead)
+/demo-*.mp4
