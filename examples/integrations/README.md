@@ -46,12 +46,49 @@ one is runtime-verified to connect to `zerodom-mcp` and load all 35 tools.
 > **AutoGen note:** `autogen-ext` (≤0.7.5) targets the mcp **1.x** SDK — the 2.x SDK removed a
 > symbol it imports (`ImportError: RequestContext`). Install `"mcp<2"` until it updates.
 
-## Other frameworks (same config, no separate file)
+## IDE / editor agents (config, no code)
 
-The same stdio config works anywhere with MCP support — the IDE agents (**Cursor**, **Cline**,
-**Continue**, **Windsurf**, **VS Code / Copilot**, **Zed**) take the raw config in their MCP
-settings: drop it under `mcpServers` (the exact JSON is in the
-[main README](../../README.md#use-it-from-an-ai-agent-mcp)).
+IDE agents (**Cursor, Cline, Continue, Windsurf, VS Code / Copilot, Zed**, plus MCP clients like
+Claude Desktop / Claude Code) aren't libraries — there's nothing to write. You add `zerodom-mcp`
+to the editor's MCP settings and its built-in agent gains all 35 tools. **Most** use the standard
+`mcpServers` JSON:
+
+```json
+{ "mcpServers": { "zerodom": { "command": "uvx", "args": ["--from", "zerodom", "zerodom-mcp"] } } }
+```
+
+| Editor | Where it goes | Key |
+|---|---|---|
+| **Cursor** | `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` | `mcpServers` |
+| **Cline** | "MCP Servers" panel → `cline_mcp_settings.json` | `mcpServers` |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` (Cascade → MCP) | `mcpServers` |
+| **Claude Desktop** | `claude_desktop_config.json` | `mcpServers` |
+| **Claude Code** | `.mcp.json` (project), or `claude mcp add` | `mcpServers` |
+
+**Three use a different shape** — copy these verbatim instead:
+
+**VS Code / Copilot** — `.vscode/mcp.json` (key is `servers`, each needs `type`):
+```json
+{ "servers": { "zerodom": { "type": "stdio", "command": "uvx", "args": ["--from", "zerodom", "zerodom-mcp"] } } }
+```
+
+**Zed** — `settings.json` (key is `context_servers`):
+```json
+{ "context_servers": { "zerodom": { "command": "uvx", "args": ["--from", "zerodom", "zerodom-mcp"], "env": {} } } }
+```
+
+**Continue** — `~/.continue/config.yaml` (a YAML list under `mcpServers`):
+```yaml
+mcpServers:
+  - name: zerodom
+    command: uvx
+    args: ["--from", "zerodom", "zerodom-mcp"]
+```
+
+> MCP config schemas shift between editor versions — if the tools don't show up, check your
+> editor's current MCP docs. Each gives the agent the same 35 tools the framework examples load.
+> To drive your *real, logged-in* Chrome, run `zerodom relay` + the extension first (see the
+> [main README](../../README.md#use-it-from-an-ai-agent-mcp)).
 
 ---
 
