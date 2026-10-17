@@ -2,254 +2,99 @@
 
 <!-- mcp-name: io.github.DevHusnainAi/zerodom -->
 
-[![ZeroDOM MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/DevHusnainAi/zerodom/badges/score.svg)](https://glama.ai/mcp/servers/DevHusnainAi/zerodom)
+[![PyPI](https://img.shields.io/pypi/v/zerodom?label=pypi&color=3775A9)](https://pypi.org/project/zerodom/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/DevHusnainAi/zerodom/blob/main/LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/tVRznUb5Ez)
+[![Glama](https://glama.ai/mcp/servers/DevHusnainAi/zerodom/badges/score.svg)](https://glama.ai/mcp/servers/DevHusnainAi/zerodom)
 
-### Deterministic, local, token-lean DOM perception for AI security agents — and the only one that does cross-identity authorization testing.
+### Point it at an app as two users. It finds the broken access control.
 
-ZeroDOM turns a live, logged-in page into a short numbered list of everything an agent
-can act on, each id resolving to exactly one element. The CSS selectors stay server-side
-and **never enter the model's context** (~53–96% fewer tokens than Playwright MCP's
-snapshot), so the agent reasons about access control, not parsing HTML. No LLM in the parse.
+ZeroDOM drives your **real, logged-in browser** as two identities, replays the same requests
+as each, and flags where one user reaches what another can't — **IDOR / broken access control**,
+caught deterministically. Open-core, runs local, no account, no API key, nothing leaves your machine.
 
-**Flagship use-case — broken access control.** Register two logged-in identities, replay a
-request as each, and compare: a byte-identical response or a 2xx-vs-401 split is the
-cross-tenant IDOR tell. *Autorize for AI agents* — deterministic, local, MCP-native. ZeroDOM
-surfaces the tell and hands you a diff to review; **you confirm the bug** — deterministic
-replay *proves*, it doesn't guess. (Proof: median 98.9% fewer tokens than raw HTML; 99.00%
-of 10,756 selectors across 111 sites resolve to exactly one element.)
+> Under the hunt is a deterministic, token-lean perception engine for AI agents — the same core
+> powers `scan`, `crawl` and any browser-driving task. IDOR is just where it bites hardest.
 
-![An AI agent driving ZeroDOM compares two identities against /admin, catches the 200-vs-401 split, and flags authorization enforced by a client-controllable cookie.](https://raw.githubusercontent.com/DevHusnainAi/zerodom/v0.1.0/proof/hunt.gif)
-
-![zerodom sweep: one command crawls as one identity and replays every in-scope URL across two identities, reporting an access-boundary-split — admin authorized (200) where user denied (401).](https://raw.githubusercontent.com/DevHusnainAi/zerodom/v0.1.0/proof/sweep.gif)
-
-ZeroDOM reduces a page to what can be acted on (the buttons, inputs and links),
-each with an id that resolves to exactly one element:
-
-- **Relay mode** attaches to the Chrome you're already logged into, over
-  `chrome.debugger`. Cookies, MFA and SSO are already done.
-- **Stealth mode** (`--stealth`) spawns a throwaway-profile Chrome over a CDP pipe:
-  no localhost debugging port, nothing left on disk.
-- **`zerodom scan`** runs a deterministic YAML ruleset over the graph (forms without
-  CSRF tokens, exposed admin/debug links, sensitive inputs) and emits JSONL findings.
-- **Unix pipes.** `-` reads URLs from stdin and `--pipe` streams nodes as JSONL, so it
-  slots into `httpx` / `jq` pipelines and CI.
-
-```bash
-cat targets.txt | httpx -silent | zerodom scan -
-cat targets.txt | zerodom scan - --rules my-rules.yaml --fail-on-finding   # CI gate
-cat targets.txt | zerodom inspect --pipe --stealth -
-```
-
-Only scan targets you are authorized to test.
-
-### Why addressing matters
-
-An agent driving a browser gets one of two action spaces today, and both are bad.
-**Pixels** are slow, expensive, and produce coordinates that go stale the moment
-the page scrolls. **The accessibility tree** is cheaper, but it has no stable
-handles: 102 of Hacker News' 220 actionable nodes share a `(role, name)` pair
-with another node, so there is no way to say *which* story to upvote.
-
-That second failure is the expensive one. A graph that costs a few tokens too
-many wastes money. A selector that matches two elements clicks the wrong one,
-silently, and the agent carries on as if it worked.
-
-ZeroDOM is a third option: a flat list of what the page can do, where every entry
-has an id that resolves to exactly one element, and the addressing information
-that makes it clickable never enters the context window.
-
-**Measured on 111 live sites** — static, SPA, web components, iframes, canvas,
-dashboards, commerce, government, forms, login walls:
-
-| | |
-|---|---|
-| nodes audited | **10,756** |
-| resolved to exactly one live element | **99.00%** |
-| **ambiguous — matched more than one** | **0.03%** (3 nodes) |
-| invalid selectors | **0** |
-| actionable to Playwright (sampled) | 95.6% of 1,215 |
-
-1,334 of those selectors had to be scoped against open shadow roots — 121 of 129 on
-shoelace.style — and every one resolves uniquely. It is also small: a median of
-**10.2 tokens per action** against the accessibility tree's 23–70, **98.9%**
-smaller than raw HTML, parsed in a median 55ms with no model in the loop.
-
-- **No LLM in the loop.** lxml in, graph out, identical output every run.
-- **Selectors never enter the context window.** The model sees `[03]`; the CSS
-  path stays in `selector_map()` on your side.
-- **Nothing leaves your machine.** No telemetry, no API keys, no storage — the
-  only network traffic is the page you pointed it at.
-
-## Install
-
-```bash
-pip install zerodom
-# or: uvx zerodom - the CLI runs straight off PyPI
-```
-
-One extra step only if you use the browser-backed features (`from_page`,
-`--render`, `--screenshot`, `--html`):
-
-```bash
-playwright install chromium
-```
-
-(The `zerodom` CLI does this for you on first browser use at a terminal —
-a one-time ~150MB download.)
+![A normal user is denied the admin console (401), then reaches it by flipping one client-controlled cookie. ZeroDOM replays the same request as both identities and reports the 401-vs-200 split.](https://raw.githubusercontent.com/DevHusnainAi/zerodom/v0.1.1/assets/idor-demo.gif)
 
 ## Quickstart
 
-```python
-from zerodom import ZeroDOM
+**See it run in 10 seconds** — no account, no browser download (bare `zerodom <url>` is a static fetch):
 
-graph = ZeroDOM.from_page(page)      # any Playwright page, sync or async
-print(graph.to_compact_text())       # what you send the model
-selectors = graph.selector_map()     # {"node_01": "#email-input", ...} — stays your side
+```bash
+pip install zerodom
+zerodom https://news.ycombinator.com     # the interaction graph + a token report
 ```
 
-Real output:
+**Find an IDOR.** Save two logged-in sessions as Playwright `storage_state` files (one per
+account), then diff a protected endpoint across both:
 
-```text
-PAGE: Orbit — Fleet Console | file:///…/demo/demo-page.html
-[01] a 'Fleet'
-[05] input 'Search'
-[07] input* 'Assigned driver' ph='Search by name'
-[15] button 'Dispatch'
-[17] button! 'Recall (in transit)'
+```bash
+zerodom compare https://app.example.com/api/admin/dashboard \
+  --as user=user.json --as admin=admin.json
 ```
 
-`*` marks required, `!` marks disabled. The model answers `click 15`. You resolve
-`node_15` against `selector_map()` and click it.
-
-## Cost per action
-
-The fair comparison isn't raw HTML — nobody sends a model raw HTML. It's
-Playwright's `page.aria_snapshot(mode="ai")`, which is what Playwright MCP puts
-in a model's context.
-
-| page | ZeroDOM | ARIA |
-|---|---:|---:|
-| airbnb.com | **9.9** | 23.3 |
-| github.com/…/issues | **12.1** | 70.2 |
-| en.wikipedia.org article | **11.6** | 41.0 |
-| news.ycombinator.com | **10.2** | 47.0 |
-| developer.mozilla.org | **9.9** | 46.8 |
-
-*tokens per actionable node — measured 2026-08-03*
-
-**A median of ~10 tokens per action**, against ARIA's 23–70 and wildly variable.
-Mean 71.0% fewer tokens than the snapshot a model actually gets.
-
-Across **111 live sites** (static, SPA, shadow DOM, iframe, canvas, commerce,
-government, forms, login walls), `benchmarks/benchmark_sites.py` measured
-**10,756 nodes: 99.00% resolved to exactly one live element, 3 ambiguous,
-0 invalid**, and 95.6% of a sampled 1,215 were actionable to Playwright. Median
-saving vs raw HTML 98.9%, worst case 64.1%. Parse: median 55ms.
-
-The residual misses are almost all timing, not addressing: a page that is still
-hydrating, or a third-party script inserting a wrapper `<div>`, shifts the
-structural paths underneath you. Re-tested on a settled DOM, bbc.co.uk goes from
-180 misses to 0 and surveymonkey.com from 94 to 0.
-
-## MCP server
-
-```json
+```jsonc
 {
-  "mcpServers": {
-    "zerodom": {
-      "command": "uvx",
-      "args": ["--from", "zerodom", "zerodom-mcp"]
-    }
-  }
+  "identities": { "user": { "status": 401 }, "admin": { "status": 200 } },
+  "only_admin": ["Manage users", "Billing & plans", "Overview"],
+  "note": "admin authorized (200) where user denied (401) — broken access control if the only difference is client-controllable"
 }
 ```
 
-Goes in `claude_desktop_config.json` for Claude Desktop, or `.cursor/mcp.json`
-for Cursor.
+Same request, two identities, a 401-vs-200 split → a lead to confirm. No LLM guessing: ZeroDOM
+surfaces the tell with the exact replay that proves it. **You confirm the bug.**
 
-| tool | what it does |
-|---|---|
-| `zerodom_parse_url(url, verbose=False, frames=False)` | navigate, return the compact graph; `frames=True` also reads same- and cross-origin iframes (embedded auth portals, payment fields) |
-| `zerodom_read_page(verbose=False)` | re-read the live DOM **without navigating** |
-| `zerodom_find(query)` | return only the nodes matching a phrase |
-| `zerodom_click_node(node_id)` | click, then return **what changed** |
-| `zerodom_fill_node(node_id, text)` | type, then return what changed |
+## How it hunts
 
-An agent loop shouldn't re-read the page it already has. `zerodom_find` answers
-"where's the dispatch button?" in one line, and actions return a diff — `+`
-appeared, `-` gone, `~` value changed — instead of re-listing every node.
+- **`zerodom compare`** — one endpoint across identities: a 401-vs-200 split, or a byte-identical
+  cross-tenant response, is the IDOR tell.
+- **`zerodom sweep URL --as user=… --as admin=…`** — the whole app in one command: crawls as one
+  identity to map the GET surface, replays every in-scope URL across all identities, reports only
+  the deterministic tells (`--format md` for a report table).
+- **`zerodom crawl` / `scan` / `audit`** — recon (forms, links, fired API calls), YAML attack-surface
+  rules + inline-JS secrets, and resolving the selectors in an existing test suite.
 
-## CLI
+It drives your **real Chrome** (relay mode) over `chrome.debugger` — cookies, MFA, SSO already
+done — or a throwaway browser (`--stealth`). Read-only by default; scope is enforceable and
+lockable. Route through Burp/Caido with `--proxy`. *Only test targets you're authorized to.*
 
-```bash
-zerodom https://news.ycombinator.com          # compact graph + token savings
-zerodom https://example.com --find checkout   # only the nodes that match
-zerodom https://example.com --render          # headless Chromium, for JS-heavy pages
-zerodom https://example.com --json            # full JSON graph, selectors included
-zerodom https://example.com --frames          # also read inside iframes
-zerodom https://example.com --html out.html   # graph beside an annotated screenshot
-zerodom https://example.com --stealth         # throwaway Chrome over a CDP pipe, no port
-cat targets.txt | zerodom inspect --pipe -    # JSONL, one node per line
-cat targets.txt | zerodom scan -              # attack-surface findings as JSONL
+## From an AI agent (MCP)
+
+ZeroDOM is a native **MCP server**. Claude, Cursor, LangGraph, CrewAI, the OpenAI Agents SDK,
+Pydantic AI and more load the full 35-tool set from one config:
+
+```jsonc
+{ "mcpServers": { "zerodom": { "command": "uvx", "args": ["--from", "zerodom", "zerodom-mcp"] } } }
 ```
 
-**Relay mode (your logged-in Chrome)** needs the extension, which ships inside the package:
+Run `zerodom setup` for a guided first-run. Runnable per-framework examples:
+[examples/integrations/](https://github.com/DevHusnainAi/zerodom/tree/main/examples/integrations).
 
-```bash
-zerodom extension     # prints the bundled extension's directory
-# chrome://extensions -> Developer mode -> Load unpacked -> select that directory
-zerodom relay
+## Why the agent sees so few tokens
+
+A live page becomes a flat list where every entry has an id that resolves to **exactly one
+element**, and the CSS selector never enters the model's context:
+
+```text
+[01] a 'Show HN: ZeroDOM — agents only need to know what they can click'
+[02] a 'dev'
+[03] a '214 comments'
 ```
 
-Each release also attaches `zerodom-extension-<version>.zip` with a `.sha256`.
+Deterministic (lxml in, graph out, no LLM). Measured and re-runnable: **~71% fewer tokens** than
+Playwright MCP's `aria_snapshot(mode="ai")` (mean; ~53–96% per site), **99.00%** of 10,756 audited
+selectors across 111 live sites resolve to exactly one element, parse median **55ms**.
 
-## `zerodom audit`
+## Open core
 
-Check the selectors in a test suite you already have — no ZeroDOM required in
-the tests. A selector matching two elements passes, clicks the wrong one, and
-flakes one run in twenty.
+Everything in the package — parser, CLI, relay, stealth, scan/crawl/compare/audit, the clearance
+ladder, the MCP server — is the free, Apache-2.0 **Core**, complete on its own: one operator,
+local, no account, no key. **Enterprise** is an additive team layer (fleet dashboard, compliance
+export packs, SSO/RBAC, SLA) that never gates, phones home from, or adds telemetry to the Core.
+Details: **contact@vexralabs.com**.
 
-```bash
-zerodom audit tests/ --url http://localhost:3000
-```
+---
 
-Reads Playwright, Puppeteer, Cypress and Selenium call sites and reports which
-selectors are ambiguous, dead or invalid against the running app.
-`--fail-on-ambiguous` makes CI red when a new one appears.
-
-## Limitations
-
-- **Closed shadow roots** are unreachable — no browser API exposes them. Open
-  roots work.
-- **Iframes are opt-in.** `from_page(page, frames=True)`, `zerodom --frames` or
-  the MCP tool's `frames=True` reads same- and cross-origin frames and keeps
-  every node clickable. It is off by default because it costs a read per frame
-  and most frames on a commercial page are advertising.
-- **Canvas-rendered UIs** have no DOM to read. Use a vision model there.
-- **Stylesheet-hidden controls need a live browser.** With a real page
-  (`from_page`, `--render`, the MCP server) the cascade is consulted and hidden
-  elements are dropped. Parsing an HTML *string* has no cascade, so
-  `<div class="hidden">` is emitted as if visible.
-- **Labels come from the page**, so a hostile page can write anything into one.
-  Treat graph text as untrusted input — see SECURITY.md.
-- **A graph is a snapshot.** Selectors are structural, so a page still
-  hydrating — or a third-party script inserting a wrapper `<div>` — can
-  invalidate one within seconds. Re-read after each action; the MCP server does
-  this for you.
-- ZeroDOM operates on a `Page` you already control. Bot walls are climbed by a
-  scope-gated clearance ladder — opt-in solver, `--no-solver` to refuse, spend
-  logged — and never worked around outside an authorized target.
-
-When a graph comes back almost empty, `metadata["warning"]` says why — bot wall,
-open modal, or content behind an iframe or canvas — instead of leaving you to
-guess whether the page or the parser was at fault.
-
-## Links
-
-- **Source, full README and benchmarks:**
-  https://github.com/DevHusnainAi/zerodom
-- **Community & help:** [Discord](https://discord.gg/tVRznUb5Ez)
-- **Issues:** https://github.com/DevHusnainAi/zerodom/issues
-- **License:** Apache 2.0 — use it anywhere, including commercially, and embed
-  it in your own product or framework.
-
+**[GitHub](https://github.com/DevHusnainAi/zerodom)** · **[Docs](https://zerodom.vexralabs.com/docs)** · **[Site](https://zerodom.vexralabs.com)** · **[Discord](https://discord.gg/tVRznUb5Ez)** — Apache-2.0, a Vexra Labs project.

@@ -1,9 +1,10 @@
 # @vexralabs/zerodom
 
-**Deterministic AppSec & AI perception layer — TypeScript edition.**
+**The TypeScript edition of ZeroDOM's perception core.**
 
-Terminal-native DOM perception for red teams and AI agents: cut HTML tokens
-98.9% (median) and keep selectors out of the context window.
+Turn a live page into a deterministic, token-lean interaction graph for AI agents —
+every id resolves to exactly one element, CSS selectors kept out of the model's
+context (~71% fewer tokens than an a11y snapshot, 98.9% median vs raw HTML).
 
 [![npm version](https://img.shields.io/npm/v/%40vexralabs%2Fzerodom)](https://www.npmjs.com/package/@vexralabs/zerodom)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](../LICENSE)

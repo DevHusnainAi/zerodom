@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-10-17
+
+Docs and packaging polish; no code or API changes.
+
+### Changed
+
+- Rewrote the PyPI readme (`README.pypi.md`) to lead with the cross-identity
+  IDOR / broken-access-control story and the live demo, matching the main README.
+- npm releases now publish with `--provenance` (the repo is public), adding a
+  verified-provenance badge to the npm package page.
+
 ## [0.1.0] — 2026-10-15
 
 The release leads with the challenge-clearance ladder — walls are cleared, not
