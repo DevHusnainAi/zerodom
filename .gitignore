@@ -46,3 +46,6 @@ proof/admin.json
 
 # demo recording working files (the README uses assets/idor-demo.* instead)
 /demo-*.mp4
+
+# built MCPB bundle (regenerate with: npx @anthropic-ai/mcpb pack mcpb ./zerodom.mcpb)
+/*.mcpb
