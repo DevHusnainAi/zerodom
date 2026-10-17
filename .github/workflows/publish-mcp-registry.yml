@@ -8,8 +8,9 @@ name: Publish to MCP Registry
 # (and a concurrency group serializes a simultaneous double-push).
 #
 # GitHub OIDC proves this repo owns the io.github.DevHusnainAi namespace, so there
-# is no token to store. Bump server.json by hand at release time (same as
-# js/package.json / mcpb/manifest.json) — a warning fires here if you forget.
+# is no token to store. server.json's versions are synced automatically from
+# pyproject.toml (pypi) and js/package.json (npm) — which release.yml / publish-npm.yml
+# already enforce match their tags — so there is no server.json bump to remember.
 on:
   push:
     tags: ["v*", "npm-v*"]
@@ -32,6 +33,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Sync server.json versions from pyproject.toml + js/package.json
+        run: |
+          python3 - <<'PY'
+          import json, re, pathlib
+          pyver = re.search(r'^version\s*=\s*"([^"]+)"', pathlib.Path("pyproject.toml").read_text(), re.M).group(1)
+          npmver = json.loads(pathlib.Path("js/package.json").read_text())["version"]
+          sj = json.loads(pathlib.Path("server.json").read_text())
+          sj["version"] = pyver
+          for p in sj["packages"]:
+              if p["registryType"] == "pypi": p["version"] = pyver
+              if p["registryType"] == "npm":  p["version"] = npmver
+          pathlib.Path("server.json").write_text(json.dumps(sj, indent=2) + "\n")
+          print(f"server.json synced → version={pyver} (pypi={pyver}, npm={npmver})")
+          PY
+
       - name: Read versions from server.json
         id: sj
         run: |
@@ -43,16 +59,6 @@ jobs:
           print(f"pypi={pkg['pypi']['version']}")
           print(f"npm={pkg['npm']['version']}")
           PY
-
-      - name: Sanity-check the tag matches server.json
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          case "$GITHUB_REF_NAME" in
-            npm-v*) want="${GITHUB_REF_NAME#npm-v}"; got="${{ steps.sj.outputs.npm }}" ;;
-            v*)     want="${GITHUB_REF_NAME#v}";     got="${{ steps.sj.outputs.pypi }}" ;;
-            *)      exit 0 ;;
-          esac
-          [ "$want" = "$got" ] || echo "::warning::tag $GITHUB_REF_NAME implies $want but server.json lists $got for that package — did you forget to bump server.json?"
 
       - name: Skip if this version is already the registry's latest
         id: gate
