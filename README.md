@@ -194,8 +194,9 @@ print-and-guide, no account, nothing leaves your machine).
 Once before first use (so the server never downloads mid-tool-call):
 `uvx --from zerodom playwright install chromium`.
 
-**Using LangGraph, CrewAI, the OpenAI Agents SDK or Pydantic AI?** Ready-to-run MCP examples —
-same server, a few lines each — are in [`examples/integrations/`](examples/integrations/).
+**Using LangGraph, CrewAI, OpenAI Agents SDK, Pydantic AI, LlamaIndex, Google ADK or AutoGen?**
+Ready-to-run MCP examples — same server, a few lines each — are in
+[`examples/integrations/`](examples/integrations/).
 
 <details>
 <summary><b>The full tool set</b> (click to expand)</summary>

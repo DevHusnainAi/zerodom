@@ -36,15 +36,21 @@ MCP tutorials miss, and it matters here.
 | **OpenAI Agents SDK** | [`openai_agents.py`](openai_agents.py) | `MCPServerStdio`, `Agent(mcp_servers=[…])` | run inside `async with MCPServerStdio(...)` |
 | **CrewAI** | [`crewai.py`](crewai.py) | `MCPServerAdapter` + `StdioServerParameters`, `Agent(tools=…)` | build + `kickoff()` inside `with MCPServerAdapter(...)` |
 | **Pydantic AI** | [`pydantic_ai.py`](pydantic_ai.py) | `MCPToolset(StdioTransport(...))`, `Agent(toolsets=[…])` | run inside `async with agent` |
+| **LlamaIndex** | [`llamaindex.py`](llamaindex.py) | `BasicMCPClient` + `McpToolSpec.to_tool_list_async()`, `FunctionAgent` | keep one `BasicMCPClient` for the run |
+| **Google ADK** | [`google_adk.py`](google_adk.py) | `MCPToolset(StdioConnectionParams(...))`, `LlmAgent(tools=[…])` | one `MCPToolset` instance (ADK manages + closes it) |
+| **AutoGen** | [`autogen.py`](autogen.py) | `mcp_server_tools(StdioServerParams(...))`, `AssistantAgent(tools=…)` | pin **`mcp<2`**; prefer `McpWorkbench` for a long hunt |
 
-Install per file is in that file's docstring; each is a standalone, copy-paste script.
+Install per file is in that file's docstring; each is a standalone, copy-paste script. Every
+one is runtime-verified to connect to `zerodom-mcp` and load all 35 tools.
 
-## Other frameworks
+> **AutoGen note:** `autogen-ext` (≤0.7.5) targets the mcp **1.x** SDK — the 2.x SDK removed a
+> symbol it imports (`ImportError: RequestContext`). Install `"mcp<2"` until it updates.
 
-The same stdio config works anywhere with MCP support — **LlamaIndex** (`McpToolSpec`),
-**Google ADK** (`MCPToolset`), and the IDE agents (**Cursor**, **Cline**, **Continue**,
-**Windsurf**, **VS Code / Copilot**, **Zed**) that take the raw config in their MCP settings.
-For those IDEs, drop the config under `mcpServers` (the exact JSON is in the
+## Other frameworks (same config, no separate file)
+
+The same stdio config works anywhere with MCP support — the IDE agents (**Cursor**, **Cline**,
+**Continue**, **Windsurf**, **VS Code / Copilot**, **Zed**) take the raw config in their MCP
+settings: drop it under `mcpServers` (the exact JSON is in the
 [main README](../../README.md#use-it-from-an-ai-agent-mcp)).
 
 ---
