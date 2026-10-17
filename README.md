@@ -325,20 +325,33 @@ line to spotlight the element). Both print a **located** count — how many sele
 
 Honest version: ZeroDOM **complements Burp** (it doesn't replace it) and isn't a general
 browser-automation framework. What it uniquely packages is the two-identity authorization
-method — deterministic, token-lean, driven by an AI agent or a CLI pipeline.
+method — deterministic, token-lean, and runnable **headless in a pipeline** or driven by an AI agent.
 
-| | ZeroDOM | Playwright MCP | browser-use | Burp + Autorize |
+**If you do AppSec, the column that matters is the last one.** Burp + Autorize is the standard
+way to test broken access control today — and it's genuinely good — but it lives inside the Burp
+GUI. ZeroDOM brings the *same* replay-and-compare method to a scriptable CLI and an MCP agent.
+
+| | ZeroDOM | **Burp + Autorize** | Playwright MCP | browser-use |
 |---|:---:|:---:|:---:|:---:|
-| Page sent to the model | numbered graph, selectors server-side (**~53–96% fewer tokens**) | full a11y snapshot | a11y/DOM, LLM every step | — (human GUI) |
-| Deterministic, no LLM in the parse | ✅ | ✅ | ❌ | ✅ |
-| Drives your real logged-in Chrome | ✅ relay | partial (CDP) | ✅ | ✅ (proxy) |
-| Cross-identity authz / IDOR, native | ✅ `compare`/`sweep` | ❌ | ❌ | ✅ (heuristic, GUI-bound) |
-| Local · accountless · zero-egress | ✅ | ✅ | depends on the LLM | ✅ |
-| Agent / MCP-native | ✅ | ✅ | ✅ | ❌ |
+| Cross-identity authz / IDOR, native | ✅ `compare` / `sweep` | ✅ (heuristic) | ❌ | ❌ |
+| **Scriptable · headless · CI pipeline** | ✅ **CLI → JSONL** | ❌ **Burp-GUI-bound** | ✅ | ~ LLM-driven |
+| Output you can diff & drop in a ticket | ✅ reviewable diff / MD table | ⚠️ GUI verdict (*"Is enforced???"*) | — | — |
+| Pipes into your recon stack (`subfinder`→`httpx`→…) | ✅ stdin/stdout | ❌ | — | — |
+| Scope lockable so it can't widen itself | ✅ locked scope | ❌ (operator-driven) | ❌ | ❌ |
+| Deterministic, no LLM in the parse | ✅ | ✅ | ✅ | ❌ |
+| Drives your real logged-in Chrome | ✅ relay | ✅ (proxy) | partial (CDP) | ✅ |
+| Agent / MCP-native | ✅ | ❌ | ✅ | ✅ |
+| Local · accountless · zero-egress | ✅ | ✅ | ✅ | depends on the LLM |
 
-Autorize is the benchmark — but it's Burp-GUI-bound, heuristic (its own README notes false
-positives), and has no agent or pipeline interface. ZeroDOM brings the same replay-and-compare
-method to an AI agent and a scriptable CLI, as a reviewable diff.
+**Why ZeroDOM over Autorize for automation.** Autorize is the benchmark — but it's bound to the
+Burp GUI, heuristic (its own README flags false positives and an *"Is enforced???"* state), and
+has no headless / CLI / agent interface. So it can't run in CI, can't pipe into the recon stack
+you already use, and can't be driven by an AI agent. ZeroDOM runs the same replay-and-compare as
+a **one-line command that emits JSONL** (or a Markdown table for the ticket), enforces a **locked
+scope**, and hands back a **reviewable diff** instead of a verdict you have to eyeball.
+Rule of thumb: reach for Autorize when you're already *in* Burp clicking around; reach for
+ZeroDOM when the authz check has to be **automated, repeatable, and pipeline-native** — a nightly
+sweep across 50 apps, a CI gate on a PR, or an agent hunting unattended.
 
 ---
 
