@@ -20,7 +20,7 @@ Open-core, runs local, no account, no API key, nothing leaves your machine.
 [![Claude MCP](https://img.shields.io/badge/Claude-MCP%20server-8A63D2.svg)](#use-it-from-an-ai-agent-mcp)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/tVRznUb5Ez)
 
-**[Site](https://zerodom.vexralabs.com)** · **[Docs](https://zerodom.vexralabs.com/docs)** · **[Playground](https://zerodom.vexralabs.com/playground)** · **[Discord](https://discord.gg/tVRznUb5Ez)** · **[Quickstart ↓](#quickstart--find-an-idor-in-60-seconds)**
+**[Site](https://zerodom.vexralabs.com)** · **[Docs](https://zerodom.vexralabs.com/docs)** · **[Playground](https://zerodom.vexralabs.com/playground)** · **[Discord](https://discord.gg/tVRznUb5Ez)** · **[Quickstart ↓](#quickstart)**
 
 <br/>
 
@@ -35,7 +35,7 @@ Open-core, runs local, no account, no API key, nothing leaves your machine.
 ## Contents
 
 - [Why ZeroDOM](#why-zerodom)
-- [Quickstart — find an IDOR in 60 seconds](#quickstart--find-an-idor-in-60-seconds)
+- [Quickstart](#quickstart)
 - [How it hunts — `compare` & `sweep`](#how-it-hunts--compare--sweep)
 - [Use it from an AI agent (MCP)](#use-it-from-an-ai-agent-mcp)
 - [Why the agent sees so few tokens](#why-the-agent-sees-so-few-tokens)
@@ -51,6 +51,14 @@ Open-core, runs local, no account, no API key, nothing leaves your machine.
 ---
 
 ## Why ZeroDOM
+
+**Two audiences, one engine:**
+
+- **AppSec — [`compare` / `sweep`](#how-it-hunts--compare--sweep):** deterministic two-identity
+  authorization testing that runs **headless in CI or your recon pipeline** — no GUI, no account.
+- **AI agents — [MCP](#use-it-from-an-ai-agent-mcp):** a flat interaction graph that cuts
+  **~71% of the tokens** vs Playwright's `aria_snapshot`, with handles that resolve 1:1 and don't
+  drift when the page re-renders.
 
 **Broken access control is the #1 web vulnerability** (OWASP A01) and the one automated
 scanners miss — because catching it means knowing *who should be allowed to do what*, not
@@ -79,14 +87,20 @@ default**: destructive actions and out-of-scope hosts are refused.
 
 ---
 
-## Quickstart — find an IDOR in 60 seconds
+## Quickstart
+
+**See it run in 10 seconds** — no account, no browser download (bare `zerodom <url>` is a static
+fetch, no Chromium needed):
 
 ```bash
-pip install zerodom            # or: uvx zerodom  ·  npm i @vexralabs/zerodom
+pip install zerodom                      # or: uvx zerodom · npm i @vexralabs/zerodom
+zerodom https://news.ycombinator.com     # the interaction graph + a token report
 ```
 
-Save two logged-in sessions as Playwright `storage_state` files (one per account), then diff
-a protected endpoint across both:
+That's the perception engine — a flat, 1:1-addressable graph instead of 12k tokens of HTML.
+
+**Now the flagship — find an IDOR.** Save two logged-in sessions as Playwright `storage_state`
+files (one per account), then diff a protected endpoint across both:
 
 ```bash
 zerodom compare https://app.example.com/api/admin/dashboard \
@@ -157,6 +171,11 @@ an honest `blocked`, never worked around outside an authorized target.
 ---
 
 ## Use it from an AI agent (MCP)
+
+Standard MCP browser tools hand the model raw pixels (slow, stale on scroll) or an accessibility
+tree (no stable handles — repeated controls collide). `zerodom-mcp` gives your agent a **flat,
+token-frugal graph** where every `click [45]` resolves deterministically over CDP to exactly one
+element — and the same tools do cross-identity IDOR hunting the others can't. [Why ↓](#why-the-agent-sees-so-few-tokens)
 
 ZeroDOM is a native **MCP server**, so Claude, Cursor or any MCP agent can hunt with the same
 primitives. Run `zerodom setup` for a guided first-run (checks Chromium, prints the extension
