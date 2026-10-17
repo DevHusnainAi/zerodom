@@ -3,8 +3,8 @@
   "name": "zerodom",
   "display_name": "ZeroDOM",
   "version": "0.1.0",
-  "description": "The deterministic attack-surface perception layer for AI security agents. Maps every actionable element of a live, logged-in Chrome page to a unique id; no LLM in the parse.",
-  "long_description": "The deterministic attack-surface perception layer for AI security agents. ZeroDOM parses a live page into a flat, addressable list of clickable/fillable nodes (`[03] button 'Sign In'`) instead of an accessibility tree or raw DOM dump. Every CSS selector it returns is checked for actual document-wide uniqueness before being trusted, not assumed from an attribute — 99.00% of 10,756 audited selectors across 111 real sites resolve to exactly one element. Requires Playwright's Chromium to be installed once (`uvx --from zerodom playwright install chromium`) before first use.",
+  "description": "Point an agent at an app as two logged-in users and it finds the broken access control (IDOR): same request, 200 vs 401. Plus deterministic, token-lean browser perception for AI agents. Open-core, runs local, no account.",
+  "long_description": "ZeroDOM drives your real, logged-in Chrome (over MCP) as two identities, replays the same request as each, and flags the deterministic tells of broken access control — a 200-vs-401 split or a byte-identical cross-tenant response (IDOR). Under that sits a token-lean perception layer: a live page becomes a flat, uniquely-addressable interaction graph (`[03] button 'Sign In'`) with CSS selectors kept server-side — ~71% fewer tokens than an accessibility snapshot, and 99.00% of 10,756 audited selectors across 111 real sites resolve to exactly one element. Deterministic (no LLM in the parse), runs fully local with zero egress, no account or API key. Requires Playwright's Chromium once: `uvx --from zerodom playwright install chromium`.",
   "author": {
     "name": "Syed Husnain Khalid",
     "url": "https://github.com/DevHusnainAi"
