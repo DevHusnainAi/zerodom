@@ -1,8 +1,18 @@
 # Examples
 
-Two ways to plug ZeroDOM into a tool-calling agent. Both do the same thing —
-parse the page, hand the model `to_compact_text()`, resolve whatever node id it
-picks back to a selector server-side — one via LangChain, one raw.
+## Framework integrations (the full toolset, via MCP) → [`integrations/`](integrations/)
+
+The best way to use ZeroDOM from an agent framework is **MCP** — it's already an MCP server, so
+every framework loads the *whole* 35-tool set (perception **+** the `compare`/`sweep`/`replay`
+IDOR tools) from one shared config, with near-zero glue. Ready-to-run examples for **LangGraph /
+LangChain, OpenAI Agents SDK, CrewAI, and Pydantic AI** (plus the one gotcha that matters for
+ZeroDOM — keeping a single session) live in [`integrations/`](integrations/).
+
+## Library examples (perception only, no MCP)
+
+The two scripts below take the other route: import the ZeroDOM *library*, drive the Playwright
+page yourself, and wrap `to_compact_text()` / `selector_map()` as a few tools. Use these when you
+already own the browser loop and only want the token-lean graph.
 
 | file | shows |
 |---|---|
