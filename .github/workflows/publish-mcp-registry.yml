@@ -1,0 +1,90 @@
+name: Publish to MCP Registry
+
+# Keeps the official registry entry (io.github.DevHusnainAi/zerodom) in step with
+# the packages. PyPI releases on `v*`, npm on `npm-v*` — either tag triggers this.
+# It reads the exact package versions from server.json, waits until BOTH are live
+# on PyPI and npm, then republishes server.json. It's a no-op when that version is
+# already the registry's latest, so whichever sibling tag lands second just skips
+# (and a concurrency group serializes a simultaneous double-push).
+#
+# GitHub OIDC proves this repo owns the io.github.DevHusnainAi namespace, so there
+# is no token to store. Bump server.json by hand at release time (same as
+# js/package.json / mcpb/manifest.json) — a warning fires here if you forget.
+on:
+  push:
+    tags: ["v*", "npm-v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # OIDC token the registry trusts for the io.github.* namespace
+
+concurrency:
+  group: mcp-registry-publish
+  cancel-in-progress: false
+
+env:
+  MCP_PUBLISHER_VERSION: "1.8.1"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read versions from server.json
+        id: sj
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          d = json.load(open("server.json"))
+          pkg = {p["registryType"]: p for p in d["packages"]}
+          print(f"ver={d['version']}")
+          print(f"pypi={pkg['pypi']['version']}")
+          print(f"npm={pkg['npm']['version']}")
+          PY
+
+      - name: Sanity-check the tag matches server.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          case "$GITHUB_REF_NAME" in
+            npm-v*) want="${GITHUB_REF_NAME#npm-v}"; got="${{ steps.sj.outputs.npm }}" ;;
+            v*)     want="${GITHUB_REF_NAME#v}";     got="${{ steps.sj.outputs.pypi }}" ;;
+            *)      exit 0 ;;
+          esac
+          [ "$want" = "$got" ] || echo "::warning::tag $GITHUB_REF_NAME implies $want but server.json lists $got for that package — did you forget to bump server.json?"
+
+      - name: Skip if this version is already the registry's latest
+        id: gate
+        run: |
+          latest=$(curl -fsSL "https://registry.modelcontextprotocol.io/v0/servers?search=zerodom" \
+            | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x.get('server',x)['version'] for x in d.get('servers',[]) if x.get('_meta',{}).get('io.modelcontextprotocol.registry/official',{}).get('isLatest')),''))")
+          echo "registry latest='$latest', server.json wants '${{ steps.sj.outputs.ver }}'"
+          if [ "$latest" = "${{ steps.sj.outputs.ver }}" ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Wait for PyPI and npm to be live
+        if: steps.gate.outputs.skip != 'true'
+        id: wait
+        run: |
+          pv="${{ steps.sj.outputs.pypi }}"; nv="${{ steps.sj.outputs.npm }}"
+          for i in $(seq 1 24); do   # ~12 min — the sibling tag may land minutes apart
+            p=$(curl -fsSL https://pypi.org/pypi/zerodom/json | python3 -c "import sys,json;print('$pv' in json.load(sys.stdin)['releases'])" 2>/dev/null || echo False)
+            n=$(curl -fsSL https://registry.npmjs.org/@vexralabs/zerodom | python3 -c "import sys,json;print('$nv' in json.load(sys.stdin).get('versions',{}))" 2>/dev/null || echo False)
+            echo "try $i — pypi@$pv=$p  npm@$nv=$n"
+            if [ "$p" = "True" ] && [ "$n" = "True" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+            sleep 30
+          done
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::both packages not live within the window; the sibling tag's run will publish once they are"
+
+      - name: Install mcp-publisher
+        if: steps.gate.outputs.skip != 'true' && steps.wait.outputs.ready == 'true'
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher validate
+
+      - name: Publish to the MCP Registry (GitHub OIDC)
+        if: steps.gate.outputs.skip != 'true' && steps.wait.outputs.ready == 'true'
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
