@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-10-23
+
+Discoverability and community polish; no API changes.
+
+### Added
+
+- A one-line star/Discord nudge printed after the human `inspect` report. It is
+  TTY-gated, so a pipe, redirect or `| jq` never sees it (machine output stays
+  clean), and `ZERODOM_NO_BANNER=1` silences it. No phone-home — static links.
+
+### Changed
+
+- PyPI subtitle now leads with the cross-identity IDOR use-case for both the
+  AppSec and AI-agent audiences.
+- Package keywords add `idor`, `claude-code` and `cursor` for registry search.
+
 ## [0.1.1] — 2026-10-17
 
 Docs and packaging polish; no code or API changes.
