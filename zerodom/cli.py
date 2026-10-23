@@ -583,6 +583,17 @@ def emit_jsonl(graph) -> None:
     out.flush()
 
 
+def _banner(stream) -> None:
+    """One-line star/Discord nudge for humans only. Gated on the stream being a
+    real TTY, so a pipe, redirect or `| jq` never sees it (keeps machine output
+    clean); `ZERODOM_NO_BANNER=1` silences it. ponytail: no phone-home, no
+    first-run state file — static links, printed, done."""
+    if os.environ.get("ZERODOM_NO_BANNER") or not getattr(stream, "isatty", lambda: False)():
+        return
+    print("  ★ github.com/DevHusnainAi/zerodom   ·   discord.gg/tVRznUb5Ez",
+          file=stream)
+
+
 def inspect(
     url: str,
     render: bool = False,
@@ -677,6 +688,7 @@ def inspect(
     if extra:
         print(extra, file=report)
     print("─" * 52, file=report)
+    _banner(report)
     return 0
 
 
