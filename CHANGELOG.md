@@ -6,6 +6,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`zerodom scan` now reads external JS bundles.** `scan --js` and `crawl`
+  fetch the page's same-origin `<script src>` files (jsintel stays network-free;
+  the CLI supplies the bytes), so apps whose logic lives in a bundle are no longer
+  invisible.
+- **Callable API surface with method + body shape.** `extract_endpoints` parses
+  `fetch`/`axios`/wrapper call sites; `crawl` records a `js_endpoints` field
+  (e.g. `POST /api/cart/coupon body=[code]`) distinct from the load-time
+  `api_calls`, and `scan --js` reports them.
+- **DOM-XSS sink detection with source reachability.** `scan --js` flags
+  unescaped interpolations into `innerHTML`/`document.write`/`eval`/… and ranks a
+  sink **high** only when it traces to an attacker-controllable source
+  (hash/URL/postMessage/storage), else **low**.
+- **Response-header posture rules** (`scan`): CSP absent / `unsafe-inline`, CORS
+  `*`, `Set-Cookie` without `SameSite`/`HttpOnly`, via a declarative `header_rules:`
+  section in `surfaces.yaml`.
+- **`csrf-posture` correlation** — a cookie-authenticated state-changing POST
+  (JS endpoint or server-rendered `<form>`) with no SameSite and no anti-CSRF
+  token. Replaces the noisy standalone `form-without-csrf` rule (retired).
+- **`zerodom repeat`** — send a request (optionally N times, shared session) with
+  a chosen method/body; `--save` writes HAR/`.http` evidence.
+- **`zerodom probe`** — replay an endpoint with a tampered body (`--tamper`) and
+  diff vs baseline to flag mass assignment / price / privilege tampering.
+- **`zerodom race`** — fire a concurrent burst (one body or a mix of operations
+  via repeated `--body`) to flag a check-then-act race (TOCTOU). Engines:
+  stdlib last-byte-sync (`http1`, always available) and HTTP/2 multiplexing
+  (`http2`, the optional `zerodom[race]` extra); `--engine auto` picks per
+  availability and the report names the engine actually used.
+- **`--rps`** on `zerodom sweep` to stay under a program's rate limit; `race`
+  now distinguishes a 429 rate-limit from dedup in its no-finding note.
+- **MCP parity:** `zerodom_scan`, `zerodom_repeat`, `zerodom_race`,
+  `zerodom_probe` expose the above to agents, driving the active authenticated
+  session (race runs as the browser's own multiplexed fetch).
+
+### Changed
+
+- Retired the broad `form-without-csrf` surface rule (fired on every
+  search/newsletter box) in favour of the precise `csrf-posture` correlation;
+  the targeted `password-field-outside-form-token` rule is kept.
+
 ## [0.1.2] — 2026-10-23
 
 Discoverability and community polish; no API changes.

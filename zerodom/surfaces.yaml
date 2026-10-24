@@ -25,13 +25,10 @@ rules:
     match:
       href_regex: "/(admin|internal|_debug|debug|actuator|swagger|graphql|phpmyadmin|\\.git)(/|$|\\?)"
 
-  - id: form-without-csrf
-    severity: high
-    description: Fillable field present but no CSRF/anti-forgery token among the page's hidden fields.
-    match:
-      role: textbox
-    page:
-      missing_hidden_regex: "csrf|xsrf|authenticity_token|__requestverificationtoken|anti[-_]?forgery"
+  # Retired: "fillable field + no CSRF token" fired on every search/newsletter box
+  # — noise. The real CSRF signal is the `csrf-posture` correlation (a cookie-
+  # authenticated POST surface with no SameSite and no token), emitted by `scan`;
+  # the precise password-form case below is kept.
 
   - id: password-field-outside-form-token
     severity: medium
@@ -41,3 +38,37 @@ rules:
       input_type: password
     page:
       missing_hidden_regex: "csrf|xsrf|authenticity_token|__requestverificationtoken"
+
+# Response-header posture rules (judge the HTTP response, not the DOM). Each
+# names a header (case-insensitive) and exactly one condition: absent / present /
+# value_regex / value_missing_regex.
+header_rules:
+  - id: missing-csp
+    severity: medium
+    description: No Content-Security-Policy response header — a client-side injection is unconstrained.
+    header: content-security-policy
+    absent: true
+
+  - id: csp-unsafe-inline
+    severity: medium
+    description: CSP allows 'unsafe-inline' — inline scripts/handlers run, so it is weak against XSS.
+    header: content-security-policy
+    value_regex: "unsafe-inline"
+
+  - id: cors-wildcard-origin
+    severity: medium
+    description: Access-Control-Allow-Origin is '*' — any origin may read responses from this surface.
+    header: access-control-allow-origin
+    value_regex: "^\\*$"
+
+  - id: cookie-without-samesite
+    severity: low
+    description: Set-Cookie without SameSite — the cookie rides cross-site requests (CSRF exposure).
+    header: set-cookie
+    value_missing_regex: "samesite"
+
+  - id: cookie-without-httponly
+    severity: low
+    description: Set-Cookie without HttpOnly — a session cookie readable from JavaScript (XSS can steal it).
+    header: set-cookie
+    value_missing_regex: "httponly"

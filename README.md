@@ -56,6 +56,8 @@ Open-core, runs local, no account, no API key, nothing leaves your machine.
 
 - **AppSec — [`compare` / `sweep`](#how-it-hunts--compare--sweep):** deterministic two-identity
   authorization testing that runs **headless in CI or your recon pipeline** — no GUI, no account.
+  `scan --js` adds DOM-XSS sinks, the callable API surface and header posture; `repeat` / `probe`
+  / `race` turn recon into verification (Repeater, mass-assignment diff, and a TOCTOU burst).
 - **AI agents — [MCP](#use-it-from-an-ai-agent-mcp):** a flat interaction graph that cuts
   **~71% of the tokens** vs Playwright's `aria_snapshot`, with handles that resolve 1:1 and don't
   drift when the page re-renders.
@@ -168,6 +170,22 @@ a scope you can lock. Challenge pages (Cloudflare / Turnstile / reCAPTCHA / hCap
 detected and climbed by a scope-gated clearance ladder; a wall nothing clears is reported as
 an honest `blocked`, never worked around outside an authorized target.
 
+### When recon finds a lead — `repeat` / `probe` / `race`
+
+Mapping an app surfaces the endpoints; these verbs act on them. `repeat` is a Repeater over the
+session (`--save` writes HAR/`.http` evidence for a report). `probe` replays an endpoint with a
+tampered body and diffs it against the baseline — an accepted, reflected field is a mass-assignment
+lead. `race` fires a concurrent burst (one body, or a mix of operations via repeated `--body`) to
+flag a check-then-act race (TOCTOU); the stdlib engine is always available, and `--engine http2`
+multiplexes the burst over one connection via the optional `zerodom[race]` extra.
+
+```bash
+zerodom race https://app.example.com/api/coupon --body '{"code":"SAVE20"}' -n 30 \
+  --setup setup.json --check https://app.example.com/api/cart
+```
+
+All three are exposed to agents over MCP as `zerodom_repeat` / `zerodom_probe` / `zerodom_race`.
+
 ---
 
 ## Use it from an AI agent (MCP)
@@ -227,7 +245,11 @@ Ready-to-run MCP examples — same server, a few lines each — are in
 | `zerodom_get_cookies()` ⚠️ | list cookies for the active tab, **including `httpOnly` ones** |
 | `zerodom_get_storage()` | list the `localStorage` / `sessionStorage` keys the active page holds |
 | `zerodom_hidden_fields()` | list the page's `<input type="hidden">` fields (CSRF tokens, per-view payload) |
-| `zerodom_crawl(url, max_pages=10, scope=None, deny=None)` | BFS-walk in-scope routes; one JSONL record per page (forms, links, fired API calls) |
+| `zerodom_crawl(url, max_pages=10, scope=None, deny=None)` | BFS-walk in-scope routes; one JSONL record per page (forms, links, fired API calls, and `js_endpoints` — the callable surface read from the page's JS) |
+| `zerodom_scan(js=True)` | surface rules over the active page: DOM-XSS sinks + callable API surface from its JS, plus CSP/CORS header posture |
+| `zerodom_repeat(url, method="GET", body=None)` | send one request over the active session (in-page fetch) — a Repeater returning `{status, body}` |
+| `zerodom_probe(url, tamper, body=None, method="POST")` | replay with a tampered body and diff vs baseline — mass-assignment / tampering |
+| `zerodom_race(url, bodies=None, n=20, method="POST", setup=None, check=None)` | concurrent burst over the active session (browser multiplex) to flag a check-then-act race (TOCTOU) |
 | `zerodom_set_scope(hosts, deny=None, max_rps=None)` | constrain the hunt to authorized hosts — enforced in code, not on trust |
 | `zerodom_add_identity(name, storage_state=None, header=None)` | register a second identity (e.g. user B) for cross-tenant testing |
 | `zerodom_replay(url, method="GET", body=None, header=None, as_identity=None)` | replay a request under a chosen identity — Burp Repeater for the agent |
@@ -326,7 +348,7 @@ language, so nothing in a rules file gets evaluated.
 
 ```bash
 subfinder -d example.com | httpx -silent | zerodom scan -          # into your recon pipeline
-zerodom scan https://app.example.com --js                          # + secrets/endpoints from inline JS
+zerodom scan https://app.example.com --js                          # + DOM-XSS sinks, callable API surface, header posture
 zerodom scan https://app.example.com --format md                   # Markdown table for a report
 ```
 

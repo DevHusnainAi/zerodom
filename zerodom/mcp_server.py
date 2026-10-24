@@ -1795,6 +1795,155 @@ async def zerodom_crawl(url: str, max_pages: int = 10, scope: str | None = None,
     return "\n".join(out) or "No pages crawled."
 
 
+# --- Recon + act over the active session (CLI scan / repeat / race / probe) ----
+# These mirror the CLI verbs for an agent, but drive the live, authenticated tab:
+# scan reads the page + its same-origin JS; repeat/race/probe send via in-page
+# fetch, so the real session cookies apply and race rides the browser's own
+# (multiplexed) network stack — the tightest client-side engine there is.
+
+_SCRIPTS_JS = """async () => {
+  const out = [];
+  for (const s of document.querySelectorAll('script[src]')) {
+    try { const u = new URL(s.getAttribute('src'), location.href);
+      if (u.origin !== location.origin) continue;
+      out.push(await (await fetch(u.href)).text());
+    } catch (e) {}
+  }
+  return out;
+}"""
+
+_HEADERS_JS = """async () => {
+  try { const r = await fetch(location.href, {method:'GET'});
+    const h = {}; r.headers.forEach((v,k)=>{h[k]=v;}); return h;
+  } catch (e) { return {}; }
+}"""
+
+_FETCH_ONE_JS = """async ({url, method, body}) => {
+  const opt = {method, headers: body != null ? {'Content-Type':'application/json'} : {}};
+  if (body != null) opt.body = body;
+  const r = await fetch(url, opt);
+  const t = await r.text(); let parsed; try { parsed = JSON.parse(t); } catch (e) { parsed = t; }
+  return {status: r.status, body: parsed};
+}"""
+
+_RACE_JS = """async ({url, method, bodies, n, setup, check}) => {
+  const send = (u, m, b) => fetch(u, {method:m, headers: b!=null?{'Content-Type':'application/json'}:{}, body: b!=null?b:undefined});
+  for (const s of setup) {
+    const u = s.url || new URL(s.path, location.href).href;
+    let b = s.body; if (b != null && typeof b !== 'string') b = JSON.stringify(b);
+    await send(u, (s.method||'GET').toUpperCase(), b);
+  }
+  const specs = []; for (let i=0;i<n;i++) for (const b of bodies) specs.push(b);
+  const results = await Promise.all(specs.map(async b => [b, (await send(url, method, b)).status]));
+  let chk = null;
+  if (check) { try { chk = await (await fetch(check)).json(); } catch (e) { try { chk = await (await fetch(check)).text(); } catch (e2) {} } }
+  return {results, check: chk};
+}"""
+
+
+@mcp.tool()
+async def zerodom_scan(js: bool = True) -> str:
+    """Run zerodom's surface rules over the ACTIVE page and return findings as
+    JSONL: the interaction-graph rules, DOM-XSS sinks and the callable API surface
+    (method + body shape) read from the page's same-origin JS (js=True), and
+    CSP/CORS response-header posture. Recon over the page you are on — navigate
+    first with zerodom_parse_url. (Cookie-flag and CSRF correlation are CLI
+    `zerodom scan` only: a page cannot read its own Set-Cookie header.)
+    """
+    from .jsintel import scan_js
+    from .parser import ZeroDOMParser
+    from .playwright_wrapper import serialize_async
+    from .surfaces import evaluate, evaluate_headers, load_header_rules, load_rules
+
+    page = await _page()
+    await _scope_ok(page.url)
+    html = await serialize_async(page)
+    graph = ZeroDOMParser(html, page.url).parse()
+    findings = list(evaluate(graph, load_rules(None)))
+    if js:
+        scripts = await page.evaluate(_SCRIPTS_JS)
+        findings += scan_js(html, page.url, scripts=scripts or [])
+    headers = await page.evaluate(_HEADERS_JS)
+    findings += evaluate_headers(headers or {}, page.url, load_header_rules(None))
+    return "\n".join(json.dumps(f.to_dict(), ensure_ascii=False) for f in findings) or "No findings."
+
+
+@mcp.tool()
+async def zerodom_repeat(url: str, method: str = "GET", body: str | None = None) -> str:
+    """Send one request over the active authenticated session (in-page fetch) and
+    return {status, body} — the Repeater for crafting or verifying a request by
+    hand, e.g. replaying a crawl-discovered POST with a tweaked body."""
+    _reject_undrivable(url)
+    await _scope_ok(url)
+    page = await _page()
+    res = await page.evaluate(_FETCH_ONE_JS, {"url": url, "method": method.upper(), "body": body})
+    return json.dumps(res, ensure_ascii=False)
+
+
+@mcp.tool()
+async def zerodom_race(url: str, bodies: list[str] | None = None, n: int = 20,
+                       method: str = "POST", setup: list[dict] | None = None,
+                       check: str | None = None) -> str:
+    """Fire a concurrent burst over the active session — the TOCTOU probe, run as
+    the browser's own multiplexed fetch (the tightest client-side engine). `bodies`
+    is one or more request bodies, each fired `n` times and interleaved (a mix of
+    operations on one record widens a read-modify-write window); `setup` is a list
+    of prep requests [{url|path, method?, body?}]; `check` is a URL GET-ed after the
+    burst. Returns the status spread, per-body breakdown, and a race-condition
+    finding when a single-use action over-applies."""
+    from .cli import race_report
+
+    _reject_undrivable(url)
+    await _scope_ok(url)
+    page = await _page()
+    m = method.upper()
+    res = await page.evaluate(_RACE_JS, {"url": url, "method": m, "bodies": bodies or [None],
+                                         "n": n, "setup": setup or [], "check": check})
+    specs = [(m, b) for b, _ in res["results"]]
+    statuses = [s for _, s in res["results"]]
+    report, findings = race_report(statuses, specs, m, url, "browser-multiplex",
+                                   res.get("check") if check else None)
+    lines = [json.dumps(report, ensure_ascii=False)]
+    lines += [json.dumps(f.to_dict(), ensure_ascii=False) for f in findings]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def zerodom_probe(url: str, tamper: str, body: str | None = None, method: str = "POST") -> str:
+    """Replay an endpoint with a tampered body over the active session and diff vs
+    baseline — the mass-assignment / tampering check. `tamper` (JSON) is merged over
+    `body`; an injected field accepted (2xx) and reflected in the tampered response
+    but absent from baseline is flagged. Returns baseline/tampered responses and any
+    finding."""
+    from .cli import probe_finding
+
+    _reject_undrivable(url)
+    await _scope_ok(url)
+    page = await _page()
+    m = method.upper()
+    injected = json.loads(tamper)
+    merged = (json.loads(body) if body else {})
+    merged.update(injected)
+    tampered = json.dumps(merged)
+
+    base = None
+    if body is not None:
+        base = await page.evaluate(_FETCH_ONE_JS, {"url": url, "method": m, "body": body})
+    tamp = await page.evaluate(_FETCH_ONE_JS, {"url": url, "method": m, "body": tampered})
+
+    def _txt(res):
+        return res["body"] if isinstance(res["body"], str) else json.dumps(res["body"])
+
+    out = {"url": url, "method": m, "tampered": tamp}
+    if base is not None:
+        out["baseline"] = base
+    finding = probe_finding(injected, _txt(base) if base else None, tamp["status"], _txt(tamp), m, url)
+    lines = [json.dumps(out, ensure_ascii=False)]
+    if finding:
+        lines.append(json.dumps(finding.to_dict(), ensure_ascii=False))
+    return "\n".join(lines)
+
+
 @mcp.tool()
 async def zerodom_click_node(node_id: str) -> str:
     """Click a node and return what changed on the page.

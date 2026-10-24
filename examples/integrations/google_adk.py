@@ -5,7 +5,7 @@
     # set the model's credentials, e.g. GOOGLE_API_KEY for Gemini
     python examples/integrations/google_adk.py
 
-Tool loading (MCPToolset.get_tools) is runtime-verified against zerodom-mcp (35 tools).
+Tool loading (MCPToolset.get_tools) is runtime-verified against zerodom-mcp (39 tools).
 """
 from __future__ import annotations
 

@@ -51,6 +51,14 @@ dependencies = [
     "websockets<15",
 ]
 
+[project.optional-dependencies]
+# `zerodom race --engine http2` only: httpx's HTTP/2 client multiplexes the burst
+# over one connection to squeeze a check-then-act window that separate HTTP/1.1
+# connections miss. Optional so the base install carries no extra weight; the
+# stdlib http1 engine is always available and `pip install 'zerodom[race]'` adds
+# this. httpx[http2] pulls h2/hpack/hyperframe (pure-Python).
+race = ["httpx[http2]>=0.27,<1"]
+
 [project.urls]
 Homepage = "https://zerodom.vexralabs.com"
 Documentation = "https://zerodom.vexralabs.com/docs/introduction"
@@ -62,7 +70,7 @@ Issues = "https://github.com/DevHusnainAi/zerodom/issues"
 # fastapi/uvicorn drive the zerodom-demo fixture app that the dynamic-component
 # correctness tests (tests/test_dynamic_components.py) run against — test-only,
 # never a runtime dep of the package.
-dev = ["pytest", "fastapi", "uvicorn"]
+dev = ["pytest", "fastapi", "uvicorn", "httpx[http2]"]  # httpx: exercises `race --engine http2` in CI
 
 [project.scripts]
 zerodom = "zerodom.cli:main"

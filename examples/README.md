@@ -3,7 +3,7 @@
 ## Framework integrations (the full toolset, via MCP) → [`integrations/`](integrations/)
 
 The best way to use ZeroDOM from an agent framework is **MCP** — it's already an MCP server, so
-every framework loads the *whole* 35-tool set (perception **+** the `compare`/`sweep`/`replay`
+every framework loads the *whole* 39-tool set (perception **+** the `compare`/`sweep`/`replay`
 IDOR tools) from one shared config, with near-zero glue. Ready-to-run examples for **LangGraph /
 LangChain, OpenAI Agents SDK, CrewAI, and Pydantic AI** (plus the one gotcha that matters for
 ZeroDOM — keeping a single session) live in [`integrations/`](integrations/).

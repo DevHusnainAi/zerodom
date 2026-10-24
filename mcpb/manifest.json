@@ -51,7 +51,23 @@
     },
     {
       "name": "zerodom_crawl",
-      "description": "BFS-walk an app's in-scope routes and return one JSONL record per page: final URL, forms, in-scope links, the XHR/fetch API calls it fired, hidden fields, and `blocked` when the route is a challenge interstitial."
+      "description": "BFS-walk an app's in-scope routes and return one JSONL record per page: final URL, forms, in-scope links, the XHR/fetch API calls it fired, the callable API surface read from the page's JS (js_endpoints: method + body shape), hidden fields, and `blocked` when the route is a challenge interstitial."
+    },
+    {
+      "name": "zerodom_scan",
+      "description": "Run zerodom's surface rules over the active page: client-side DOM-XSS sinks and the callable API surface read from its same-origin JS, plus CSP/CORS response-header posture. Returns findings as JSONL."
+    },
+    {
+      "name": "zerodom_repeat",
+      "description": "Send one request over the active authenticated session (in-page fetch) and return {status, body} — a Repeater for crafting or verifying a request, e.g. replaying a crawl-discovered POST with a tweaked body."
+    },
+    {
+      "name": "zerodom_probe",
+      "description": "Replay an endpoint with a tampered body over the active session and diff vs baseline — the mass-assignment / price / privilege tampering check. An injected field accepted and reflected but absent from baseline is flagged."
+    },
+    {
+      "name": "zerodom_race",
+      "description": "Fire a concurrent burst over the active session (the browser's own multiplexed fetch) to flag a check-then-act race (TOCTOU). One or more bodies, each fired n times and interleaved; returns the status spread, per-body breakdown, and a race-condition finding when a single-use action over-applies."
     },
     {
       "name": "zerodom_hover",

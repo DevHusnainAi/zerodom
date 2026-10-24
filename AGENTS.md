@@ -25,6 +25,13 @@ zerodom relay                        # WS bridge :8765 for Chrome extension
 zerodom inspect <url> --pipe         # JSONL node stream
 zerodom inspect --stealth <url>      # throwaway Chrome over CDP pipe, no port
 cat targets.txt | zerodom scan -     # surfaces.yaml findings as JSONL
+zerodom scan --js <url>              # + DOM sinks, callable API surface, header posture, csrf-posture
+zerodom crawl <url>                  # routes/forms/API + js_endpoints (method+body) as JSONL
+zerodom compare <url> --as a=a.json --as b=b.json   # cross-tenant IDOR
+zerodom sweep <url> --as … --rps 20  # crawl one identity, replay across identities (throttled)
+zerodom repeat <url> --method POST --body '{…}' --save ev.har   # Repeater + evidence
+zerodom probe  <url> --body '{…}' --tamper '{"role":"admin"}'   # mass-assignment diff
+zerodom race   <url> --body '{…}' --body '{…}' -n 30 --engine http2   # TOCTOU burst (zerodom[race])
 ZERODOM_E2E=1 uv run pytest tests/test_extension_e2e.py -v -s   # opt-in e2e
 ```
 No linter/formatter/type-checker is configured — no ruff/mypy/black in pyproject or CI; don't guess one.
@@ -52,10 +59,10 @@ CI: `uv sync && uv run playwright install --with-deps chromium && uv run pytest`
 - `frames.py` — iframe traversal, opt-in `frames=True`
 - `audit.py` — selector audit against live page
 - `cdp_pipe.py` — `--stealth` transport: Chrome via `--remote-debugging-pipe`, raw CDP over FD 3/4 NUL-framed, POSIX-only, `close_fds=False` deliberate
-- `surfaces.py` + `surfaces.yaml` — `zerodom scan`, deterministic YAML rules, unknown key = load error
-- `jsintel.py` — `zerodom scan --js`, regex over inline JS for secrets/endpoints
+- `surfaces.py` + `surfaces.yaml` — `zerodom scan`, deterministic YAML node rules + `header_rules:` (CSP/CORS/cookie posture) + `csrf_posture` correlation; unknown key = load error
+- `jsintel.py` — `zerodom scan --js`: secrets, the callable API surface (`extract_endpoints`: method+body), and DOM-XSS sinks (`scan_sinks`, source-reachability ranked). Network-free; the CLI fetches external bundles and passes them in
 - `parser._detect_challenge` + `clearance.py`/`solvers.py`/`scope.py` — CF/Turnstile/reCAPTCHA/hCaptcha detection → `metadata["blocked"]`; `clearance.attempt_clearance` then climbs a 4-rung ladder (reused → stealth → opt-in solver → relay human) at 3 choke points (`cli._goto`/`mcp_server._goto`/`cdp_pipe.outer_html`), result via module slot → `metadata["cleared"]`. We never solve a CAPTCHA ourselves: rung 3 solvers (CapSolver/2Captcha/Anti-Captcha/custom URL) are opt-in via `ZERODOM_SOLVER_*`/`zerodom config set`, scope-gated, spend logged; `--no-solver`/`ZERODOM_NO_SOLVER=1` kill switch, default path zero-egress. Authorized targets only; unclearable wall stays `blocked` (honest miss)
-- `cli.py` — `inspect/audit/relay/scan/crawl/compare/sweep/extension/setup/config`; `--pipe`, `--stealth`, stdin `-`; engagement flags `--proxy/$ZERODOM_PROXY`+`--insecure`, `--header`, `--storage-state`; `scan --format jsonl|md` (md = report/ticket table); `--frames`+`--stealth` errors; `compare` for cross-tenant IDOR; `sweep URL --as N=state.json …` = crawl-as-one-identity then replay every in-scope GET across identities → access-control findings (thin wrapper over crawl+compare, read-only); `crawl` for attack-surface map (own Chromium, or `--relay` on an open Chrome; `crawl --stealth` errors)
+- `cli.py` — `inspect/audit/relay/scan/crawl/compare/sweep/repeat/probe/race/extension/setup/config`; `--pipe`, `--stealth`, stdin `-`; engagement flags `--proxy/$ZERODOM_PROXY`+`--insecure`, `--header`, `--storage-state`; `scan --format jsonl|md` (md = report/ticket table); `--frames`+`--stealth` errors; `compare` for cross-tenant IDOR; `sweep URL --as N=state.json … [--rps]` = crawl-as-one-identity then replay every in-scope GET across identities → access-control findings (read-only); `crawl` for attack-surface map (own Chromium, or `--relay`; `crawl --stealth` errors). Act/verify verbs: `repeat` (Repeater + `--save` HAR/.http), `probe --tamper` (mass-assignment diff), `race` (TOCTOU burst; `_race_burst` last-byte-sync `http1` engine, or `Http2Sender`/httpx `http2` via the `zerodom[race]` extra; `race_report`/`probe_finding` shared with MCP)
 
 Import order in `__init__.py` matters: `label_linker` → `parser` → `playwright_wrapper`.
 
@@ -70,6 +77,7 @@ Import order in `__init__.py` matters: `label_linker` → `parser` → `playwrig
 
 ## MCP server specifics
 - Cross-identity hunting: `zerodom_add_identity` / `zerodom_replay` / `zerodom_compare_identities` — byte-identical response = cross-tenant IDOR
+- Recon+act over the active session (CLI parity): `zerodom_scan` (sinks/API surface/header posture), `zerodom_repeat`, `zerodom_probe`, `zerodom_race` (in-page `fetch`/`Promise.all` — the browser's own multiplex engine; reuses `cli.race_report`/`probe_finding`). Cookie-flag/CSRF posture is CLI-only (a page can't read its own `Set-Cookie`)
 - Entry point `zerodom-mcp`; single global session `_session`; node ids normalized: `"03"`, `"[03]"`, `"node_03"`
 - Tools re-read live DOM via `_read()`; form state/scroll persist
 - Only `zerodom_parse_url` calls `page.goto`

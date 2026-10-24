@@ -4,7 +4,7 @@
     uvx --from zerodom playwright install chromium          # once, if it will drive a browser
     ANTHROPIC_API_KEY=... python examples/integrations/llamaindex.py
 
-Tool loading (BasicMCPClient + McpToolSpec) is runtime-verified against zerodom-mcp (35 tools).
+Tool loading (BasicMCPClient + McpToolSpec) is runtime-verified against zerodom-mcp (39 tools).
 """
 from __future__ import annotations
 
