@@ -1641,7 +1641,7 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--render", action="store_true", help="fetch via headless Chromium")
     scan.add_argument("--stealth", action="store_true", help="fetch via a throwaway-profile Chrome over a CDP pipe")
     scan.add_argument("--fail-on-finding", action="store_true", help="exit non-zero if any rule fires (for CI)")
-    scan.add_argument("--js", action="store_true", help="also extract leaked secrets and endpoints from inline JS")
+    scan.add_argument("--js", action="store_true", help="also scan the page's same-origin JS: DOM-XSS sinks, the callable API surface, leaked secrets/endpoints, and CSP/CORS/cookie header posture")
     scan.add_argument(
         "--format", choices=["jsonl", "md"], default="jsonl", dest="fmt",
         help="jsonl (default, pipe-friendly) or md (a Markdown table to paste into a report/ticket)",

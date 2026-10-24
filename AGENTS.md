@@ -53,7 +53,7 @@ CI: `uv sync && uv run playwright install --with-deps chromium && uv run pytest`
 ## Architecture
 - `parser.py` (FR-1) — core DFS, unique CSS selector generation
 - `label_linker.py` (FR-2) — label resolution, priority documented at top of file
-- `playwright_wrapper.py` (FR-3) — sync/async Playwright adapter
+- `playwright_wrapper.py` (FR-3) — sync/async Playwright adapter; `from_page` runs a bounded DOM-settle wait (`SETTLE`, MutationObserver, quiet 200ms / cap 1200ms, structural+text only) before serializing so a read lands on a quiet DOM, not one mid-churn — `settle=False` to read-exactly-now. Mirror any change in `js/src/playwright.ts` `SETTLE`.
 - `mcp_server.py` (FR-4) — MCP server `zerodom-mcp`, single global session `_session`
 - `report.py` — browser-facing screenshot/HTML inspector, lazy-imported
 - `frames.py` — iframe traversal, opt-in `frames=True`
@@ -69,7 +69,7 @@ Import order in `__init__.py` matters: `label_linker` → `parser` → `playwrig
 ## Conventions
 - `# ponytail:` comments = deliberate scope limit, not a bug
 - No LLM/network calls in `parser.py` or `label_linker.py` — parse must stay deterministic
-- **Hand-kept mirrors — a fix isn't done until every copy has it:** (1) `parser.py`/`label_linker.py` → `js/src/parser.ts`/`labelLinker.ts` + a case in `js/test/parser.test.ts`; (2) browser-side `SERIALIZE` stamping (`playwright_wrapper.py`) → the `data-zerodom-*` reader in `parser.py` *and* `js/src/parser.ts`; (3) the sensitive-field regex in `_SENSITIVE_FIELD_RE` (`mcp_server.py`) and `SENSITIVE_RE` (`graph_ui.js`) — the human must see exactly the fields the model is refused on
+- **Hand-kept mirrors — a fix isn't done until every copy has it:** (1) `parser.py`/`label_linker.py` → `js/src/parser.ts`/`labelLinker.ts` + a case in `js/test/parser.test.ts`; (2) browser-side `SERIALIZE` stamping (`playwright_wrapper.py`) → the `data-zerodom-*` reader in `parser.py` *and* `js/src/parser.ts` (the `SETTLE` constant beside it mirrors Python↔TS too); (3) the sensitive-field regex in `_SENSITIVE_FIELD_RE` (`mcp_server.py`) and `SENSITIVE_RE` (`graph_ui.js`) — the human must see exactly the fields the model is refused on
 - `zerodom/graph_ui.{js,css}` is canonical; `extension/` holds a byte-identical copy (an MV3 popup can't load files outside its dir). `test_graph_ui_sync.py` fails if they differ — resync with `cp zerodom/graph_ui.js extension/graph_ui.js` (same for `.css`). **Never edit the `extension/` copy.**
 - Version from `importlib.metadata.version("zerodom")` (reads pyproject) — never hardcode. `js/package.json`, `server.json`, `mcpb/manifest.json` carry their own hand-bumped copies
 - Every non-obvious selector/label decision has a comment anchored to a real page

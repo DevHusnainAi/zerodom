@@ -106,7 +106,15 @@ first — for the FR-numbered ones it states the design constraint.
   and reused per-node so lookups stay O(1).
 - **`playwright_wrapper.py`** (FR-3) — thin adapter, `ZeroDOM.from_page(page)`. Detects
   sync vs. async Playwright by checking whether `page.content()` returns an awaitable;
-  there is no separate sync/async code path beyond that branch.
+  there is no separate sync/async code path beyond that branch. Before serializing it
+  runs a bounded **DOM-settle** wait (`SETTLE`: a `MutationObserver` on
+  childList/subtree/characterData — *not* attributes, so CSS animations don't block it —
+  resolving after 200ms quiet or a 1200ms hard cap), so a read lands on a quiet DOM
+  instead of one still injecting nodes / hydrating / filling labels. The parser is
+  deterministic on fixed HTML; settle is what makes the *live read* stable too.
+  `settle=False` reads exactly-now. Perpetual animations and hydration past the cap are a
+  deliberate bounded ceiling (read as-of-cap, never hung). `SETTLE` is a hand-kept
+  Python↔TS mirror — change `js/src/playwright.ts`'s copy in lockstep.
 - **`mcp_server.py`** (FR-4) — Claude/Cursor MCP server (`zerodom-mcp` entry point), by far
   the largest module; see the section below.
 - **`relay.py`** + **`extension/`** — how the MCP server drives the user's *real, logged-in*

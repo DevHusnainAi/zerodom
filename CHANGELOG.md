@@ -8,6 +8,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Reads wait for async DOM churn to settle.** `ZeroDOM.from_page` now watches
+  the DOM via a `MutationObserver` and serializes only once it has been quiet for
+  a beat (200ms), bounded by a hard 1200ms cap — so a read no longer lands on a
+  page still injecting nodes, hydrating panels or filling in labels. Observes
+  structural/text changes only, not attributes, so a CSS-animated carousel or
+  spinner still lets the page settle. On by default; `settle=False`
+  (Python) / `settle: false` (JS) restores read-exactly-now. Mirrored in the
+  TypeScript port. Perpetual animations and hydration slower than the cap remain
+  a bounded ceiling — read as-of-cap, never hung.
+
 - **`zerodom scan` now reads external JS bundles.** `scan --js` and `crawl`
   fetch the page's same-origin `<script src>` files (jsintel stays network-free;
   the CLI supplies the bytes), so apps whose logic lives in a bundle are no longer
