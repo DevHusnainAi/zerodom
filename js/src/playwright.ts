@@ -216,6 +216,23 @@ export const ZeroDOM = {
     } catch {}
     return options.frames ? mergeFrames(page, graph, viewportOnly, checkOcclusion) : graph;
   },
+
+  /**
+   * Full-page interaction snapshot for an action agent. Returns the token-dense
+   * `[NN]`-ref listing plus a `{ref: selector}` map keyed to those same refs, so
+   * the agent can act on what it read — `[03]` -> selector -> click/fill.
+   *
+   * Defaults to `viewportOnly: false`: an agent can scroll, so it needs the whole
+   * interactive surface, not just what is on screen (the `fromPage` default is the
+   * on-screen view, right for a human observer, wrong for an agent).
+   */
+  async agentSnapshot(
+    page: PageLike,
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
+  ): Promise<{ text: string; refMap: Record<string, string> }> {
+    const graph = await this.fromPage(page, { viewportOnly: false, ...options });
+    return { text: graph.toCompactText(), refMap: graph.refMap() };
+  },
 };
 
 interface FrameNode {

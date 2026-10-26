@@ -260,6 +260,28 @@ class ZeroDOM:
                 pass
         return _merge_frames(page, graph, viewport_only, check_occlusion) if frames else graph
 
+    @staticmethod
+    def agent_snapshot(page: Any, **kwargs: Any) -> tuple[str, dict[str, str]] | Any:
+        """Full-page interaction snapshot for an action agent.
+
+        Returns `(compact_text, ref_map)`: the token-dense `[NN]`-ref listing to
+        put in the model's context, and a `{ref: selector}` map keyed to those same
+        refs so the agent can act on what it read — `[03]` -> selector -> click/fill.
+
+        Defaults to `viewport_only=False`: an agent can scroll, so it needs the whole
+        interactive surface, not just what is on screen (the `from_page` default is
+        the on-screen view, right for a human observer, wrong for an agent). Async
+        pages return an awaitable, mirroring `from_page`.
+        """
+        kwargs.setdefault("viewport_only", False)
+        graph = ZeroDOM.from_page(page, **kwargs)
+        if inspect.isawaitable(graph):
+            async def _await() -> tuple[str, dict[str, str]]:
+                g = await graph
+                return g.to_compact_text(), g.ref_map()
+            return _await()
+        return graph.to_compact_text(), graph.ref_map()
+
 
 async def _from_async_page_settled(
     settled: Any,

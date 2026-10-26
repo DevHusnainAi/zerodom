@@ -94,7 +94,8 @@ first — for the FR-numbered ones it states the design constraint.
   because e.g. a `name` shared by a radio group is not unique. Returns an
   `InteractionGraph` (a `dict` subclass — index it, `graph["metadata"]`, not
   `graph.metadata`) with `.to_json()`, `.to_compact_text()` (the token-dense DSL sent to
-  models), and `.selector_map()` (`node_id -> selector`, stays on the caller's side).
+  models), `.selector_map()` (`node_id -> selector`, stays on the caller's side), and
+  `.ref_map()` (same, but keyed by the `[NN]` the compact text prints, for ref-driven agents).
   `_walk` also skips zerodom's own injected UI (`[id^="zerodom-"]`, `data-zerodom-ignore`)
   and collects `<input type="hidden">` into `hidden_fields` (metadata, never nodes —
   CSRF/per-view payload an agent may need to submit, but nothing it can click).
@@ -114,7 +115,10 @@ first — for the FR-numbered ones it states the design constraint.
   deterministic on fixed HTML; settle is what makes the *live read* stable too.
   `settle=False` reads exactly-now. Perpetual animations and hydration past the cap are a
   deliberate bounded ceiling (read as-of-cap, never hung). `SETTLE` is a hand-kept
-  Python↔TS mirror — change `js/src/playwright.ts`'s copy in lockstep.
+  Python↔TS mirror — change `js/src/playwright.ts`'s copy in lockstep. `agent_snapshot(page)`
+  is the browser-agent entry point: `viewport_only=False` (the whole surface, since an agent
+  scrolls) and returns `(compact_text, ref_map)` in one call. Also a Python↔TS mirror
+  (`agentSnapshot`).
 - **`mcp_server.py`** (FR-4) — Claude/Cursor MCP server (`zerodom-mcp` entry point), by far
   the largest module; see the section below.
 - **`relay.py`** + **`extension/`** — how the MCP server drives the user's *real, logged-in*

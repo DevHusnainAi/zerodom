@@ -33,6 +33,19 @@ test("table rows get the tbody a raw <table> implies", () => {
   assert.equal(graph.selectorMap().node_01, "body > table > tbody > tr > td > a");
 });
 
+test("refMap is keyed by the compact [NN] ref, not node_NN (mirror of test_parser.py)", () => {
+  const graph = parseHtml('<a href="/a">one</a><button>two</button>');
+  const refs = graph.refMap();
+  // keyed by the exact token toCompactText prints — no node_ prefix
+  assert.equal(refs["01"], graph.selectorMap().node_01);
+  assert.equal(refs["02"], graph.selectorMap().node_02);
+  assert.ok(!("node_01" in refs));
+  for (const line of graph.toCompactText().split("\n").slice(1)) {
+    const m = line.trimStart().match(/^\[(\w+)\]/);
+    if (m) assert.ok(m[1] in refs, `compact ref [${m[1]}] missing from refMap`);
+  }
+});
+
 test("a live-DOM tbody is not duplicated", () => {
   const graph = parseHtml('<table><tbody><tr><td><a href="#">row</a></td></tr></tbody></table>');
   assert.equal(graph.selectorMap().node_01, "body > table > tbody > tr > td > a");

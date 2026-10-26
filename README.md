@@ -429,12 +429,21 @@ from zerodom import ZeroDOM
 graph = ZeroDOM.from_page(page)      # any Playwright page, sync or async
 print(graph.to_compact_text())       # what you send the model
 selectors = graph.selector_map()     # {"node_01": "#email", …} — stays your side
+
+# Driving a browser agent? One call gives the full-page view + a ref map keyed to
+# the [NN] refs the model reads, so `[03]` resolves straight to a selector:
+text, refs = ZeroDOM.agent_snapshot(page)   # viewport_only=False by default
+page.click(refs["03"])                      # act on what the model picked
 ```
 
 ```ts
 import { ZeroDOM } from "@vexralabs/zerodom";
 const graph = await ZeroDOM.fromPage(page);
 console.log(graph.toCompactText());
+
+// For a browser agent: full-page snapshot + ref map ([NN] -> selector).
+const { text, refMap } = await ZeroDOM.agentSnapshot(page);
+await page.click(refMap["03"]);
 ```
 
 ---
@@ -468,8 +477,10 @@ Known and worth knowing before you build on it:
 - **Closed shadow roots are unreachable.** Open roots are handled; `{mode: 'closed'}` is hidden
   from every API, Playwright's included.
 - **Canvas / WebGL apps have nothing to parse** — Figma-style surfaces draw controls as pixels.
-- **Nothing waits for the page to finish thinking** — `from_page` / `zerodom_read_page` snapshot
-  the DOM at call time; wait for your own condition first.
+- **The settle wait is bounded, not semantic** — `from_page` / `zerodom_read_page` wait for the
+  DOM to go quiet (≤1200 ms, see 0.1.3), which covers hydration and late node injection, but not
+  an arbitrary app condition (a specific element, a network response). For that, wait on your own
+  condition first, or pass `settle=False` to read exactly as-of-now.
 - **`zerodom <url>` is a static fetch** (no JS) — use `--render` or the relay/MCP path for
   JS-rendered pages. Iframes are opt-in (`--frames`).
 - **The extension is unpacked/dev-mode only** — `chrome.debugger` + a local WebSocket preclude a

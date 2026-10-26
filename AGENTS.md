@@ -53,7 +53,7 @@ CI: `uv sync && uv run playwright install --with-deps chromium && uv run pytest`
 ## Architecture
 - `parser.py` (FR-1) — core DFS, unique CSS selector generation
 - `label_linker.py` (FR-2) — label resolution, priority documented at top of file
-- `playwright_wrapper.py` (FR-3) — sync/async Playwright adapter; `from_page` runs a bounded DOM-settle wait (`SETTLE`, MutationObserver, quiet 200ms / cap 1200ms, structural+text only) before serializing so a read lands on a quiet DOM, not one mid-churn — `settle=False` to read-exactly-now. Mirror any change in `js/src/playwright.ts` `SETTLE`.
+- `playwright_wrapper.py` (FR-3) — sync/async Playwright adapter; `from_page` runs a bounded DOM-settle wait (`SETTLE`, MutationObserver, quiet 200ms / cap 1200ms, structural+text only) before serializing so a read lands on a quiet DOM, not one mid-churn — `settle=False` to read-exactly-now. `agent_snapshot` wraps it for browser agents: `viewport_only=False` default + returns `(compact_text, ref_map)`. Mirror any change in `js/src/playwright.ts` (`SETTLE`, `agentSnapshot`).
 - `mcp_server.py` (FR-4) — MCP server `zerodom-mcp`, single global session `_session`
 - `report.py` — browser-facing screenshot/HTML inspector, lazy-imported
 - `frames.py` — iframe traversal, opt-in `frames=True`

@@ -390,6 +390,20 @@ def test_selector_map_round_trips_every_node(graph):
         assert f"node_{index}" in mapping
 
 
+def test_ref_map_keys_match_compact_refs(graph):
+    """ref_map() is keyed by the exact `[NN]` the compact text prints — no `node_`
+    juggling — and resolves to the same selector as selector_map()."""
+    refs = graph.ref_map()
+    sel = graph.selector_map()
+    assert refs["01"] == "#email-input"
+    for line in graph.to_compact_text().splitlines()[1:]:
+        index = line.split("]")[0].lstrip("[").strip()
+        if not index or not line.lstrip().startswith("["):
+            continue  # skip @card headers / notes
+        assert index in refs, f"compact ref [{index}] missing from ref_map()"
+        assert refs[index] == sel[f"node_{index}"]
+
+
 def test_compact_text_beats_json_on_link_dense_pages():
     tiktoken = pytest.importorskip("tiktoken")
     enc = tiktoken.get_encoding("cl100k_base")
