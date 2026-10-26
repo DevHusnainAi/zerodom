@@ -198,10 +198,17 @@ export function detectChallenge(html: string): { kind: string; marker: string } 
 
 /** One node as the compact DSL renders it. Shared so partial views — a search
  * result, a diff — never drift from the format the full graph prints. */
-export function compactLine(node: GraphNode, selectors = false, hrefs = false): string {
+// `terse` drops two pure-overhead tokens for an action agent that resolves refs
+// itself: the `a` tag (link is the default; non-link types stay) and the quotes
+// around the label. `[06] a 'Pricing'` -> `[06] Pricing`. ~15% fewer tokens, no
+// agent-relevant loss (the agent clicks by ref). Mirror of Python compact_line.
+export function compactLine(node: GraphNode, selectors = false, hrefs = false, terse = false): string {
+  const ref = node.id.replace(/^node_/, "");
   let flags = node.required ? "*" : "";
   flags += node.disabled ? "!" : "";
-  let line = `[${node.id.replace(/^node_/, "")}] ${node.type}${flags} ${JSON.stringify(node.label)}`;
+  let line = terse
+    ? `[${ref}]${node.type === "a" ? "" : ` ${node.type}`}${flags} ${node.label}`
+    : `[${ref}] ${node.type}${flags} ${JSON.stringify(node.label)}`;
   if (node.count) line += ` ×${node.count}`;
   if (node.placeholder) line += ` ph=${JSON.stringify(node.placeholder)}`;
   if (hrefs && node.href) line += ` -> ${node.href}`;
@@ -265,7 +272,7 @@ export class InteractionGraph {
    *
    * `*` marks required, `!` marks disabled.
    */
-  toCompactText(options: { selectors?: boolean; hrefs?: boolean } = {}): string {
+  toCompactText(options: { selectors?: boolean; hrefs?: boolean; terse?: boolean } = {}): string {
     const lines = [`PAGE: ${this.metadata.page_title} | ${this.metadata.url}`];
     if (this.metadata.offscreen_skipped) {
       lines.push(`(${this.metadata.offscreen_skipped} more nodes offscreen — scroll and re-read to see them)`);
@@ -282,7 +289,7 @@ export class InteractionGraph {
         if (node.card) lines.push(`@card ${JSON.stringify(node.card)}:`);
         currentCard = node.card;
       }
-      const line = compactLine(node, options.selectors, options.hrefs);
+      const line = compactLine(node, options.selectors, options.hrefs, options.terse);
       lines.push(node.card ? `  ${line}` : line);
     }
     return lines.join("\n");

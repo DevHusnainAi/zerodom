@@ -265,7 +265,8 @@ class ZeroDOM:
         """Full-page interaction snapshot for an action agent.
 
         Returns `(compact_text, ref_map)`: the token-dense `[NN]`-ref listing to
-        put in the model's context, and a `{ref: selector}` map keyed to those same
+        put in the model's context (the `terse` variant — no `a` tag or label quotes,
+        since the agent acts by ref), and a `{ref: selector}` map keyed to those same
         refs so the agent can act on what it read — `[03]` -> selector -> click/fill.
 
         Defaults to `viewport_only=False`: an agent can scroll, so it needs the whole
@@ -278,9 +279,9 @@ class ZeroDOM:
         if inspect.isawaitable(graph):
             async def _await() -> tuple[str, dict[str, str]]:
                 g = await graph
-                return g.to_compact_text(), g.ref_map()
+                return g.to_compact_text(terse=True), g.ref_map()
             return _await()
-        return graph.to_compact_text(), graph.ref_map()
+        return graph.to_compact_text(terse=True), graph.ref_map()
 
 
 async def _from_async_page_settled(

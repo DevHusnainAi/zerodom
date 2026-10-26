@@ -417,6 +417,28 @@ def test_ref_map_keys_match_compact_refs(graph):
         assert refs[index] == sel[f"node_{index}"]
 
 
+def test_terse_format_is_leaner_and_ref_resolvable():
+    """Agent-facing terse: drops the `a` tag and label quotes, keeps non-link types,
+    flags, refs — and every ref still resolves via ref_map (the agent acts by ref)."""
+    html = ("<html><title>T</title><body>"
+            + "".join(f"<a href='/p{i}'>Item {i}</a>" for i in range(20))
+            + "<button>Save</button></body></html>")
+    graph = parse_html(html)
+    normal, terse = graph.to_compact_text(), graph.to_compact_text(terse=True)
+    assert len(terse) < len(normal)
+    # a link: no "a" tag, no quotes — just ref + label
+    link_line = next(l for l in terse.splitlines() if "Item 0" in l)
+    assert link_line.strip() == "[01] Item 0"
+    # a typed node keeps its type, still unquoted
+    btn_line = next(l for l in terse.splitlines() if "Save" in l)
+    assert btn_line.strip() == "[21] button Save"
+    assert "'" not in terse  # no label quotes anywhere
+    refs = graph.ref_map()
+    for line in terse.splitlines()[1:]:
+        ref = line.strip().split("]")[0].lstrip("[")
+        assert ref in refs
+
+
 def test_compact_text_beats_json_on_link_dense_pages():
     tiktoken = pytest.importorskip("tiktoken")
     enc = tiktoken.get_encoding("cl100k_base")

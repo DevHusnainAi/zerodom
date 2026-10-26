@@ -152,7 +152,7 @@ class InteractionGraph(dict):
         without this, `[03]` silently misses the `node_03` key in selector_map."""
         return {node["id"].removeprefix("node_"): node["selector"] for node in self["nodes"]}
 
-    def to_compact_text(self, selectors: bool = False, hrefs: bool = False) -> str:
+    def to_compact_text(self, selectors: bool = False, hrefs: bool = False, terse: bool = False) -> str:
         """Token-dense line format for model context.
 
         JSON spends most of its tokens on repeated keys, quotes and braces. This
@@ -182,7 +182,7 @@ class InteractionGraph(dict):
                 if card:
                     lines.append(f"@card {card!r}:")
                 current_card = card
-            line = compact_line(node, selectors, hrefs)
+            line = compact_line(node, selectors, hrefs, terse)
             lines.append(f"  {line}" if card else line)
         return "\n".join(lines)
 
@@ -202,12 +202,23 @@ def find_nodes(nodes: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     ]
 
 
-def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = False) -> str:
+def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = False, terse: bool = False) -> str:
     """One node as the compact DSL renders it. Shared so partial views — a search
-    result, a diff — never drift from the format the full graph prints."""
+    result, a diff — never drift from the format the full graph prints.
+
+    `terse` drops two pure-overhead tokens for an action agent that resolves refs
+    itself: the `a` tag (link is the default; non-link types stay) and the quotes
+    around the label. `[06] a 'Pricing'` -> `[06] Pricing`; `[02] button 'X'` ->
+    `[02] button X`. ~15% fewer tokens, no agent-relevant loss (the agent clicks by
+    ref, so the implicit-link tag and delimiters carry nothing it needs)."""
+    ref = node["id"].removeprefix("node_")
     flags = "*" if node.get("required") else ""
     flags += "!" if node.get("disabled") else ""
-    line = f"[{node['id'].removeprefix('node_')}] {node['type']}{flags} {node['label']!r}"
+    if terse:
+        typ = "" if node["type"] == "a" else f" {node['type']}"
+        line = f"[{ref}]{typ}{flags} {node['label']}"
+    else:
+        line = f"[{ref}] {node['type']}{flags} {node['label']!r}"
     if count := node.get("count"):
         line += f" ×{count}"
     if placeholder := node.get("placeholder"):

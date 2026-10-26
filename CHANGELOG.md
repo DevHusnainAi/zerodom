@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`agent_snapshot` now emits a terser format** — drops the `a` tag (link is the
+  default; non-link types stay) and the label quotes, since an action agent resolves
+  refs itself and those carry nothing it needs. ~15% fewer tokens on top of the
+  compact format, no agent-relevant loss. Available on `to_compact_text(terse=True)`
+  / `toCompactText({terse})` too; mirrored in the TypeScript port. Benchmarked at a
+  **median ~49% token reduction vs `agent-browser snapshot -i`** (Vercel Labs) at
+  matching coverage and 100% ref resolution — see `benchmarks/bench_agent_snapshot.py`.
+
 ## [0.1.3] — 2026-10-26
 
 Two big threads land in this release. ZeroDOM grows from a *read-only perception

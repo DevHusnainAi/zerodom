@@ -231,7 +231,7 @@ export const ZeroDOM = {
     options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
   ): Promise<{ text: string; refMap: Record<string, string> }> {
     const graph = await this.fromPage(page, { viewportOnly: false, ...options });
-    return { text: graph.toCompactText(), refMap: graph.refMap() };
+    return { text: graph.toCompactText({ terse: true }), refMap: graph.refMap() };
   },
 };
 
