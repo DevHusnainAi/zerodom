@@ -31,6 +31,7 @@ SERIALIZE = """(opts) => {
   const marked = [];
   const offscreenMarked = [];
   const occludedMarked = [];
+  const stateMarked = [];
   const vw = window.innerWidth, vh = window.innerHeight;
   const candidates = [];
   const visit = (root) => {
@@ -42,6 +43,22 @@ SERIALIZE = """(opts) => {
         el.setAttribute('data-zerodom-hidden', '');
         marked.push(el);
         continue;
+      }
+      // Live interactive state the parser can't see in static HTML: DOM properties
+      // (checked, value, selected) diverge from their attributes once the user or a
+      // framework touches them. Stamped for the serialize, removed after. aria-* and
+      // native `open`/`selected` attributes the parser reads directly.
+      const _t = el.tagName;
+      if (_t === 'INPUT' || _t === 'TEXTAREA') {
+        if (el.type === 'checkbox' || el.type === 'radio') {
+          el.setAttribute('data-zd-checked', el.checked ? '1' : '0'); stateMarked.push(el);
+        } else if (el.value) {
+          el.setAttribute('data-zd-value', String(el.value).slice(0, 80)); stateMarked.push(el);
+        }
+      } else if (_t === 'OPTION') {
+        if (el.selected) { el.setAttribute('data-zd-selected', '1'); stateMarked.push(el); }
+      } else if (_t === 'SELECT' && el.value) {
+        el.setAttribute('data-zd-value', String(el.value).slice(0, 80)); stateMarked.push(el);
       }
       if (!viewportOnly && !checkOcclusion) continue;
       const r = el.getBoundingClientRect();
@@ -101,6 +118,7 @@ SERIALIZE = """(opts) => {
     for (const el of marked) el.removeAttribute('data-zerodom-hidden');
     for (const el of offscreenMarked) el.removeAttribute('data-zerodom-offscreen');
     for (const el of occludedMarked) el.removeAttribute('data-zerodom-occluded');
+    for (const el of stateMarked) { el.removeAttribute('data-zd-checked'); el.removeAttribute('data-zd-value'); el.removeAttribute('data-zd-selected'); }
     return null;
   }
   try {
@@ -121,6 +139,7 @@ SERIALIZE = """(opts) => {
     for (const el of marked) el.removeAttribute('data-zerodom-hidden');
     for (const el of offscreenMarked) el.removeAttribute('data-zerodom-offscreen');
     for (const el of occludedMarked) el.removeAttribute('data-zerodom-occluded');
+    for (const el of stateMarked) { el.removeAttribute('data-zd-checked'); el.removeAttribute('data-zd-value'); el.removeAttribute('data-zd-selected'); }
   }
 }"""
 

@@ -417,6 +417,32 @@ def test_ref_map_keys_match_compact_refs(graph):
         assert refs[index] == sel[f"node_{index}"]
 
 
+def test_interactive_state_is_captured_and_sensitive_values_redacted():
+    """An action agent needs current state (checked/expanded/selected/value); a
+    sensitive field's value is never carried — only that it's `filled`."""
+    from zerodom.parser import compact_line
+    html = ("<html><title>T</title><body>"
+            "<button aria-expanded='false'>Menu</button>"
+            "<input id='rm' type='checkbox' checked><label for='rm'>Remember</label>"
+            "<input aria-label='Company' type='text' value='acme'>"
+            "<input aria-label='Password' type='password' value='hunter2'>"
+            "<div role='tab' aria-selected='true'>Tab1</div>"
+            "</body></html>")
+    nodes = {n["label"]: n for n in parse_html(html)["nodes"]}
+    assert nodes["Menu"].get("expanded") is False
+    assert nodes["Remember"].get("checked") is True
+    assert nodes["Company"].get("value") == "acme"
+    # sensitive: value present but redacted
+    assert not nodes["Password"].get("value") and nodes["Password"].get("filled") is True
+    assert nodes["Tab1"].get("selected") is True
+    # rendering: ASCII markers, no sensitive value
+    assert compact_line(nodes["Menu"], terse=True).endswith("closed")
+    assert " x" in compact_line(nodes["Remember"], terse=True)
+    assert compact_line(nodes["Company"], terse=True).endswith("=acme")
+    pw = compact_line(nodes["Password"], terse=True)
+    assert "filled" in pw and "hunter2" not in pw
+
+
 def test_terse_format_is_leaner_and_ref_resolvable():
     """Agent-facing terse: drops the `a` tag and label quotes, keeps non-link types,
     flags, refs — and every ref still resolves via ref_map (the agent acts by ref)."""

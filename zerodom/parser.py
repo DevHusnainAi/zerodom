@@ -39,6 +39,16 @@ INTERACTIVE_ROLES = {
     "searchbox", "switch", "menuitem", "tab", "option", "slider",
 }
 
+# Hand-kept mirror of mcp_server._SENSITIVE_FIELD_RE / graph_ui.js SENSITIVE_RE — a
+# field whose value must never reach the model's context (shown as `filled`, not the
+# value). Keep the three copies in lockstep.
+SENSITIVE_FIELD_RE = re.compile(
+    r"passw|passwd|\bpwd\b|card ?number|card ?no\b|\bcvv\b|\bcvc\b|"
+    r"security code|\bssn\b|social security|routing number|account number|"
+    r"\biban\b|sort code",
+    re.IGNORECASE,
+)
+
 # input[type] -> ARIA role. Anything unlisted (text, email, password, ...) is a textbox.
 INPUT_ROLES = {
     "checkbox": "checkbox",
@@ -202,6 +212,29 @@ def find_nodes(nodes: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     ]
 
 
+def _state_suffix(node: dict[str, Any]) -> str:
+    """Compact state markers for an action agent, ASCII and ~1 token each (exotic
+    glyphs tokenize to 2-3 and read ambiguously). Shown only when they carry signal:
+    `x` checked, `*` selected, `on` pressed, `current`, `open`/`closed` for a
+    disclosure, `=value` or `filled` (sensitive) for a populated field."""
+    s = ""
+    if node.get("checked"):
+        s += " x"
+    if node.get("selected"):
+        s += " *"
+    if node.get("pressed"):
+        s += " on"
+    if node.get("current"):
+        s += " current"
+    if "expanded" in node:
+        s += " open" if node["expanded"] else " closed"
+    if node.get("filled"):
+        s += " filled"
+    elif node.get("value"):
+        s += f" ={node['value']}"
+    return s
+
+
 def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = False, terse: bool = False) -> str:
     """One node as the compact DSL renders it. Shared so partial views — a search
     result, a diff — never drift from the format the full graph prints.
@@ -219,6 +252,7 @@ def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = Fa
         line = f"[{ref}]{typ}{flags} {node['label']}"
     else:
         line = f"[{ref}] {node['type']}{flags} {node['label']!r}"
+    line += _state_suffix(node)
     if count := node.get("count"):
         line += f" ×{count}"
     if placeholder := node.get("placeholder"):
@@ -235,7 +269,9 @@ def _node_sig(node: dict[str, Any]) -> tuple:
     they differ on a node that kept its identity (e.g. a button relabelled in place)."""
     return (node["type"], node.get("label", ""),
             bool(node.get("required")), bool(node.get("disabled")),
-            node.get("count"), node.get("placeholder"))
+            node.get("count"), node.get("placeholder"),
+            node.get("checked"), node.get("expanded"), node.get("selected"),
+            node.get("pressed"), node.get("current"), node.get("value"), node.get("filled"))
 
 
 def node_identity(node: dict[str, Any]) -> str:
@@ -443,6 +479,38 @@ class ZeroDOMParser:
         """
         value = el.get("contenteditable")
         return value is not None and value.lower() in ("", "true")
+
+    @staticmethod
+    def _add_state(node: dict[str, Any], el: HtmlElement) -> None:
+        """Boolean interactive state an action agent needs to decide its next move:
+        checked / expanded / selected / pressed / current. aria-* and native
+        attributes are read directly; `checked` prefers SERIALIZE's `data-zd-checked`
+        stamp of the live DOM property (it diverges from the attribute once toggled).
+        The current `value` is handled with the fill action below (it needs the same
+        live-stamp + sensitive-field redaction)."""
+        if (zc := el.get("data-zd-checked")) is not None:
+            node["checked"] = zc == "1"
+        elif (ac := el.get("aria-checked")) in ("true", "false"):
+            node["checked"] = ac == "true"
+        elif el.tag == "input" and el.get("type") in ("checkbox", "radio"):
+            node["checked"] = "checked" in el.attrib
+
+        if (ae := el.get("aria-expanded")) in ("true", "false"):
+            node["expanded"] = ae == "true"
+        if el.get("data-zd-selected") == "1" or el.get("aria-selected") == "true" \
+                or (el.tag == "option" and "selected" in el.attrib):
+            node["selected"] = True
+        if el.get("aria-pressed") == "true":
+            node["pressed"] = True
+        if (cur := el.get("aria-current")) and cur != "false":
+            node["current"] = True
+
+    @staticmethod
+    def _is_sensitive(node: dict[str, Any], el: HtmlElement) -> bool:
+        """A field whose value must never reach the model's context."""
+        return el.get("type") == "password" or bool(SENSITIVE_FIELD_RE.search(
+            f"{el.get('name', '')} {el.get('id', '')} {node.get('label', '')} {node.get('placeholder', '')}"
+        ))
 
     @staticmethod
     def _is_card(el: HtmlElement) -> bool:
@@ -906,6 +974,7 @@ class ZeroDOMParser:
                 node["required"] = True
             if "disabled" in el.attrib:
                 node["disabled"] = True
+            self._add_state(node, el)
             if self._is_content_editable(el):
                 # mcp_server._act's signal to type via press_sequentially
                 # (real per-character key events) instead of .fill()/.value= —
@@ -914,7 +983,15 @@ class ZeroDOMParser:
                 # bulk insert.
                 node["content_editable"] = True
             if role in FILLABLE_ROLES:
-                node["value"] = el.get("value", "") if el.tag == "input" else (el.text or "")
+                # Prefer the live value (SERIALIZE's data-zd-value) over the stale
+                # attribute, and never carry a sensitive field's value — only that
+                # it's `filled`. node["value"] stays present for mcp's fill path.
+                raw = el.get("data-zd-value") or (el.get("value", "") if el.tag == "input" else (el.text or ""))
+                if raw and self._is_sensitive(node, el):
+                    node["value"] = ""
+                    node["filled"] = True
+                else:
+                    node["value"] = raw[:80]
                 node["action"] = "fill"
             else:
                 node["action"] = "click"
