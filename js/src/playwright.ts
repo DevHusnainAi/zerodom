@@ -2,8 +2,8 @@
 
 import type { FrameLike } from "./frames.js";
 import { frameChain, isWorthReading, renumber } from "./frames.js";
-import type { GraphMetadata } from "./parser.js";
-import { InteractionGraph, ZeroDOMParser } from "./parser.js";
+import type { GraphMetadata, DeltaState } from "./parser.js";
+import { InteractionGraph, ZeroDOMParser, diffNodes } from "./parser.js";
 
 // `page.content()` serializes light DOM only, so controls inside a shadow root are
 // invisible — and worse, Playwright's CSS engine *pierces* open shadow roots when it
@@ -232,6 +232,27 @@ export const ZeroDOM = {
   ): Promise<{ text: string; refMap: Record<string, string> }> {
     const graph = await this.fromPage(page, { viewportOnly: false, ...options });
     return { text: graph.toCompactText({ terse: true }), refMap: graph.refMap() };
+  },
+
+  /**
+   * Delta agent snapshot for a multi-turn loop — the per-turn cost lever. An agent
+   * re-snapshots after every action, but most turns change little. First call
+   * (`since` omitted) returns a full terse snapshot; later calls return only what
+   * changed (`+`/`-`/`~` lines keyed by selector, so refs stay valid). Returns
+   * `{text, refMap, state}` — put `text` in context, resolve clicks via `refMap`,
+   * pass `state` back as `since` next turn.
+   */
+  async agentSnapshotDelta(
+    page: PageLike,
+    since?: DeltaState | null,
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
+  ): Promise<{ text: string; refMap: Record<string, string>; state: DeltaState }> {
+    const graph = await this.fromPage(page, { viewportOnly: false, ...options });
+    const { text, refMap, state } = diffNodes(graph.nodes, since);
+    const full = since
+      ? text
+      : `PAGE: ${graph.metadata.page_title} | ${graph.metadata.url}\n${text}`;
+    return { text: full, refMap, state };
   },
 };
 

@@ -439,6 +439,33 @@ def test_terse_format_is_leaner_and_ref_resolvable():
         assert ref in refs
 
 
+def test_diff_nodes_delta_keeps_refs_stable_by_selector():
+    """Delta: identity is the selector, so a node keeps its ref across snapshots;
+    the next turn emits only +/-/~ and an unchanged count."""
+    from zerodom.parser import diff_nodes
+    def n(sel, typ, label):
+        return {"id": "node_00", "selector": sel, "type": typ, "label": label}
+
+    first = [n("#a", "a", "Home"), n("#b", "button", "Save"), n("#c", "a", "Old")]
+    text1, refs1, state1 = diff_nodes(first)
+    assert refs1 == {"01": "#a", "02": "#b", "03": "#c"}
+    assert "[01] Home" in text1 and "[02] button Save" in text1  # full listing, terse
+    assert "+" not in text1 and "~" not in text1
+
+    # #a unchanged, #b relabeled, #c removed, #d added.
+    second = [n("#a", "a", "Home"), n("#b", "button", "Saved"), n("#d", "a", "New")]
+    text2, refs2, state2 = diff_nodes(second, since=state1)
+    assert "~[02] button Saved" in text2  # relabel keeps ref 02
+    assert "+[04] New" in text2           # new node gets a fresh ref
+    assert "-[03]" in text2               # #c removed by its old ref
+    assert "(1 unchanged)" in text2       # #a
+    assert refs2 == {"01": "#a", "02": "#b", "04": "#d"}  # refs stable by selector
+
+    # No change at all → a terse "(no change)".
+    text3, _, _ = diff_nodes(second, since=state2)
+    assert text3 == "(no change)"
+
+
 def test_compact_text_beats_json_on_link_dense_pages():
     tiktoken = pytest.importorskip("tiktoken")
     enc = tiktoken.get_encoding("cl100k_base")

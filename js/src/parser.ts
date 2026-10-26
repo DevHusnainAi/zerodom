@@ -229,6 +229,78 @@ export function findNodes(nodes: GraphNode[], query: string): GraphNode[] {
   });
 }
 
+// What the model sees for a node — the bits a delta must notice change. The
+// selector is identity (not signature): a relabel at the same selector is a
+// `~change`, not remove+add. JSON string so it's cheaply comparable.
+function nodeSig(node: GraphNode): string {
+  return JSON.stringify([node.type, node.label ?? "", !!node.required, !!node.disabled,
+    node.count ?? null, node.placeholder ?? null]);
+}
+
+export interface DeltaState {
+  ref: Record<string, string>; // selector -> ref
+  sig: Record<string, string>; // selector -> signature
+  next: number;
+}
+
+/**
+ * Delta of the current `nodes` against the previous snapshot `since`, keyed by
+ * selector so a node keeps its ref across snapshots (the agent's held refs stay
+ * valid). `since` undefined/null → a full terse listing; otherwise only
+ * `+`/`-`/`~` lines plus an `(N unchanged)` note. `refMap` is always the full
+ * current `{ref: selector}`. Pass the returned `state` back as `since` next turn.
+ * Mirror of Python `diff_nodes`.
+ */
+export function diffNodes(
+  nodes: GraphNode[],
+  since?: DeltaState | null,
+): { text: string; refMap: Record<string, string>; state: DeltaState } {
+  const prevRef = since ? { ...since.ref } : {};
+  const prevSig = since ? { ...since.sig } : {};
+  let next = since ? since.next : 1;
+  const refMap: Record<string, string> = {};
+  const selRef: Record<string, string> = {};
+  const newSig: Record<string, string> = {};
+  const current = new Set<string>();
+  const added: [string, GraphNode][] = [];
+  const changed: [string, GraphNode][] = [];
+  let unchanged = 0;
+  for (const node of nodes) {
+    const sel = node.selector;
+    current.add(sel);
+    const sig = nodeSig(node);
+    newSig[sel] = sig;
+    let ref: string;
+    if (sel in prevRef) {
+      ref = prevRef[sel];
+      if (prevSig[sel] !== sig) changed.push([ref, node]);
+      else unchanged++;
+    } else {
+      ref = String(next).padStart(2, "0");
+      next++;
+      added.push([ref, node]);
+    }
+    selRef[sel] = ref;
+    refMap[ref] = sel;
+  }
+  const removed = Object.keys(prevRef)
+    .filter((s) => !current.has(s))
+    .map((s) => prevRef[s])
+    .sort((a, b) => a.length - b.length || a.localeCompare(b));
+  const state: DeltaState = { ref: selRef, sig: newSig, next };
+  const render = (ref: string, node: GraphNode) => compactLine({ ...node, id: ref }, false, false, true);
+  if (!since) {
+    return { text: added.map(([r, n]) => render(r, n)).join("\n"), refMap, state };
+  }
+  const lines: string[] = [];
+  for (const [r, n] of added) lines.push("+" + render(r, n));
+  for (const [r, n] of changed) lines.push("~" + render(r, n));
+  for (const r of removed) lines.push(`-[${r}]`);
+  if (unchanged) lines.push(`(${unchanged} unchanged)`);
+  if (!added.length && !changed.length && !removed.length) return { text: "(no change)", refMap, state };
+  return { text: lines.join("\n"), refMap, state };
+}
+
 export class InteractionGraph {
   nodes: GraphNode[];
   metadata: GraphMetadata;

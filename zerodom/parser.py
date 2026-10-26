@@ -230,6 +230,82 @@ def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = Fa
     return line
 
 
+def _node_sig(node: dict[str, Any]) -> tuple:
+    """What the model actually sees for a node — the bits a delta must notice
+    change. The selector is identity (not signature): a relabeled button at the
+    same selector is a `~change`, not a remove+add."""
+    return (node["type"], node.get("label", ""),
+            bool(node.get("required")), bool(node.get("disabled")),
+            node.get("count"), node.get("placeholder"))
+
+
+def diff_nodes(
+    nodes: list[dict[str, Any]], since: dict[str, Any] | None = None
+) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Delta of the current `nodes` against the previous snapshot `since`.
+
+    Identity is the CSS selector, so a node keeps its ref across snapshots and the
+    agent's held refs stay valid — the point of a delta. Returns
+    `(text, ref_map, state)`:
+
+    - `since=None` (first turn): a full terse listing, each node a fresh `[NN]` ref.
+    - otherwise: only the changes — `+[ref] …` added, `~[ref] …` relabeled,
+      `-[ref]` removed — plus an `(N unchanged)` note. `ref_map` is always the full
+      current `{ref: selector}` so any ref the agent holds still resolves.
+
+    Pass the returned `state` back as `since` next turn. Flat (no @card grouping):
+    the win is in the deltas, and grouping complicates selector-keyed stability.
+    """
+    prev_ref: dict[str, str] = dict(since["ref"]) if since else {}
+    prev_sig: dict[str, tuple] = dict(since["sig"]) if since else {}
+    next_ref: int = since["next"] if since else 1
+
+    ref_map: dict[str, str] = {}
+    sel_ref: dict[str, str] = {}
+    new_sig: dict[str, tuple] = {}
+    current: set[str] = set()
+    added: list[tuple[str, dict]] = []
+    changed: list[tuple[str, dict]] = []
+    unchanged = 0
+
+    for node in nodes:
+        sel = node["selector"]
+        current.add(sel)
+        sig = _node_sig(node)
+        new_sig[sel] = sig
+        if sel in prev_ref:
+            ref = prev_ref[sel]
+            if prev_sig.get(sel) != sig:
+                changed.append((ref, node))
+            else:
+                unchanged += 1
+        else:
+            ref = f"{next_ref:02d}"
+            next_ref += 1
+            added.append((ref, node))
+        sel_ref[sel] = ref
+        ref_map[ref] = sel
+
+    removed = sorted((prev_ref[s] for s in prev_ref if s not in current), key=lambda r: (len(r), r))
+    state = {"ref": sel_ref, "sig": new_sig, "next": next_ref}
+
+    def render(ref: str, node: dict) -> str:
+        return compact_line({**node, "id": ref}, terse=True)
+
+    if since is None:  # first snapshot — full listing, no prefixes
+        text = "\n".join(render(ref, node) for ref, node in added)
+        return text, ref_map, state
+
+    lines = [f"+{render(ref, node)}" for ref, node in added]
+    lines += [f"~{render(ref, node)}" for ref, node in changed]
+    lines += [f"-[{ref}]" for ref in removed]
+    if unchanged:
+        lines.append(f"({unchanged} unchanged)")
+    if not (added or changed or removed):
+        lines = ["(no change)"]
+    return "\n".join(lines), ref_map, state
+
+
 class ZeroDOMParser:
     """Parses raw HTML into a token-optimized Interaction Graph."""
 

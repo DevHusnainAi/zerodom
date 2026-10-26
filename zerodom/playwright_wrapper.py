@@ -14,7 +14,7 @@ from .frames import (
     locate,
     renumber,
 )
-from .parser import InteractionGraph, ZeroDOMParser
+from .parser import InteractionGraph, ZeroDOMParser, diff_nodes
 
 __all__ = ["ZeroDOM", "serialize", "serialize_async", "locate", "SERIALIZE"]
 
@@ -282,6 +282,35 @@ class ZeroDOM:
                 return g.to_compact_text(terse=True), g.ref_map()
             return _await()
         return graph.to_compact_text(terse=True), graph.ref_map()
+
+    @staticmethod
+    def agent_snapshot_delta(
+        page: Any, since: dict[str, Any] | None = None, **kwargs: Any
+    ) -> tuple[str, dict[str, str], dict[str, Any]] | Any:
+        """Delta agent snapshot for a multi-turn loop — the per-turn cost lever.
+
+        An agent re-snapshots after every action, but most turns change little. The
+        first call (`since=None`) returns a full terse snapshot; later calls return
+        only what changed (`+`/`-`/`~` lines keyed by selector, so refs stay valid),
+        which is a fraction of the tokens. Returns `(text, ref_map, state)` — put
+        `text` in context, resolve clicks via `ref_map`, and pass `state` back as
+        `since` next turn. Async pages return an awaitable, mirroring `from_page`.
+        """
+        kwargs.setdefault("viewport_only", False)
+
+        def _render(graph: InteractionGraph) -> tuple[str, dict[str, str], dict[str, Any]]:
+            text, ref_map, state = diff_nodes(graph["nodes"], since)
+            if since is None:  # prepend the page header on the first (full) snapshot
+                meta = graph["metadata"]
+                text = f"PAGE: {meta['page_title']} | {meta['url']}\n{text}"
+            return text, ref_map, state
+
+        graph = ZeroDOM.from_page(page, **kwargs)
+        if inspect.isawaitable(graph):
+            async def _await() -> tuple[str, dict[str, str], dict[str, Any]]:
+                return _render(await graph)
+            return _await()
+        return _render(graph)
 
 
 async def _from_async_page_settled(

@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { cssId, classToken, parseHtml } from "../dist/parser.js";
+import { cssId, classToken, parseHtml, diffNodes } from "../dist/parser.js";
 
 test("a duplicate id is not trusted as a unique anchor", () => {
   const graph = parseHtml(`
@@ -31,6 +31,25 @@ test("class with a dot uses an attribute selector, not two chained classes", () 
 test("table rows get the tbody a raw <table> implies", () => {
   const graph = parseHtml('<table><tr><td><a href="#">row</a></td></tr></table>');
   assert.equal(graph.selectorMap().node_01, "body > table > tbody > tr > td > a");
+});
+
+test("diffNodes delta keeps refs stable by selector (mirror of test_parser.py)", () => {
+  const n = (selector: string, type: string, label: string) =>
+    ({ id: "node_00", selector, type, label }) as any;
+  const first = [n("#a", "a", "Home"), n("#b", "button", "Save"), n("#c", "a", "Old")];
+  const r1 = diffNodes(first);
+  assert.deepEqual(r1.refMap, { "01": "#a", "02": "#b", "03": "#c" });
+  assert.ok(r1.text.includes("[01] Home") && r1.text.includes("[02] button Save"));
+
+  const second = [n("#a", "a", "Home"), n("#b", "button", "Saved"), n("#d", "a", "New")];
+  const r2 = diffNodes(second, r1.state);
+  assert.ok(r2.text.includes("~[02] button Saved"));
+  assert.ok(r2.text.includes("+[04] New"));
+  assert.ok(r2.text.includes("-[03]"));
+  assert.ok(r2.text.includes("(1 unchanged)"));
+  assert.deepEqual(r2.refMap, { "01": "#a", "02": "#b", "04": "#d" });
+
+  assert.equal(diffNodes(second, r2.state).text, "(no change)");
 });
 
 test("terse format drops the link tag and label quotes (mirror of test_parser.py)", () => {
