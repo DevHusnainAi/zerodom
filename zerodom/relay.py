@@ -353,7 +353,7 @@ async def handle_cdp_command(
         return {
             "protocolVersion": "1.3",
             "product": "Chrome/Extension-Bridge",
-            "userAgent": "zerodom-relay/0.1.0",
+            "userAgent": "zerodom-relay/0.1.3",
         }
     if method == "Browser.setDownloadBehavior":
         return {}
