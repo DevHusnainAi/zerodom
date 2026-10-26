@@ -33,23 +33,48 @@ test("table rows get the tbody a raw <table> implies", () => {
   assert.equal(graph.selectorMap().node_01, "body > table > tbody > tr > td > a");
 });
 
-test("diffNodes delta keeps refs stable by selector (mirror of test_parser.py)", () => {
-  const n = (selector: string, type: string, label: string) =>
-    ({ id: "node_00", selector, type, label }) as any;
-  const first = [n("#a", "a", "Home"), n("#b", "button", "Save"), n("#c", "a", "Old")];
+test("diffNodes delta on stable selectors (mirror of test_parser.py)", () => {
+  const n = (i: number, label?: string) =>
+    ({ id: "node_00", selector: `#a${i}`, type: "button", label: label ?? `B${i}` }) as any;
+  const first = Array.from({ length: 10 }, (_, i) => n(i));
   const r1 = diffNodes(first);
-  assert.deepEqual(r1.refMap, { "01": "#a", "02": "#b", "03": "#c" });
-  assert.ok(r1.text.includes("[01] Home") && r1.text.includes("[02] button Save"));
+  assert.equal(r1.refMap["01"], "#a0");
+  assert.ok(r1.text.includes("[01] button B0") && !r1.text.includes("+"));
 
-  const second = [n("#a", "a", "Home"), n("#b", "button", "Saved"), n("#d", "a", "New")];
+  const second = [n(0), n(1), n(2), n(3), n(4), n(5, "RENAMED"), n(6), n(7), n(8), n(10)];
   const r2 = diffNodes(second, r1.state);
-  assert.ok(r2.text.includes("~[02] button Saved"));
-  assert.ok(r2.text.includes("+[04] New"));
-  assert.ok(r2.text.includes("-[03]"));
-  assert.ok(r2.text.includes("(1 unchanged)"));
-  assert.deepEqual(r2.refMap, { "01": "#a", "02": "#b", "04": "#d" });
-
+  assert.ok(r2.text.includes("~[06] button RENAMED"));
+  assert.ok(r2.text.includes("+[11] button B10"));
+  assert.ok(r2.text.includes("-[10]"));
+  assert.ok(r2.text.includes("(8 unchanged)"));
   assert.equal(diffNodes(second, r2.state).text, "(no change)");
+});
+
+test("diffNodes survives reflow on positional selectors (mirror of test_parser.py)", () => {
+  const link = (pos: number, i: number) =>
+    ({ id: "node_00", selector: `body > ul > li:nth-of-type(${pos}) > a`,
+       type: "a", label: `Item ${i}`, href: `/p${i}` }) as any;
+  const first = Array.from({ length: 5 }, (_, i) => link(i + 1, i));
+  const r1 = diffNodes(first);
+  const second = [{ id: "node_00", selector: "body > ul > li:nth-of-type(1) > a",
+                    type: "a", label: "NEW", href: "/new" } as any,
+                  ...Array.from({ length: 5 }, (_, i) => link(i + 2, i))];
+  const r2 = diffNodes(second, r1.state);
+  assert.ok(r2.text.includes("+[06] NEW"));
+  assert.ok(r2.text.includes("(5 unchanged)"));
+  assert.ok(!r2.text.includes("~"));                               // no churn
+  assert.ok(r2.refMap["01"].endsWith("nth-of-type(2) > a"));       // Item 0 kept ref 01
+});
+
+test("diffNodes full-fallback when churn exceeds full (mirror of test_parser.py)", () => {
+  const first = Array.from({ length: 4 }, (_, i) =>
+    ({ id: "node_00", selector: `#a${i}`, type: "button", label: `B${i}` }) as any);
+  const r1 = diffNodes(first);
+  const second = Array.from({ length: 4 }, (_, i) =>
+    ({ id: "node_00", selector: `#x${i}`, type: "button", label: `X${i}` }) as any);
+  const r2 = diffNodes(second, r1.state);
+  assert.ok(r2.text.startsWith("(refreshed"));
+  assert.ok(r2.text.includes("button X0") && !r2.text.includes("+") && !r2.text.includes("~"));
 });
 
 test("terse format drops the link tag and label quotes (mirror of test_parser.py)", () => {

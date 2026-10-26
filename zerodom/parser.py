@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from typing import Any
 
 import lxml.html
@@ -231,12 +231,27 @@ def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = Fa
 
 
 def _node_sig(node: dict[str, Any]) -> tuple:
-    """What the model actually sees for a node — the bits a delta must notice
-    change. The selector is identity (not signature): a relabeled button at the
-    same selector is a `~change`, not a remove+add."""
+    """What the model actually sees — the bits a delta reports as a `~change` when
+    they differ on a node that kept its identity (e.g. a button relabelled in place)."""
     return (node["type"], node.get("label", ""),
             bool(node.get("required")), bool(node.get("disabled")),
             node.get("count"), node.get("placeholder"))
+
+
+def node_identity(node: dict[str, Any]) -> str:
+    """A reflow-stable handle for a node — *what it is*, not *where it sits*.
+
+    A non-positional selector (id/class-anchored, no `nth-`) is already stable, so it
+    IS the identity. A positional selector shifts the moment a sibling is inserted, so
+    it can't be — fall back to the element's own content: its href (links), placeholder
+    (inputs), else its (type, label). This is the role+name identity agent-browser and
+    React-style reconciliation use, so a moved or relabelled node keeps its ref instead
+    of churning the whole list after an insertion point."""
+    sel = node["selector"]
+    if "nth-" not in sel:
+        return f"s\x00{sel}"
+    key = node.get("href") or node.get("placeholder") or node.get("label") or ""
+    return f"c\x00{node['type']}\x00{key}"
 
 
 def diff_nodes(
@@ -244,38 +259,43 @@ def diff_nodes(
 ) -> tuple[str, dict[str, str], dict[str, Any]]:
     """Delta of the current `nodes` against the previous snapshot `since`.
 
-    Identity is the CSS selector, so a node keeps its ref across snapshots and the
-    agent's held refs stay valid — the point of a delta. Returns
+    Identity is content-based (see `node_identity`), so a node keeps its ref across
+    reflow and relabels — the agent's held refs stay valid. Returns
     `(text, ref_map, state)`:
 
     - `since=None` (first turn): a full terse listing, each node a fresh `[NN]` ref.
-    - otherwise: only the changes — `+[ref] …` added, `~[ref] …` relabeled,
-      `-[ref]` removed — plus an `(N unchanged)` note. `ref_map` is always the full
-      current `{ref: selector}` so any ref the agent holds still resolves.
+    - otherwise: only the changes — `+[ref] …` added, `~[ref] …` changed, `-[ref]`
+      removed — plus an `(N unchanged)` note. If churn ever makes the delta no smaller
+      than a fresh listing, a full `(refreshed — N nodes)` listing is returned instead,
+      so a delta is never worse than a snapshot. `ref_map` is always the full current
+      `{ref: selector}`, so any ref the agent holds resolves.
 
-    Pass the returned `state` back as `since` next turn. Flat (no @card grouping):
-    the win is in the deltas, and grouping complicates selector-keyed stability.
+    Duplicate identities (e.g. three unlabelled `Delete` buttons) are matched in
+    document order — the irreducibly-ambiguous case; a mid-list removal there may
+    shift one ref. Pass the returned `state` back as `since` next turn. Flat (no
+    @card grouping): the whole delta session is flat by design.
     """
-    prev_ref: dict[str, str] = dict(since["ref"]) if since else {}
-    prev_sig: dict[str, tuple] = dict(since["sig"]) if since else {}
+    prev: list[dict[str, Any]] = since["entries"] if since else []
     next_ref: int = since["next"] if since else 1
 
+    # Prev nodes grouped by identity, in order, so duplicates match FIFO.
+    prev_groups: dict[str, deque] = defaultdict(deque)
+    for e in prev:
+        prev_groups[e["ident"]].append((e["ref"], e["sig"]))
+
     ref_map: dict[str, str] = {}
-    sel_ref: dict[str, str] = {}
-    new_sig: dict[str, tuple] = {}
-    current: set[str] = set()
+    entries: list[dict[str, Any]] = []
     added: list[tuple[str, dict]] = []
     changed: list[tuple[str, dict]] = []
     unchanged = 0
 
     for node in nodes:
-        sel = node["selector"]
-        current.add(sel)
+        ident = node_identity(node)
         sig = _node_sig(node)
-        new_sig[sel] = sig
-        if sel in prev_ref:
-            ref = prev_ref[sel]
-            if prev_sig.get(sel) != sig:
+        group = prev_groups.get(ident)
+        if group:
+            ref, old_sig = group.popleft()
+            if old_sig != sig:
                 changed.append((ref, node))
             else:
                 unchanged += 1
@@ -283,27 +303,39 @@ def diff_nodes(
             ref = f"{next_ref:02d}"
             next_ref += 1
             added.append((ref, node))
-        sel_ref[sel] = ref
-        ref_map[ref] = sel
+        ref_map[ref] = node["selector"]
+        entries.append({"ident": ident, "ref": ref, "sig": sig})
 
-    removed = sorted((prev_ref[s] for s in prev_ref if s not in current), key=lambda r: (len(r), r))
-    state = {"ref": sel_ref, "sig": new_sig, "next": next_ref}
+    removed = sorted(
+        (ref for group in prev_groups.values() for ref, _ in group),
+        key=lambda r: (len(r), r),
+    )
+    state = {"entries": entries, "next": next_ref}
 
     def render(ref: str, node: dict) -> str:
         return compact_line({**node, "id": ref}, terse=True)
 
     if since is None:  # first snapshot — full listing, no prefixes
-        text = "\n".join(render(ref, node) for ref, node in added)
-        return text, ref_map, state
+        return "\n".join(render(ref, node) for ref, node in added), ref_map, state
 
-    lines = [f"+{render(ref, node)}" for ref, node in added]
-    lines += [f"~{render(ref, node)}" for ref, node in changed]
-    lines += [f"-[{ref}]" for ref in removed]
-    if unchanged:
-        lines.append(f"({unchanged} unchanged)")
-    if not (added or changed or removed):
-        lines = ["(no change)"]
-    return "\n".join(lines), ref_map, state
+    if not added and not changed and not removed:
+        delta = "(no change)"
+    else:
+        lines = [f"+{render(ref, node)}" for ref, node in added]
+        lines += [f"~{render(ref, node)}" for ref, node in changed]
+        lines += [f"-[{ref}]" for ref in removed]
+        if unchanged:
+            lines.append(f"({unchanged} unchanged)")
+        delta = "\n".join(lines)
+
+    # Safety net: churn (e.g. a reflow that even content-identity can't track) must
+    # never cost more than a fresh snapshot. Only worth checking when the change set
+    # is a real fraction of the page — a handful of edits obviously beats a full list.
+    if nodes and 2 * (len(added) + len(changed) + len(removed)) > len(nodes):
+        full = "\n".join(render(e["ref"], node) for e, node in zip(entries, nodes))
+        if len(delta) >= len(full):
+            return f"(refreshed — {len(nodes)} nodes)\n{full}", ref_map, state
+    return delta, ref_map, state
 
 
 class ZeroDOMParser:

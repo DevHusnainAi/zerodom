@@ -229,76 +229,102 @@ export function findNodes(nodes: GraphNode[], query: string): GraphNode[] {
   });
 }
 
-// What the model sees for a node — the bits a delta must notice change. The
-// selector is identity (not signature): a relabel at the same selector is a
-// `~change`, not remove+add. JSON string so it's cheaply comparable.
+// What the model sees — the bits a delta reports as a `~change` on a node that kept
+// its identity. JSON string so it's cheaply comparable.
 function nodeSig(node: GraphNode): string {
   return JSON.stringify([node.type, node.label ?? "", !!node.required, !!node.disabled,
     node.count ?? null, node.placeholder ?? null]);
 }
 
+/**
+ * A reflow-stable handle for a node — *what it is*, not *where it sits*. A
+ * non-positional selector (no `nth-`) is already stable, so it IS the identity; a
+ * positional selector falls back to the element's content (href / placeholder /
+ * label). Mirror of Python `node_identity`.
+ */
+export function nodeIdentity(node: GraphNode): string {
+  if (!node.selector.includes("nth-")) return `s\x00${node.selector}`;
+  const key = node.href || node.placeholder || node.label || "";
+  return `c\x00${node.type}\x00${key}`;
+}
+
+interface DeltaEntry { ident: string; ref: string; sig: string; }
 export interface DeltaState {
-  ref: Record<string, string>; // selector -> ref
-  sig: Record<string, string>; // selector -> signature
+  entries: DeltaEntry[];
   next: number;
+  url?: string;
 }
 
 /**
- * Delta of the current `nodes` against the previous snapshot `since`, keyed by
- * selector so a node keeps its ref across snapshots (the agent's held refs stay
- * valid). `since` undefined/null → a full terse listing; otherwise only
- * `+`/`-`/`~` lines plus an `(N unchanged)` note. `refMap` is always the full
- * current `{ref: selector}`. Pass the returned `state` back as `since` next turn.
- * Mirror of Python `diff_nodes`.
+ * Delta of the current `nodes` against the previous snapshot `since`. Identity is
+ * content-based (see `nodeIdentity`), so a node keeps its ref across reflow and
+ * relabels. `since` undefined/null → a full terse listing; otherwise only
+ * `+`/`-`/`~` lines plus an `(N unchanged)` note — or a full `(refreshed — N nodes)`
+ * listing if churn would make the delta no smaller than a snapshot. `refMap` is
+ * always the full current `{ref: selector}`. Mirror of Python `diff_nodes`.
  */
 export function diffNodes(
   nodes: GraphNode[],
   since?: DeltaState | null,
 ): { text: string; refMap: Record<string, string>; state: DeltaState } {
-  const prevRef = since ? { ...since.ref } : {};
-  const prevSig = since ? { ...since.sig } : {};
+  const prevGroups = new Map<string, DeltaEntry[]>();
+  if (since) for (const e of since.entries) {
+    (prevGroups.get(e.ident) ?? prevGroups.set(e.ident, []).get(e.ident)!).push(e);
+  }
   let next = since ? since.next : 1;
   const refMap: Record<string, string> = {};
-  const selRef: Record<string, string> = {};
-  const newSig: Record<string, string> = {};
-  const current = new Set<string>();
+  const entries: DeltaEntry[] = [];
   const added: [string, GraphNode][] = [];
   const changed: [string, GraphNode][] = [];
   let unchanged = 0;
+
   for (const node of nodes) {
-    const sel = node.selector;
-    current.add(sel);
+    const ident = nodeIdentity(node);
     const sig = nodeSig(node);
-    newSig[sel] = sig;
+    const group = prevGroups.get(ident);
     let ref: string;
-    if (sel in prevRef) {
-      ref = prevRef[sel];
-      if (prevSig[sel] !== sig) changed.push([ref, node]);
+    if (group && group.length) {
+      const prev = group.shift()!;
+      ref = prev.ref;
+      if (prev.sig !== sig) changed.push([ref, node]);
       else unchanged++;
     } else {
       ref = String(next).padStart(2, "0");
       next++;
       added.push([ref, node]);
     }
-    selRef[sel] = ref;
-    refMap[ref] = sel;
+    refMap[ref] = node.selector;
+    entries.push({ ident, ref, sig });
   }
-  const removed = Object.keys(prevRef)
-    .filter((s) => !current.has(s))
-    .map((s) => prevRef[s])
-    .sort((a, b) => a.length - b.length || a.localeCompare(b));
-  const state: DeltaState = { ref: selRef, sig: newSig, next };
+  const removed: string[] = [];
+  for (const group of prevGroups.values()) for (const e of group) removed.push(e.ref);
+  removed.sort((a, b) => a.length - b.length || a.localeCompare(b));
+  const state: DeltaState = { entries, next };
   const render = (ref: string, node: GraphNode) => compactLine({ ...node, id: ref }, false, false, true);
+
   if (!since) {
     return { text: added.map(([r, n]) => render(r, n)).join("\n"), refMap, state };
   }
-  const lines: string[] = [];
-  for (const [r, n] of added) lines.push("+" + render(r, n));
-  for (const [r, n] of changed) lines.push("~" + render(r, n));
-  for (const r of removed) lines.push(`-[${r}]`);
-  if (unchanged) lines.push(`(${unchanged} unchanged)`);
-  if (!added.length && !changed.length && !removed.length) return { text: "(no change)", refMap, state };
-  return { text: lines.join("\n"), refMap, state };
+  let delta: string;
+  if (!added.length && !changed.length && !removed.length) {
+    delta = "(no change)";
+  } else {
+    const lines: string[] = [];
+    for (const [r, n] of added) lines.push("+" + render(r, n));
+    for (const [r, n] of changed) lines.push("~" + render(r, n));
+    for (const r of removed) lines.push(`-[${r}]`);
+    if (unchanged) lines.push(`(${unchanged} unchanged)`);
+    delta = lines.join("\n");
+  }
+  // Safety net, only worth checking when the change set is a real fraction of the
+  // page: a handful of edits obviously beats a full list.
+  if (nodes.length && 2 * (added.length + changed.length + removed.length) > nodes.length) {
+    const full = entries.map((e, i) => render(e.ref, nodes[i])).join("\n");
+    if (delta.length >= full.length) {
+      return { text: `(refreshed — ${nodes.length} nodes)\n${full}`, refMap, state };
+    }
+  }
+  return { text: delta, refMap, state };
 }
 
 export class InteractionGraph {

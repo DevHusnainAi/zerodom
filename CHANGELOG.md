@@ -11,9 +11,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`agent_snapshot_delta` — per-turn delta snapshots for a multi-turn agent loop.**
   An agent re-snapshots after every action, but most turns change little. The first
   call returns a full terse snapshot; later calls (pass the returned `state` back as
-  `since`) return only what changed — `+`/`-`/`~` lines keyed by CSS selector, so a
-  node keeps its ref across turns and the agent's held refs stay valid. A no-change
-  turn costs ~3 tokens. Over a read-heavy run where the consumer would otherwise
+  `since`) return only what changed — `+`/`-`/`~` lines. Node identity is
+  content-based (href / placeholder / label, like agent-browser's role+name), so a
+  node keeps its ref across **reflow** and relabels — inserting one list item is one
+  `+` line, not churn — and a churn that outgrows a full listing falls back to a full
+  `(refreshed)` snapshot, so a delta is never worse than one. Navigation auto-resets.
+  A no-change turn costs ~3 tokens. Over a read-heavy run where the consumer would
+  otherwise
   re-send the full tree each turn (as Firecrawl's agent does), this measured a
   **~92% aggregate reduction** across a 5-turn run — see
   `benchmarks/bench_agent_snapshot_delta.py`. Pure `diff_nodes` /

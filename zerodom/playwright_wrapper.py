@@ -299,10 +299,15 @@ class ZeroDOM:
         kwargs.setdefault("viewport_only", False)
 
         def _render(graph: InteractionGraph) -> tuple[str, dict[str, str], dict[str, Any]]:
-            text, ref_map, state = diff_nodes(graph["nodes"], since)
-            if since is None:  # prepend the page header on the first (full) snapshot
-                meta = graph["metadata"]
-                text = f"PAGE: {meta['page_title']} | {meta['url']}\n{text}"
+            meta = graph["metadata"]
+            url = meta["url"]
+            # Navigation resets the delta: a new page shares no identities with the
+            # old one, so emit a fresh full snapshot + header instead of churn.
+            base = None if (since is not None and since.get("url") != url) else since
+            text, ref_map, state = diff_nodes(graph["nodes"], base)
+            state["url"] = url
+            if base is None:  # first snapshot (or post-navigation) — prepend the header
+                text = f"PAGE: {meta['page_title']} | {url}\n{text}"
             return text, ref_map, state
 
         graph = ZeroDOM.from_page(page, **kwargs)

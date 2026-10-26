@@ -439,31 +439,63 @@ def test_terse_format_is_leaner_and_ref_resolvable():
         assert ref in refs
 
 
-def test_diff_nodes_delta_keeps_refs_stable_by_selector():
-    """Delta: identity is the selector, so a node keeps its ref across snapshots;
-    the next turn emits only +/-/~ and an unchanged count."""
+def test_diff_nodes_delta_stable_selectors():
+    """Delta on id-anchored (stable) selectors: a node keeps its ref; the next turn
+    emits only +/-/~ and an unchanged count (enough unchanged that the delta wins)."""
     from zerodom.parser import diff_nodes
-    def n(sel, typ, label):
-        return {"id": "node_00", "selector": sel, "type": typ, "label": label}
+    def n(i, label=None):
+        return {"id": "node_00", "selector": f"#a{i}", "type": "button", "label": label or f"B{i}"}
 
-    first = [n("#a", "a", "Home"), n("#b", "button", "Save"), n("#c", "a", "Old")]
+    first = [n(i) for i in range(10)]
     text1, refs1, state1 = diff_nodes(first)
-    assert refs1 == {"01": "#a", "02": "#b", "03": "#c"}
-    assert "[01] Home" in text1 and "[02] button Save" in text1  # full listing, terse
-    assert "+" not in text1 and "~" not in text1
+    assert refs1["01"] == "#a0" and refs1["10"] == "#a9"
+    assert "[01] button B0" in text1 and "+" not in text1
 
-    # #a unchanged, #b relabeled, #c removed, #d added.
-    second = [n("#a", "a", "Home"), n("#b", "button", "Saved"), n("#d", "a", "New")]
+    # relabel #a5 (ref 06), remove #a9 (ref 10), add #a10.
+    second = [n(i) for i in range(5)] + [n(5, "RENAMED")] + [n(i) for i in range(6, 9)] + [n(10)]
     text2, refs2, state2 = diff_nodes(second, since=state1)
-    assert "~[02] button Saved" in text2  # relabel keeps ref 02
-    assert "+[04] New" in text2           # new node gets a fresh ref
-    assert "-[03]" in text2               # #c removed by its old ref
-    assert "(1 unchanged)" in text2       # #a
-    assert refs2 == {"01": "#a", "02": "#b", "04": "#d"}  # refs stable by selector
+    assert "~[06] button RENAMED" in text2  # relabel keeps ref 06
+    assert "+[11] button B10" in text2      # new node, fresh ref
+    assert "-[10]" in text2                 # #a9 removed by its old ref
+    assert "(8 unchanged)" in text2
+    assert "10" not in refs2 and refs2["06"] == "#a5"  # #a9 gone, #a5 kept its ref
 
-    # No change at all → a terse "(no change)".
-    text3, _, _ = diff_nodes(second, since=state2)
-    assert text3 == "(no change)"
+    assert diff_nodes(second, since=state2)[0] == "(no change)"  # idempotent
+
+
+def test_diff_nodes_delta_survives_reflow_on_positional_selectors():
+    """The real fix: links with NO id/class use positional nth selectors. Inserting
+    one item at the top used to churn every downstream ref; content identity (href)
+    now sees it as a single add, refs intact."""
+    from zerodom.parser import diff_nodes
+    def link(pos, i):
+        return {"id": "node_00", "selector": f"body > ul > li:nth-of-type({pos}) > a",
+                "type": "a", "label": f"Item {i}", "href": f"/p{i}"}
+
+    first = [link(i + 1, i) for i in range(5)]
+    _, refs1, state1 = diff_nodes(first)
+    # Insert NEW at the top: every positional selector shifts down by one.
+    second = [{"id": "node_00", "selector": "body > ul > li:nth-of-type(1) > a",
+               "type": "a", "label": "NEW", "href": "/new"}] + [link(i + 2, i) for i in range(5)]
+    text2, refs2, _ = diff_nodes(second, since=state1)
+
+    assert "+[06] NEW" in text2
+    assert "(5 unchanged)" in text2
+    assert "~" not in text2                              # NO churn
+    assert "01" in refs2 and refs2["01"].endswith("nth-of-type(2) > a")  # Item 0 kept ref 01, now at pos 2
+
+
+def test_diff_nodes_full_fallback_when_churn_exceeds_full():
+    """If a delta would be no smaller than a fresh listing, send the full listing —
+    a delta is never worse than a snapshot."""
+    from zerodom.parser import diff_nodes
+    first = [{"id": "node_00", "selector": f"#a{i}", "type": "button", "label": f"B{i}"} for i in range(4)]
+    _, _, state1 = diff_nodes(first)
+    # Replace every node with a different one — maximal churn.
+    second = [{"id": "node_00", "selector": f"#x{i}", "type": "button", "label": f"X{i}"} for i in range(4)]
+    text2, _, _ = diff_nodes(second, since=state1)
+    assert text2.startswith("(refreshed")
+    assert "button X0" in text2 and "+" not in text2 and "~" not in text2
 
 
 def test_compact_text_beats_json_on_link_dense_pages():

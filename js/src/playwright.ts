@@ -248,10 +248,12 @@ export const ZeroDOM = {
     options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
   ): Promise<{ text: string; refMap: Record<string, string>; state: DeltaState }> {
     const graph = await this.fromPage(page, { viewportOnly: false, ...options });
-    const { text, refMap, state } = diffNodes(graph.nodes, since);
-    const full = since
-      ? text
-      : `PAGE: ${graph.metadata.page_title} | ${graph.metadata.url}\n${text}`;
+    const url = graph.metadata.url;
+    // Navigation resets the delta: a new page shares no identities with the old.
+    const base = since && since.url !== url ? null : since;
+    const { text, refMap, state } = diffNodes(graph.nodes, base);
+    state.url = url;
+    const full = base ? text : `PAGE: ${graph.metadata.page_title} | ${url}\n${text}`;
     return { text: full, refMap, state };
   },
 };
