@@ -4,7 +4,7 @@
 (`zerodom-mcp`), and every modern agent framework loads MCP servers natively — so integrating
 is the *same config* everywhere, plus a few framework-specific lines to build the agent.
 
-Every example here loads the **full 35-tool set** — not just perception (`parse_url`, `find`,
+Every example here loads the **full 39-tool set** — not just perception (`parse_url`, `find`,
 `click`), but the authz weapons too: `add_identity`, `compare_identities`, `replay`, `crawl`,
 `sweep`. (The [`../langchain_agent.py`](../langchain_agent.py) example instead wraps only
 open/click/fill from the ZeroDOM *library* — use that when you already own the browser loop and
@@ -41,7 +41,7 @@ MCP tutorials miss, and it matters here.
 | **AutoGen** | [`autogen.py`](autogen.py) | `mcp_server_tools(StdioServerParams(...))`, `AssistantAgent(tools=…)` | pin **`mcp<2`**; prefer `McpWorkbench` for a long hunt |
 
 Install per file is in that file's docstring; each is a standalone, copy-paste script. Every
-one is runtime-verified to connect to `zerodom-mcp` and load all 35 tools.
+one is runtime-verified to connect to `zerodom-mcp` and load all 39 tools.
 
 > **AutoGen note:** `autogen-ext` (≤0.7.5) targets the mcp **1.x** SDK — the 2.x SDK removed a
 > symbol it imports (`ImportError: RequestContext`). Install `"mcp<2"` until it updates.
@@ -50,7 +50,7 @@ one is runtime-verified to connect to `zerodom-mcp` and load all 35 tools.
 
 IDE agents (**Cursor, Cline, Continue, Windsurf, VS Code / Copilot, Zed**, plus MCP clients like
 Claude Desktop / Claude Code) aren't libraries — there's nothing to write. You add `zerodom-mcp`
-to the editor's MCP settings and its built-in agent gains all 35 tools. **Most** use the standard
+to the editor's MCP settings and its built-in agent gains all 39 tools. **Most** use the standard
 `mcpServers` JSON:
 
 ```json
@@ -86,7 +86,7 @@ mcpServers:
 ```
 
 > MCP config schemas shift between editor versions — if the tools don't show up, check your
-> editor's current MCP docs. Each gives the agent the same 35 tools the framework examples load.
+> editor's current MCP docs. Each gives the agent the same 39 tools the framework examples load.
 > To drive your *real, logged-in* Chrome, run `zerodom relay` + the extension first (see the
 > [main README](../../README.md#use-it-from-an-ai-agent-mcp)).
 

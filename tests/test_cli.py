@@ -41,7 +41,8 @@ def test_sweep_findings_flags_idor_and_boundary_not_proper_isolation(monkeypatch
     }
     monkeypatch.setattr(
         cli, "_http_fetch",
-        lambda url, proxy, insecure, headers, storage_state: (*responses[(url, storage_state)], url),
+        lambda url, proxy, insecure, headers, storage_state, method="GET", body=None:
+            cli.HttpResp(*responses[(url, storage_state)], url, {}),
     )
     ids = [("user", "user.json"), ("admin", "admin.json")]
     findings = cli._sweep_findings(["/admin", "/account/1", "/me"], ids)
@@ -346,3 +347,56 @@ def test_launch_never_downloads_when_piped(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda cmd: pytest.fail("must not install when piped"))
     with pytest.raises(SystemExit, match="playwright install chromium"):
         cli._launch(_pw(_MissingOnce()), None)
+
+
+def test_repeat_sends_method_and_body(monkeypatch, capsys):
+    """repeat must POST the chosen body N times over the session and emit one
+    JSONL record per send with the parsed response."""
+    seen = []
+
+    def fake(url, proxy, insecure, headers, storage_state, method="GET", body=None, cookie_jar=None):
+        seen.append((method, body))
+        return cli.HttpResp(200, '{"ok":true}', url, {})
+
+    monkeypatch.setattr(cli, "_http_fetch", fake)
+    rc = cli.main(["repeat", "https://x.test/api/x", "--method", "POST",
+                   "--body", '{"a":1}', "-n", "3"])
+    out = capsys.readouterr().out.strip().splitlines()
+    assert rc == 0
+    assert seen == [("POST", '{"a":1}')] * 3
+    assert len(out) == 3 and all(json.loads(l)["status"] == 200 for l in out)
+
+
+def test_scan_csrf_posture_from_server_rendered_form(capsys):
+    """A POST <form>, a session cookie with no SameSite, and no CSP/token →
+    the csrf-posture correlation fires (and the retired form-without-csrf does not)."""
+    import http.server, threading, json as _json
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = (b"<html><body><form method=post action=/transfer>"
+                    b"<input name=amount></form></body></html>")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Set-Cookie", "session=abc; Path=/")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/"
+        args = cli.argparse.Namespace(
+            url=url, rules=None, render=False, stealth=False, proxy=None,
+            insecure=False, headers=None, storage_state=None, js=False,
+            fmt="jsonl", fail_on_finding=False)
+        cli.scan_targets(args)
+    finally:
+        srv.shutdown()
+    rules = {_json.loads(l)["rule"] for l in capsys.readouterr().out.splitlines() if l.strip()}
+    assert "csrf-posture" in rules, rules
+    assert "form-without-csrf" not in rules

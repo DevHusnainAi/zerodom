@@ -6,7 +6,7 @@
 
 mcp-pin: autogen-ext (<=0.7.5) targets the mcp 1.x SDK; the 2.x SDK removed symbols it imports
 (ImportError: RequestContext). Pin "mcp<2" until autogen-ext updates. Tool loading is
-runtime-verified against zerodom-mcp (35 tools).
+runtime-verified against zerodom-mcp (39 tools).
 """
 from __future__ import annotations
 

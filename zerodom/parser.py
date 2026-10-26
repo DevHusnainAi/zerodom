@@ -145,6 +145,13 @@ class InteractionGraph(dict):
         """`node_id -> css selector`, so callers can act on ids alone."""
         return {node["id"]: node["selector"] for node in self["nodes"]}
 
+    def ref_map(self) -> dict[str, str]:
+        """`ref -> css selector`, keyed by the SAME `[NN]` token `to_compact_text`
+        prints (which strips the `node_` prefix `selector_map` keeps). An action
+        agent reads `[03]` and resolves it straight to a selector to click/fill —
+        without this, `[03]` silently misses the `node_03` key in selector_map."""
+        return {node["id"].removeprefix("node_"): node["selector"] for node in self["nodes"]}
+
     def to_compact_text(self, selectors: bool = False, hrefs: bool = False) -> str:
         """Token-dense line format for model context.
 

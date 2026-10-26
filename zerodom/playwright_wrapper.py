@@ -125,6 +125,36 @@ SERIALIZE = """(opts) => {
 }"""
 
 
+# Wait for the DOM to stop moving before we serialize it. The parser is
+# deterministic on fixed HTML, but a live page mid-render is a moving target:
+# nodes get injected, labels get filled in, panels hydrate milliseconds after
+# load — so two reads taken an instant apart can legitimately differ. This
+# bounded settle makes the read land on a quiet moment instead of a half-built
+# one. It resolves as soon as the DOM has been quiet for `quietMs`, or hits a
+# hard `timeoutMs` cap.
+#
+# ponytail: observes childList/subtree/characterData only, NOT attributes — so
+# a CSS-animated carousel, a spinner or a class-toggling banner (pure attribute
+# churn) still lets the page settle; only real structural/text changes reset the
+# quiet timer. A page that truly never stops adding nodes or retyping text hits
+# the cap and reads as-is — honest, bounded. Add `attributes:true` if a caller
+# ever needs attribute-driven churn caught.
+SETTLE = """(o) => new Promise((resolve) => {
+  let t, done = false;
+  const fin = () => { if (done) return; done = true; clearTimeout(t); clearTimeout(hard); obs.disconnect(); resolve(); };
+  const obs = new MutationObserver(() => { clearTimeout(t); t = setTimeout(fin, o.quietMs); });
+  let hard;
+  try { obs.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); }
+  catch (e) { return resolve(); }
+  hard = setTimeout(fin, o.timeoutMs);
+  t = setTimeout(fin, o.quietMs);
+})"""
+
+# Quiet window / hard cap in ms. A settled page costs ~quietMs; a churning one
+# is bounded by timeoutMs. Both are wall-clock waits, not parse time.
+_SETTLE_OPTS = {"quietMs": 200, "timeoutMs": 1200}
+
+
 def _opts(viewport_only: bool, check_occlusion: bool) -> dict[str, bool]:
     return {"viewportOnly": viewport_only, "checkOcclusion": check_occlusion}
 
@@ -150,7 +180,7 @@ class ZeroDOM:
 
     @staticmethod
     def from_page(
-        page: Any, frames: bool = False, viewport_only: bool = True, check_occlusion: bool = False, collapse_duplicates: bool = True
+        page: Any, frames: bool = False, viewport_only: bool = True, check_occlusion: bool = False, collapse_duplicates: bool = True, settle: bool = True
     ) -> InteractionGraph | Any:
         """Parse a Playwright page.
 
@@ -176,11 +206,28 @@ class ZeroDOM:
 
         `collapse_duplicates=True` collapses repeated low-signal controls under
         a card header with ×N. On by default for token savings.
+
+        `settle=True` waits for async DOM churn to quiesce before serializing
+        (see SETTLE above) so the read lands on a stable moment, not a page
+        still injecting nodes or filling labels. On by default; set False for a
+        latency-critical read where you want the DOM exactly as of now.
         """
         # Duck-typed on purpose — anything with `.content()` and `.url` parses. Shadow
         # serialization also needs `.evaluate()`, and returns None when the page has no
         # shadow roots, so both paths fall back to the plain light-DOM content.
         opts = _opts(viewport_only, check_occlusion)
+        if settle and hasattr(page, "evaluate"):
+            # Settle first; it also doubles as the sync/async probe. An awaitable
+            # here means an async page, so hand the whole read to the async path.
+            # A navigation mid-settle destroys the execution context and raises —
+            # that just means the page moved on, so swallow it and serialize the
+            # page we land on (Playwright's next evaluate waits for the new frame).
+            try:
+                settled = page.evaluate(SETTLE, _SETTLE_OPTS)
+            except Exception:
+                settled = None
+            if inspect.isawaitable(settled):
+                return _from_async_page_settled(settled, page, frames, viewport_only, check_occlusion, collapse_duplicates)
         pending = page.evaluate(SERIALIZE, opts) if hasattr(page, "evaluate") else None
         if inspect.isawaitable(pending):
             return _from_async_page(pending, page, frames, viewport_only, check_occlusion, collapse_duplicates)
@@ -212,6 +259,45 @@ class ZeroDOM:
             except Exception:
                 pass
         return _merge_frames(page, graph, viewport_only, check_occlusion) if frames else graph
+
+    @staticmethod
+    def agent_snapshot(page: Any, **kwargs: Any) -> tuple[str, dict[str, str]] | Any:
+        """Full-page interaction snapshot for an action agent.
+
+        Returns `(compact_text, ref_map)`: the token-dense `[NN]`-ref listing to
+        put in the model's context, and a `{ref: selector}` map keyed to those same
+        refs so the agent can act on what it read — `[03]` -> selector -> click/fill.
+
+        Defaults to `viewport_only=False`: an agent can scroll, so it needs the whole
+        interactive surface, not just what is on screen (the `from_page` default is
+        the on-screen view, right for a human observer, wrong for an agent). Async
+        pages return an awaitable, mirroring `from_page`.
+        """
+        kwargs.setdefault("viewport_only", False)
+        graph = ZeroDOM.from_page(page, **kwargs)
+        if inspect.isawaitable(graph):
+            async def _await() -> tuple[str, dict[str, str]]:
+                g = await graph
+                return g.to_compact_text(), g.ref_map()
+            return _await()
+        return graph.to_compact_text(), graph.ref_map()
+
+
+async def _from_async_page_settled(
+    settled: Any,
+    page: Any,
+    frames: bool = False,
+    viewport_only: bool = True,
+    check_occlusion: bool = False,
+    collapse_duplicates: bool = True,
+) -> InteractionGraph:
+    """Await the DOM-settle promise, then run the normal async read."""
+    try:
+        await settled
+    except Exception:
+        pass  # a page with no document, or that refused the observer, just reads as-is
+    pending = page.evaluate(SERIALIZE, _opts(viewport_only, check_occlusion))
+    return await _from_async_page(pending, page, frames, viewport_only, check_occlusion, collapse_duplicates)
 
 
 async def _from_async_page(

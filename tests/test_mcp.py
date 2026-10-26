@@ -109,6 +109,10 @@ def test_tools_are_registered():
         "zerodom_find",
         "zerodom_click_node",
         "zerodom_fill_node",
+        "zerodom_scan",
+        "zerodom_repeat",
+        "zerodom_race",
+        "zerodom_probe",
     } <= names
 
 
@@ -538,3 +542,60 @@ def test_locked_scope_cannot_be_widened_by_the_agent(scoped):
     out = asyncio.run(mcp_server.zerodom_set_scope("evil.test"))
     assert "locked by the operator" in out
     assert mcp_server._session["scope"]["allow"] == ["app.test"]  # unchanged
+
+
+def test_mcp_race_reports_over_application(page, monkeypatch):
+    async def fake_eval(script, arg=None):
+        if "const send" in script:            # _RACE_JS burst
+            results = [["NIGHT20", 200]] * 7 + [["NIGHT20", 409]] * 13
+            return {"results": results, "check": {"total": 0}}
+        return None
+    monkeypatch.setattr(page, "evaluate", fake_eval)
+    out = asyncio.run(mcp_server.zerodom_race(
+        "https://example.com/api/coupon", bodies=["NIGHT20"], n=20,
+        check="https://example.com/api/cart"))
+    assert '"engine": "browser-multiplex"' in out
+    assert '"succeeded": 7' in out and '"race-condition"' in out
+    assert '"check": {"total": 0}' in out
+
+
+def test_mcp_probe_flags_mass_assignment(page, monkeypatch):
+    async def fake_eval(script, arg=None):
+        if "const opt" in script:             # _FETCH_ONE_JS
+            body = (arg or {}).get("body") or ""
+            if '"price"' in body:             # tampered → vulnerable echo
+                return {"status": 200, "body": {"ok": True, "price": 1}}
+            return {"status": 200, "body": {"ok": True, "price": 999}}
+        return None
+    monkeypatch.setattr(page, "evaluate", fake_eval)
+    out = asyncio.run(mcp_server.zerodom_probe(
+        "https://example.com/api/create", tamper='{"price":1}', body='{"name":"x"}'))
+    assert '"mass-assignment"' in out
+
+
+def test_mcp_repeat_sends_over_session(page, monkeypatch):
+    seen = {}
+
+    async def fake_eval(script, arg=None):
+        if "const opt" in script:
+            seen.update(arg)
+            return {"status": 201, "body": {"ok": True}}
+        return None
+    monkeypatch.setattr(page, "evaluate", fake_eval)
+    out = asyncio.run(mcp_server.zerodom_repeat(
+        "https://example.com/api/x", method="POST", body='{"a":1}'))
+    assert seen == {"url": "https://example.com/api/x", "method": "POST", "body": '{"a":1}'}
+    assert '"status": 201' in out
+
+
+def test_mcpb_manifest_lists_every_registered_tool():
+    """The hand-kept mcpb bundle manifest must match the registered MCP tools —
+    a new tool without a manifest entry (or vice-versa) fails here, not in the wild."""
+    import json
+    from pathlib import Path
+
+    manifest = json.loads((Path(__file__).resolve().parent.parent / "mcpb" / "manifest.json").read_text())
+    listed = {t["name"] for t in manifest["tools"]}
+    registered = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())}
+    assert listed == registered, {"missing_from_manifest": sorted(registered - listed),
+                                  "stale_in_manifest": sorted(listed - registered)}

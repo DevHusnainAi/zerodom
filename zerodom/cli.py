@@ -1,9 +1,32 @@
-"""Turn a web page into the list of things an agent can click, and count the
-savings. `zerodom <url>` for the compact graph, --find to search it.
+"""Turn a web page into the list of things an agent can click, and act on it.
 
-`zerodom crawl <url>` maps an app's routes/forms/API calls as JSONL over one
-of two transports: a fresh headless Chromium (default) or your real, already-
-logged-in Chrome via the ZeroDOM relay (`--relay`)."""
+`zerodom <url>` prints the compact interaction graph (--find to search it).
+
+Recon:
+  inspect  <url>   the interaction graph + token savings (the default verb)
+  crawl    <url>   map routes/forms/API calls as JSONL — plus the full callable
+                   API surface (method + body shape) read from the page's JS,
+                   over headless Chromium or your real Chrome (--relay)
+  scan     <url>   match the page against client-side surface rules: DOM-XSS
+                   sinks and leaked endpoints in the JS (--js), plus response-
+                   header posture (CSP/CORS/cookie flags)
+
+Access control:
+  compare  <url>   fetch under two saved sessions and diff (cross-tenant IDOR)
+  sweep    <url>   crawl as one identity, replay every URL across identities
+
+Act / verify:
+  repeat   <url>   send a request (optionally N times) with a chosen method/body
+                   — a Repeater over the engagement session (--save HAR/.http)
+  probe    <url>   replay with a tampered body (--tamper) and diff vs baseline —
+                   mass-assignment / price / privilege tampering
+  race     <url>   fire a concurrent burst (one body, or a mix of operations via
+                   repeated --body) to flag a check-then-act race (TOCTOU);
+                   --engine http2 multiplexes via httpx (pip install zerodom[race])
+
+Also: audit (check a test suite's selectors), relay (bridge to real Chrome),
+extension, setup, config. Shared flags: --proxy/--insecure (Burp/Caido),
+--header, --storage-state (reuse a logged-in session)."""
 
 from __future__ import annotations
 
@@ -16,6 +39,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import urljoin, urlparse
 
 import tiktoken
@@ -173,14 +197,60 @@ def _fetch(
             browser.close()
             return html, final_url
 
-    _status, html, final = _http_fetch(url, proxy, insecure, headers, storage_state)
-    return html, final
+    r = _http_fetch(url, proxy, insecure, headers, storage_state)
+    return r.body, r.url
 
 
-def _http_fetch(url, proxy, insecure, headers, storage_state) -> tuple[int, str, str]:
-    """Plain HTTP with the engagement's proxy/headers/cookies, returning the
-    status too — `compare` needs 403-vs-200, which the graph alone can't show."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
+class _Rate:
+    """A monotonic-clock request pacer: `wait()` blocks so calls are spaced at
+    least 1/rps apart. rps=0/None disables it. Shared across a sweep so the whole
+    replay honours a program's rate limit, not just one URL's identities."""
+    def __init__(self, rps: float | None):
+        self.min = (1.0 / rps) if rps else 0.0
+        self.t = 0.0
+
+    def wait(self) -> None:
+        if not self.min:
+            return
+        import time
+        gap = self.t + self.min - time.monotonic()
+        if gap > 0:
+            time.sleep(gap)
+        self.t = time.monotonic()
+
+
+class HttpResp(NamedTuple):
+    """One plain-HTTP response: status for compare's 403-vs-200, body for the
+    graph, final URL after redirects, and the response headers for scan's posture
+    rules (multiple Set-Cookie values are joined by newline, keys lowercased)."""
+    status: int
+    body: str
+    url: str
+    headers: dict[str, str]
+
+
+def _flatten_headers(msg) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for k, v in msg.items():
+        k = k.lower()
+        out[k] = f"{out[k]}\n{v}" if k in out else v
+    return out
+
+
+def _http_fetch(url, proxy, insecure, headers, storage_state,
+                method: str = "GET", body: str | None = None, cookie_jar=None) -> HttpResp:
+    """Plain HTTP with the engagement's proxy/headers/cookies. `method`/`body`
+    make it the shared sender for `repeat`/`race` (POST a JSON body); the default
+    is the read that `scan`/`compare` have always used. `cookie_jar` (an
+    http.cookiejar.CookieJar) makes the server's Set-Cookie carry across calls —
+    repeat/race pass one jar so a server-issued session survives setup → burst,
+    which urllib otherwise drops. Returns status, body, final URL and response
+    headers (`compare` needs 403-vs-200; `scan` reads CSP/CORS/cookie posture)."""
+    data = body.encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"User-Agent": USER_AGENT, **(headers or {})})
+    if data is not None and not any(k.lower() == "content-type" for k in (headers or {})):
+        req.add_header("Content-Type", "application/json")
     # One Cookie header with all pairs: add_header overwrites a repeat, so a
     # per-cookie loop would send only the last one (dropping Admin/role cookies
     # and silently breaking the compare IDOR diff).
@@ -188,6 +258,8 @@ def _http_fetch(url, proxy, insecure, headers, storage_state) -> tuple[int, str,
     if cookies:
         req.add_header("Cookie", "; ".join(f"{c['name']}={c['value']}" for c in cookies))
     hs: list = []
+    if cookie_jar is not None:
+        hs.append(urllib.request.HTTPCookieProcessor(cookie_jar))
     if proxy:
         hs.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
     if insecure:
@@ -196,10 +268,54 @@ def _http_fetch(url, proxy, insecure, headers, storage_state) -> tuple[int, str,
     opener = urllib.request.build_opener(*hs)
     try:
         with opener.open(req, timeout=30) as resp:
-            body = resp.read().decode(resp.headers.get_content_charset() or "utf-8", "replace")
-            return resp.status, body, resp.url
+            text = resp.read().decode(resp.headers.get_content_charset() or "utf-8", "replace")
+            return HttpResp(resp.status, text, resp.url, _flatten_headers(resp.headers))
     except urllib.error.HTTPError as e:  # 401/403/404 are the whole point of an IDOR check
-        return e.code, e.read().decode("utf-8", "replace"), url
+        return HttpResp(e.code, e.read().decode("utf-8", "replace"), url, _flatten_headers(e.headers))
+
+
+def _fetch_linked_scripts(
+    html: str, base_url: str, *, proxy=None, insecure=False, headers=None,
+    storage_state=None, cache: dict | None = None, max_scripts: int = 10,
+    max_bytes: int = 512_000,
+) -> list[str]:
+    """Bodies of the page's same-origin `<script src>` bundles.
+
+    jsintel stays network-free; this is where those bytes come from. Same-origin
+    only — the app's own code, not CDN libraries (known and noisy). Per-script
+    errors are swallowed (one dead asset must not fail a scan); `cache` (a dict
+    keyed by URL) avoids refetching one bundle across many crawled pages."""
+    try:
+        doc = lxml_html.fromstring(html)
+    except Exception:
+        return []
+    host = urlparse(base_url).netloc
+    urls: list[str] = []
+    seen: set[str] = set()
+    for s in doc.iter("script"):
+        src = s.get("src")
+        if not src:
+            continue
+        absu = urljoin(base_url, src)
+        if urlparse(absu).netloc != host or absu in seen:
+            continue
+        seen.add(absu)
+        urls.append(absu)
+    bodies: list[str] = []
+    for u in urls[:max_scripts]:
+        if cache is not None and u in cache:
+            if cache[u]:
+                bodies.append(cache[u])
+            continue
+        try:
+            body = _http_fetch(u, proxy, insecure, headers, storage_state).body[:max_bytes]
+        except Exception:
+            body = ""
+        if cache is not None:
+            cache[u] = body
+        if body:
+            bodies.append(body)
+    return bodies
 
 
 def fetch_with_frames(url: str, proxy: str | None = None, insecure: bool = False,
@@ -290,10 +406,16 @@ def forms_of(doc, base: str) -> list[dict]:
     return out
 
 
-def crawl_record(html: str, final_url: str, api_calls: list[str], in_scope) -> dict:
+def crawl_record(html: str, final_url: str, api_calls: list[str], in_scope,
+                 scripts: list[str] | None = None) -> dict:
     """One JSONL record for a crawled page: forms, in-scope links, fired API
-    calls, hidden fields, blocked. Shared byte-for-byte by the sync CLI crawl
-    and the async MCP crawl — both transports emit the same record."""
+    calls, callable JS endpoints, hidden fields, blocked. Shared byte-for-byte by
+    the sync CLI crawl and the async MCP crawl — both transports emit the same
+    record. `scripts` are the fetched external bundle bodies (the caller owns the
+    network); inline scripts are read here. api_calls are what fired on load;
+    js_endpoints are the full surface the JS can call (method + body shape)."""
+    from .jsintel import _script_text, extract_endpoints
+
     graph = ZeroDOMParser(html, final_url).parse()
     try:
         doc = lxml_html.fromstring(html)
@@ -303,10 +425,15 @@ def crawl_record(html: str, final_url: str, api_calls: list[str], in_scope) -> d
         urljoin(final_url, n["href"]) for n in graph["nodes"]
         if n.get("href") and n["href"].split(":", 1)[0] not in ("javascript", "mailto", "tel")
     })
+    js_eps: dict[tuple[str, str], dict] = {}
+    for js in ([_script_text(doc)] if doc is not None else []) + (scripts or []):
+        for e in extract_endpoints(js):
+            js_eps[(e["method"], e["path"])] = {k: e[k] for k in ("method", "path", "body_keys")}
     record = {
         "url": final_url,
         "forms": forms_of(doc, final_url) if doc is not None else [],
         "api_calls": sorted(set(api_calls)),
+        "js_endpoints": sorted(js_eps.values(), key=lambda e: (e["path"], e["method"])),
         "hidden_fields": [h["name"] for h in graph["metadata"].get("hidden_fields", [])],
         "links_in_scope": [l for l in links if in_scope(l)],
     }
@@ -395,6 +522,7 @@ def crawl_site(
             # XHR/fetch the page fires during a load = the app's real API surface.
             page.on("request", lambda r: api_calls.append(f"{r.method} {r.url}")
                     if r.resource_type in ("xhr", "fetch") else None)
+            script_cache: dict[str, str] = {}  # one bundle fetched once across pages
             while queue and len(seen) < max_pages:
                 url = queue.pop(0)
                 if url in seen:
@@ -407,7 +535,12 @@ def crawl_site(
                 except Exception as exc:
                     yield {"url": url, "error": str(exc)[:200]}
                     continue
-                record = crawl_record(html, final, api_calls, in_scope)
+                # Static-read the same-origin bundles for the full callable API
+                # surface (methods/bodies the page never fires on a passive load).
+                scripts = _fetch_linked_scripts(
+                    html, final, proxy=proxy, insecure=insecure, headers=headers,
+                    storage_state=storage_state, cache=script_cache)
+                record = crawl_record(html, final, api_calls, in_scope, scripts=scripts)
                 yield record
                 if record.get("blocked"):
                     # A challenge interstitial's links are the wall's, not the
@@ -436,15 +569,19 @@ def compare_identities(
     proxy: str | None = None,
     insecure: bool = False,
     headers: dict | None = None,
+    rate: "_Rate | None" = None,
 ) -> dict:
     """Fetch one URL under each identity (a name + its storage_state cookies) and
     diff the responses — the cross-tenant IDOR primitive: does user A see user B's
     data? Byte-identical bodies across two identities on a per-user resource is
-    the tell. Deterministic; interpretation stays with the human."""
+    the tell. Deterministic; interpretation stays with the human. `rate` paces the
+    per-identity fetches to stay under a program's rate limit."""
     per: dict[str, dict] = {}
     bodies: dict[str, str] = {}
     for name, state in identities:
-        status, body, final = _http_fetch(url, proxy, insecure, headers, state)
+        if rate:
+            rate.wait()
+        status, body, final, _hdrs = _http_fetch(url, proxy, insecure, headers, state)
         bodies[name] = body
         graph = ZeroDOMParser(body, final).parse()
         per[name] = {
@@ -485,7 +622,7 @@ def _is_2xx(status: int) -> bool:
     return 200 <= status < 300
 
 
-def _sweep_findings(urls, identities, *, proxy=None, insecure=False, headers=None):
+def _sweep_findings(urls, identities, *, proxy=None, insecure=False, headers=None, rate=None):
     """Replay each URL under every identity and keep only the deterministic
     access-control tells — the false-positive discipline is the point:
 
@@ -503,7 +640,8 @@ def _sweep_findings(urls, identities, *, proxy=None, insecure=False, headers=Non
     findings = []
     for url in urls:
         try:
-            result = compare_identities(url, identities, proxy=proxy, insecure=insecure, headers=headers)
+            result = compare_identities(url, identities, proxy=proxy, insecure=insecure,
+                                        headers=headers, rate=rate)
         except (urllib.error.URLError, ValueError, OSError):
             continue  # one dead URL mid-sweep must not abort the whole run
         ids = result["identities"]
@@ -539,17 +677,16 @@ def _sweep_findings(urls, identities, *, proxy=None, insecure=False, headers=Non
 
 
 def sweep_identities(start_url, identities, *, crawl_state=None, scope=None, max_pages=40,
-                     deny=_DEFAULT_DENY, proxy=None, insecure=False, headers=None):
+                     deny=_DEFAULT_DENY, proxy=None, insecure=False, headers=None, rps=None):
     """The one-command cross-identity sweep: crawl the app as one identity to map
     its GET surface, then replay every in-scope URL under all identities and flag
     the access-control tells (`_sweep_findings`). "Two logins in, broken access
     control out." Read-only throughout — only GET api_calls are replayed (a POST/
-    PUT/DELETE replay would change state) and destructive URLs are dropped.
+    PUT/DELETE replay would change state) and destructive URLs are dropped. `rps`
+    paces the replay to stay under a program's rate limit.
 
-    # ponytail: v1 is GET-only + exact-URL dedup + a flat cap, no throttle on the
-    # replay loop (crawl paces itself; replay is GET reads). Upgrades when needed:
-    # path-template dedup (/orders/{id}), safe POST replay, --rps for a program's
-    # rate limit.
+    # ponytail: v1 is GET-only + exact-URL dedup + a flat cap. Upgrades when
+    # needed: path-template dedup (/orders/{id}), safe POST replay.
     """
     crawl_state = crawl_state or identities[0][1]  # discover the surface as the first identity
     in_scope, deny_re = crawl_plan(start_url, scope, deny)
@@ -569,7 +706,7 @@ def sweep_identities(start_url, identities, *, crawl_state=None, scope=None, max
             seen.add(u)
             urls.append(u)
     return _sweep_findings(urls[:_SWEEP_URL_CAP], identities,
-                           proxy=proxy, insecure=insecure, headers=headers)
+                           proxy=proxy, insecure=insecure, headers=headers, rate=_Rate(rps))
 
 
 def emit_jsonl(graph) -> None:
@@ -706,10 +843,11 @@ def scan_targets(args) -> int:
     Exit is non-zero only under --fail-on-finding, so a plain scan stays
     pipe-friendly (`... | jq` sees a clean stream, shell sees success).
     """
-    from .surfaces import evaluate, load_rules
+    from .surfaces import csrf_posture, evaluate, evaluate_headers, load_header_rules, load_rules
 
     try:
         rules = load_rules(args.rules)  # loads once; raises loudly on a bad ruleset
+        header_rules = load_header_rules(args.rules)
     except Exception as exc:
         # A --rules file is config: a missing file, bad YAML, or an invalid rule
         # (load_rules' own ValueErrors are already user-readable) is a clean exit,
@@ -732,9 +870,35 @@ def scan_targets(args) -> int:
             continue
         graph = ZeroDOMParser(html, final_url).parse()
         findings = list(evaluate(graph, rules))
+        hdrs = _parse_headers(args.headers)
+        post_surf: set[str] = set()
         if args.js:
-            from .jsintel import scan_js
-            findings += scan_js(html, final_url)
+            from .jsintel import extract_endpoints, scan_js
+            scripts = _fetch_linked_scripts(
+                html, final_url, proxy=args.proxy, insecure=args.insecure,
+                headers=hdrs, storage_state=args.storage_state)
+            findings += scan_js(html, final_url, scripts=scripts)
+            post_surf |= {e["path"] for s in scripts for e in extract_endpoints(s) if e["method"] != "GET"}
+        # Server-rendered <form method=post> is a state-changing surface too, so a
+        # classic CSRF-able form is caught even without JS endpoints.
+        try:
+            post_surf |= {f["action"] for f in forms_of(lxml_html.fromstring(html), final_url)
+                          if f["method"] == "POST"}
+        except Exception:
+            pass
+        post_eps = sorted(post_surf)
+        # Response-header posture + CSRF correlation: one plain-HTTP read of the
+        # document response (where CSP/CORS/Set-Cookie live, identical under
+        # --render) for http(s).
+        if target.startswith(("http://", "https://")):
+            try:
+                resp = _http_fetch(target, args.proxy, args.insecure, hdrs, args.storage_state)
+                findings += evaluate_headers(resp.headers, final_url, header_rules)
+                hidden_blob = " ".join(h.get("name", "") for h in graph["metadata"].get("hidden_fields", []))
+                if csrf := csrf_posture(resp.headers, post_eps, hidden_blob, final_url):
+                    findings.append(csrf)
+            except Exception:
+                pass  # a header read that fails must not abort the scan
         for finding in findings:
             any_finding = True
             if as_md:
@@ -949,8 +1113,488 @@ def setup(_args=None) -> int:
     return 0
 
 
+def _har_entry(method, url, req_headers, req_body, resp) -> dict:
+    """One HAR 1.2 entry from a request/response pair — the format Burp/Caido and
+    browsers import. Response headers arrive lowercased with multi-value Set-Cookie
+    newline-joined (as _http_fetch returns), split back out here."""
+    import datetime
+
+    def _hlist(h):
+        out = []
+        for k, v in (h or {}).items():
+            for part in str(v).split("\n"):
+                out.append({"name": k, "value": part})
+        return out
+
+    req = {"method": method, "url": url, "httpVersion": "HTTP/1.1",
+           "headers": _hlist(req_headers), "queryString": [], "cookies": [],
+           "headersSize": -1, "bodySize": len(req_body or "")}
+    if req_body is not None:
+        req["postData"] = {"mimeType": "application/json", "text": req_body}
+    return {
+        "startedDateTime": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "time": 0,
+        "request": req,
+        "response": {"status": resp.status, "statusText": "", "httpVersion": "HTTP/1.1",
+                     "headers": _hlist(resp.headers), "cookies": [],
+                     "content": {"size": len(resp.body), "mimeType":
+                                 resp.headers.get("content-type", ""), "text": resp.body},
+                     "headersSize": -1, "bodySize": len(resp.body), "redirectURL": ""},
+        "cache": {}, "timings": {"send": 0, "wait": 0, "receive": 0},
+    }
+
+
+def _write_evidence(path: str, exchanges: list[dict]) -> None:
+    """Write captured exchanges to `path`. `.http` → a human-readable request/
+    response log; anything else (default `.har`) → a HAR file for Burp/Caido/browser
+    import. Each exchange: {method,url,req_headers,req_body,resp}."""
+    from . import __version__ as _ver
+
+    if path.endswith(".http"):
+        blocks = []
+        for i, x in enumerate(exchanges, 1):
+            r = x["resp"]
+            req = [f"{x['method']} {x['url']} HTTP/1.1"]
+            req += [f"{k}: {v}" for k, v in (x["req_headers"] or {}).items()]
+            req_txt = "\r\n".join(req) + "\r\n\r\n" + (x["req_body"] or "")
+            res = [f"HTTP/1.1 {r.status}"]
+            res += [f"{k}: {v}" for k, v in (r.headers or {}).items()]
+            res_txt = "\r\n".join(res) + "\r\n\r\n" + r.body
+            blocks.append(f"### exchange {i} — request\n{req_txt}\n\n### exchange {i} — response\n{res_txt}")
+        Path(path).write_text("\n\n".join(blocks), encoding="utf-8")
+        return
+    har = {"log": {"version": "1.2", "creator": {"name": "zerodom", "version": _ver},
+                   "entries": [_har_entry(x["method"], x["url"], x["req_headers"],
+                                          x["req_body"], x["resp"]) for x in exchanges]}}
+    Path(path).write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _pp_body(text: str, limit: int = 1000):
+    """Parse a response body as JSON for a clean record, else a trimmed string."""
+    try:
+        return json.loads(text)
+    except Exception:
+        return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _cookie_header(jar, storage_state, url: str) -> str:
+    """The Cookie header for `url`: the shared jar's cookies (a server-issued
+    session from setup) plus any static --storage-state cookies."""
+    req = urllib.request.Request(url)
+    if jar is not None:
+        jar.add_cookie_header(req)
+    parts = [req.get_header("Cookie")] if req.get_header("Cookie") else []
+    parts += [f"{c['name']}={c['value']}" for c in _cookies_from_state(storage_state)]
+    return "; ".join(p for p in parts if p)
+
+
+def _race_burst(url, specs, headers, *, jar, storage_state, insecure) -> list[int]:
+    """Fire the burst with last-byte synchronisation (the HTTP/1.1 single-packet
+    technique). `specs` is a list of (method, body) — identical for a single-action
+    race, or a mix of operations that hammer one shared record (e.g. two coupon
+    codes on one cart), which widens the read-modify-write window. Each connection
+    sends its whole request except the final byte; then one thread releases every
+    final byte back-to-back, so the requests complete within microseconds of each
+    other — tight enough to land several inside a check-then-act window. Returns the
+    status per spec, in order (-1 on a send/parse error).
+    ponytail: one connection per request; for the very tightest windows the http2
+    engine (zerodom[race]) multiplexes on one connection instead."""
+    import socket
+    import ssl as sslmod
+    import threading
+
+    pu = urlparse(url)
+    host = pu.hostname
+    port = pu.port or (443 if pu.scheme == "https" else 80)
+    path = pu.path + (f"?{pu.query}" if pu.query else "")
+    cookie = _cookie_header(jar, storage_state, url)
+    hset = {"host", "user-agent", "accept", "connection", "content-length", "content-type", "cookie"}
+
+    def _raw(method: str, body: str | None) -> bytes:
+        payload = body.encode("utf-8") if body is not None else b""
+        lines = [f"{method} {path} HTTP/1.1", f"Host: {host}", f"User-Agent: {USER_AGENT}",
+                 "Accept: */*", "Connection: close"]
+        for k, v in (headers or {}).items():
+            if k.lower() not in hset:
+                lines.append(f"{k}: {v}")
+        if body is not None and not any(k.lower() == "content-type" for k in (headers or {})):
+            lines.append("Content-Type: application/json")
+        if cookie:
+            lines.append(f"Cookie: {cookie}")
+        if method not in ("GET", "HEAD") or payload:
+            lines.append(f"Content-Length: {len(payload)}")
+        return ("\r\n".join(lines) + "\r\n\r\n").encode("utf-8") + payload
+
+    raws = [_raw(m, b) for m, b in specs]
+    ctx = (sslmod._create_unverified_context() if insecure
+           else sslmod.create_default_context()) if pu.scheme == "https" else None
+
+    # Phase 1: open and warm every connection in parallel (handshake + all but the
+    # last byte). Phase 2: one thread sends every final byte back-to-back — no
+    # per-send GIL/barrier jitter. Phase 3: read each status, aligned to specs.
+    n = len(specs)
+    socks: list = [None] * n
+
+    def _warm(i: int):
+        try:
+            s = socket.create_connection((host, port), timeout=30)
+            if ctx is not None:
+                s = ctx.wrap_socket(s, server_hostname=host)
+            s.sendall(raws[i][:-1])
+            socks[i] = s
+        except Exception:
+            socks[i] = None
+
+    warmers = [threading.Thread(target=_warm, args=(i,)) for i in range(n)]
+    for t in warmers:
+        t.start()
+    for t in warmers:
+        t.join()
+
+    for i, s in enumerate(socks):   # the single-packet moment: final bytes, back-to-back
+        if s is not None:
+            try:
+                s.send(raws[i][-1:])
+            except Exception:
+                pass
+
+    results: list[int] = [-1] * n
+    for i, s in enumerate(socks):
+        if s is None:
+            continue
+        try:
+            buf = s.recv(4096)
+            results[i] = int(buf.split(b" ", 2)[1]) if buf.startswith(b"HTTP/") else -1
+        except Exception:
+            results[i] = -1
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return results
+
+
+def _run_steps(steps: list[dict], base_url: str, *, proxy, insecure, headers,
+               storage_state, cookie_jar=None) -> None:
+    """Run a list of prep requests (a --setup file) in order, to reach the state a
+    race needs. Each step: {url|path, method?, body?}; a path is joined onto the
+    target's origin. A shared `cookie_jar` carries a server-issued session from one
+    step to the next (and into the burst)."""
+    for step in steps:
+        u = step.get("url") or urljoin(base_url, step["path"])
+        body = step.get("body")
+        if body is not None and not isinstance(body, str):
+            body = json.dumps(body)
+        _http_fetch(u, proxy, insecure, headers, storage_state,
+                    method=step.get("method", "GET").upper(), body=body, cookie_jar=cookie_jar)
+
+
+def probe_finding(injected: dict, base_body: str | None, tamp_status: int, tamp_body: str,
+                  method: str, url: str):
+    """Mass-assignment tell, shared by CLI `probe` and MCP `zerodom_probe`: an
+    injected field accepted (2xx) and reflected in the tampered response but absent
+    from the baseline. Returns a Finding or None."""
+    from .surfaces import Finding
+
+    if not injected:
+        return None
+    reflected = [k for k, v in injected.items()
+                 if str(v) in (tamp_body or "") and (base_body is None or str(v) not in base_body)]
+    if 200 <= tamp_status < 300 and reflected:
+        return Finding(
+            "mass-assignment", "high",
+            f"injected field(s) {reflected} were accepted (HTTP {tamp_status}) and reflected by "
+            f"{method} {url} but absent from the baseline response — possible mass assignment "
+            f"(privilege/price/ownership tampering); confirm the server-side effect",
+            url)
+    return None
+
+
+def probe_cmd(args) -> int:
+    """Replay a (crawl-discovered) endpoint with a tampered body and diff it against
+    the baseline — the mass-assignment / price- / privilege-tampering check that
+    read-only recon can't make. `--tamper '{"role":"admin"}'` is merged over
+    `--body`; if an injected field is accepted (2xx) and shows up in the tampered
+    response but not the baseline, that is flagged. `--setup` reaches the pre-state;
+    `--save` writes both exchanges as evidence. (Cross-identity write-IDOR is
+    `zerodom compare <url> --method POST --body … --as …`.)"""
+    import http.cookiejar
+
+    from .surfaces import Finding
+
+    hdrs = _parse_headers(args.headers)
+    jar = http.cookiejar.CookieJar()
+    method = args.method.upper()
+
+    tampered = args.body
+    injected: dict = {}
+    if args.tamper:
+        injected = json.loads(args.tamper)
+        merged = (json.loads(args.body) if args.body else {})
+        merged.update(injected)
+        tampered = json.dumps(merged)
+
+    if args.setup:
+        _run_steps(json.loads(Path(args.setup).read_text(encoding="utf-8")), args.url,
+                   proxy=args.proxy, insecure=args.insecure, headers=hdrs,
+                   storage_state=args.storage_state, cookie_jar=jar)
+
+    def send(body):
+        return _http_fetch(args.url, args.proxy, args.insecure, hdrs, args.storage_state,
+                           method=method, body=body, cookie_jar=jar)
+
+    exchanges: list[dict] = []
+
+    def mk(body, r):
+        req_h = {"User-Agent": USER_AGENT, **hdrs}
+        if body is not None:
+            req_h.setdefault("Content-Type", "application/json")
+        if (ck := _cookie_header(jar, args.storage_state, args.url)):
+            req_h["Cookie"] = ck
+        return {"method": method, "url": args.url, "req_headers": req_h, "req_body": body, "resp": r}
+
+    report: dict = {"url": args.url, "method": method}
+    base = None
+    if args.body is not None:
+        base = send(args.body)
+        report["baseline"] = {"status": base.status, "body": _pp_body(base.body)}
+        exchanges.append(mk(args.body, base))
+    tamp = send(tampered)
+    report["tampered"] = {"status": tamp.status, "body": _pp_body(tamp.body)}
+    exchanges.append(mk(tampered, tamp))
+
+    findings: list[Finding] = []
+    if (f := probe_finding(injected, base.body if base else None, tamp.status, tamp.body, method, args.url)):
+        findings.append(f)
+
+    if args.save:
+        _write_evidence(args.save, exchanges)
+        report["saved"] = args.save
+    sys.stdout.write(json.dumps(report, ensure_ascii=False) + "\n")
+    for f in findings:
+        sys.stdout.write(json.dumps(f.to_dict(), ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+    return 1 if (findings and getattr(args, "fail_on_finding", False)) else 0
+
+
+def repeat_cmd(args) -> int:
+    """Send one request (optionally N times) with a chosen method/body over the
+    engagement session — the Repeater that recon was missing. A shared cookie jar
+    keeps a server-issued session across the N sends. JSONL per send; --save writes
+    the exchanges as HAR/.http evidence for a report."""
+    import http.cookiejar
+
+    hdrs = _parse_headers(args.headers)
+    jar = http.cookiejar.CookieJar()
+    method = args.method.upper()
+    exchanges: list[dict] = []
+    for i in range(args.n):
+        r = _http_fetch(args.url, args.proxy, args.insecure, hdrs, args.storage_state,
+                        method=method, body=args.body, cookie_jar=jar)
+        if getattr(args, "save", None):
+            req_h = {"User-Agent": USER_AGENT, **hdrs}
+            if args.body is not None:
+                req_h.setdefault("Content-Type", "application/json")
+            if (ck := _cookie_header(jar, args.storage_state, args.url)):
+                req_h["Cookie"] = ck
+            exchanges.append({"method": method, "url": args.url, "req_headers": req_h,
+                              "req_body": args.body, "resp": r})
+        sys.stdout.write(json.dumps(
+            {"i": i + 1, "status": r.status, "url": r.url, "body": _pp_body(r.body)},
+            ensure_ascii=False) + "\n")
+    if getattr(args, "save", None):
+        _write_evidence(args.save, exchanges)
+        print(f"zerodom: wrote {len(exchanges)} exchange(s) to {args.save}", file=sys.stderr)
+    sys.stdout.flush()
+    return 0
+
+
+# --- Race engines -----------------------------------------------------------
+# One command, one orchestration (`race_cmd`); only the send primitive swaps.
+# Each engine runs setup + burst + check over ONE session via `run()`, so the
+# server-issued cookie carries through. http1 is stdlib, always available, and
+# proxy-native; http2 (httpx, an optional extra) multiplexes N streams on one
+# connection — the browser-grade technique — and works with or without a proxy.
+
+def _httpx_available() -> bool:
+    try:
+        import h2  # noqa: F401
+        import httpx  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+class Http1Sender:
+    """Stdlib last-byte-sync burst. No dependency, proxy-native, instant. Can miss
+    a sub-millisecond window that single-connection HTTP/2 multiplexing would hit."""
+    name = "http1-lastbyte"
+
+    def __init__(self, args, hdrs):
+        import http.cookiejar
+        self.a, self.hdrs = args, hdrs
+        self.jar = http.cookiejar.CookieJar()
+
+    def run(self, steps, specs, check_url):
+        a = self.a
+        if steps:
+            _run_steps(steps, a.url, proxy=a.proxy, insecure=a.insecure,
+                       headers=self.hdrs, storage_state=a.storage_state, cookie_jar=self.jar)
+        statuses = _race_burst(a.url, specs, self.hdrs,
+                               jar=self.jar, storage_state=a.storage_state, insecure=a.insecure)
+        chk = None
+        if check_url:
+            chk = _pp_body(_http_fetch(check_url, a.proxy, a.insecure, self.hdrs,
+                                       a.storage_state, cookie_jar=self.jar).body)
+        return statuses, chk
+
+
+class Http2Sender:
+    """httpx HTTP/2 burst: one AsyncClient multiplexes N concurrent streams on a
+    single connection (what a browser's fetch burst does). Proxy-native and works
+    standalone. Reports the protocol actually negotiated, so the engine line is
+    honest even if the server falls back to HTTP/1.1."""
+
+    def __init__(self, args, hdrs):
+        self.a, self.hdrs = args, hdrs
+        self.name = "http2-multiplex"
+
+    def run(self, steps, specs, check_url):
+        import asyncio
+        import httpx
+
+        a = self.a
+        cookies = {c["name"]: c["value"] for c in _cookies_from_state(a.storage_state)}
+
+        def _ct(body):  # JSON content-type for a string body, matching the stdlib path
+            return {"Content-Type": "application/json"} if body is not None else None
+
+        async def _go():
+            async with httpx.AsyncClient(http2=True, headers=self.hdrs, cookies=cookies,
+                                         verify=not a.insecure, proxy=a.proxy, timeout=30) as client:
+                for step in steps or []:
+                    u = step.get("url") or urljoin(a.url, step["path"])
+                    b = step.get("body")
+                    if b is not None and not isinstance(b, str):
+                        b = json.dumps(b)
+                    await client.request(step.get("method", "GET").upper(), u, content=b, headers=_ct(b))
+
+                async def one(method, body):
+                    r = await client.request(method, a.url, content=body, headers=_ct(body))
+                    return r.status_code, r.http_version
+
+                pairs = await asyncio.gather(*[one(m, b) for m, b in specs])
+                chk = None
+                if check_url:
+                    chk = _pp_body((await client.get(check_url)).text)
+                return pairs, chk
+
+        pairs, chk = asyncio.run(_go())
+        self.name = "http2-multiplex" if any(v == "HTTP/2" for _, v in pairs) else "httpx-http1"
+        return [s for s, _ in pairs], chk
+
+
+def _pick_sender(args, hdrs):
+    """Choose the engine: explicit --engine wins; auto uses http2 when the extra is
+    installed (httpx falls back to HTTP/1.1 per-request and the report names what it
+    actually used), else the stdlib http1 engine."""
+    engine = getattr(args, "engine", "auto")
+    if engine == "http2" and not _httpx_available():
+        sys.exit("zerodom race: --engine http2 needs the optional extra — "
+                 "install it with: pip install 'zerodom[race]'")
+    if engine == "http1":
+        return Http1Sender(args, hdrs)
+    if engine == "http2":
+        return Http2Sender(args, hdrs)
+    return Http2Sender(args, hdrs) if _httpx_available() else Http1Sender(args, hdrs)
+
+
+def race_cmd(args) -> int:
+    """Fire N identical requests concurrently and report the outcome spread — a
+    TOCTOU probe. More than one success on a single-use/limited action (coupon,
+    claim, transfer) is the tell: the check-then-act window let duplicates through.
+
+    Deterministic report; the human confirms intent. `--setup` reaches the pre-race
+    state over a shared session; `--engine` picks the send primitive (auto prefers
+    HTTP/2 multiplexing when `zerodom[race]` is installed)."""
+    hdrs = _parse_headers(args.headers)
+    sender = _pick_sender(args, hdrs)
+    steps = json.loads(Path(args.setup).read_text(encoding="utf-8")) if args.setup else []
+
+    # One or more --body values, each fired n times and interleaved. A mix of
+    # operations on one shared record (two coupon codes on a cart) widens the
+    # read-modify-write window a single repeated action can be too tight to hit.
+    method = args.method.upper()
+    bodies = args.body if args.body else [None]
+    specs = [(method, b) for _ in range(args.n) for b in bodies]
+
+    try:
+        statuses, chk = sender.run(steps, specs, args.check)
+    except Exception as exc:
+        sys.exit(f"zerodom race: {sender.name} engine failed: {str(exc).splitlines()[0]}")
+
+    report, findings = race_report(statuses, specs, method, args.url, sender.name, chk if args.check else None)
+    sys.stdout.write(json.dumps(report, ensure_ascii=False) + "\n")
+    for f in findings:
+        sys.stdout.write(json.dumps(f.to_dict(), ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+    return 1 if (findings and getattr(args, "fail_on_finding", False)) else 0
+
+
+def race_report(statuses, specs, method, url, engine, check_result):
+    """Shared race outcome → (report dict, findings). The CLI and the MCP
+    `zerodom_race` both feed their burst statuses (aligned to `specs`) through
+    this so the JSON is identical whichever engine fired. A body that succeeded
+    ≥2× over-applied a single-use action — the TOCTOU tell."""
+    from collections import Counter
+
+    from .surfaces import Finding
+
+    dist = dict(sorted(Counter(statuses).items()))
+    ok = sum(c for s, c in dist.items() if 200 <= s < 300)
+    per_body: dict[str, dict] = {}
+    for (_, b), st in zip(specs, statuses):
+        d = per_body.setdefault(b if b is not None else "<no-body>", {"ok": 0, "dist": Counter()})
+        d["dist"][st] += 1
+        if 200 <= st < 300:
+            d["ok"] += 1
+    over = {b: d for b, d in per_body.items() if d["ok"] >= 2}
+    bodies = {b for _, b in specs}
+
+    findings: list[Finding] = []
+    if over:
+        which = ", ".join(f"{b} ×{d['ok']}" for b, d in over.items())
+        findings.append(Finding(
+            "race-condition", "high",
+            f"concurrent burst to {method} {url} over-applied a single-use/limited action "
+            f"({which} succeeded where one should); a check-then-act race lets duplicates through "
+            f"— confirm the action is meant to be once-only",
+            url))
+
+    report: dict = {"engine": engine, "fired": len(specs), "status_distribution": dist, "succeeded": ok}
+    if len(bodies) > 1:
+        report["per_body"] = {b: {"succeeded": d["ok"], "status_distribution": dict(sorted(d["dist"].items()))}
+                              for b, d in per_body.items()}
+    if not over:
+        if dist.get(429, 0) >= len(specs):
+            report["note"] = ("responses were rate-limited (429), not dedup-rejected — the race is "
+                              "inconclusive; retry a smaller burst or from more source IPs")
+        elif engine == "http2-multiplex":
+            report["note"] = ("no over-application observed over HTTP/2 multiplexing; the action may be "
+                              "properly synchronized")
+        else:
+            report["note"] = ("no over-application observed; a very tight window may need HTTP/2 multiplexing — "
+                              "retry with --engine http2 (pip install 'zerodom[race]'), and try mixing operations "
+                              "with repeated --body")
+    if check_result is not None:
+        report["check"] = check_result
+    return report, findings
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="zerodom", description=__doc__)
+    parser = argparse.ArgumentParser(prog="zerodom", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
     aud = sub.add_parser(
@@ -997,7 +1641,7 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--render", action="store_true", help="fetch via headless Chromium")
     scan.add_argument("--stealth", action="store_true", help="fetch via a throwaway-profile Chrome over a CDP pipe")
     scan.add_argument("--fail-on-finding", action="store_true", help="exit non-zero if any rule fires (for CI)")
-    scan.add_argument("--js", action="store_true", help="also extract leaked secrets and endpoints from inline JS")
+    scan.add_argument("--js", action="store_true", help="also scan the page's same-origin JS: DOM-XSS sinks, the callable API surface, leaked secrets/endpoints, and CSP/CORS/cookie header posture")
     scan.add_argument(
         "--format", choices=["jsonl", "md"], default="jsonl", dest="fmt",
         help="jsonl (default, pipe-friendly) or md (a Markdown table to paste into a report/ticket)",
@@ -1045,11 +1689,59 @@ def main(argv: list[str] | None = None) -> int:
     swp.add_argument("--scope", metavar="HOSTS", help="extra in-scope hosts, comma-separated")
     swp.add_argument("--max-pages", type=int, default=40, dest="max_pages", help="crawl page cap (default 40)")
     swp.add_argument("--deny", default=_DEFAULT_DENY, help="regex of URLs to never follow or replay (logout/delete/…)")
+    swp.add_argument("--rps", type=float, default=None,
+                     help="cap replay requests per second to stay under a program's rate limit (default: unthrottled)")
     swp.add_argument(
         "--format", choices=["jsonl", "md"], default="jsonl", dest="fmt",
         help="jsonl (default) or md (a Markdown table for a report/ticket)",
     )
     _add_fetch_flags(swp)  # --storage-state here overrides the crawl identity (defaults to the first --as)
+
+    rep = sub.add_parser(
+        "repeat", help="send a request (optionally N times) with a chosen method/body — a Repeater over the session",
+    )
+    rep.add_argument("url", help="the target URL")
+    rep.add_argument("--method", default="GET", help="HTTP method (default GET)")
+    rep.add_argument("--body", help="request body (a JSON string sets Content-Type: application/json)")
+    rep.add_argument("-n", type=int, default=1, dest="n", help="send it this many times (default 1)")
+    rep.add_argument("--save", metavar="FILE",
+                     help="write the request/response exchanges as evidence: .http (readable) "
+                          "or .har (default; imports into Burp/Caido/browser)")
+    _add_fetch_flags(rep)
+
+    prb = sub.add_parser(
+        "probe", help="replay an endpoint with a tampered body and diff vs baseline (mass assignment / tampering)",
+    )
+    prb.add_argument("url", help="the target endpoint")
+    prb.add_argument("--method", default="POST", help="HTTP method (default POST)")
+    prb.add_argument("--body", help="baseline request body (JSON)")
+    prb.add_argument("--tamper", metavar="JSON", required=True,
+                     help="fields to inject, merged over --body, e.g. '{\"role\":\"admin\",\"price\":1}'")
+    prb.add_argument("--setup", metavar="STEPS.json",
+                     help="JSON array of prep requests [{url|path, method?, body?}] run before the probe")
+    prb.add_argument("--save", metavar="FILE", help="write baseline+tampered exchanges as .har/.http evidence")
+    prb.add_argument("--fail-on-finding", action="store_true", dest="fail_on_finding",
+                     help="exit non-zero if a finding is flagged (for CI)")
+    _add_fetch_flags(prb)
+
+    rc = sub.add_parser(
+        "race", help="fire N identical requests concurrently and flag a check-then-act race (TOCTOU)",
+    )
+    rc.add_argument("url", help="the target URL to race")
+    rc.add_argument("--method", default="POST", help="HTTP method (default POST)")
+    rc.add_argument("--body", action="append",
+                    help="request body (JSON string → Content-Type: application/json). Repeatable: "
+                         "each body is fired n times and interleaved, to race a mix of operations on one record")
+    rc.add_argument("-n", type=int, default=20, dest="n", help="copies per body fired concurrently (default 20)")
+    rc.add_argument("--setup", metavar="STEPS.json",
+                    help="JSON array of prep requests [{url|path, method?, body?}] run before the burst")
+    rc.add_argument("--check", metavar="URL", help="GET this after the burst and include its state in the report")
+    rc.add_argument("--engine", choices=["auto", "http1", "http2"], default="auto",
+                    help="send engine: http1 (stdlib last-byte-sync, always available) or http2 "
+                         "(httpx multiplexing, needs 'pip install zerodom[race]'); auto prefers http2 when installed")
+    rc.add_argument("--fail-on-finding", action="store_true", dest="fail_on_finding",
+                    help="exit non-zero if a race is flagged (for CI)")
+    _add_fetch_flags(rc)
 
     insp = sub.add_parser("inspect", help="parse a URL and report token savings")
     insp.add_argument("url")
@@ -1103,7 +1795,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if (
         argv
-        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "sweep", "crawl", "extension", "setup", "config", "-h", "--help"}
+        and argv[0] not in {"inspect", "audit", "relay", "scan", "compare", "sweep", "crawl", "repeat", "probe", "race", "extension", "setup", "config", "-h", "--help"}
         and not argv[0].startswith("-")
     ):
         argv = ["inspect", *argv]
@@ -1129,6 +1821,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "scan":
         return scan_targets(args)
+
+    if args.command == "repeat":
+        return repeat_cmd(args)
+
+    if args.command == "probe":
+        return probe_cmd(args)
+
+    if args.command == "race":
+        return race_cmd(args)
 
     if args.command == "crawl":
         # Same shape as inspect's --frames+--stealth guard: two browser
@@ -1179,7 +1880,7 @@ def main(argv: list[str] | None = None) -> int:
         findings = sweep_identities(
             args.url, ids, crawl_state=args.storage_state, scope=scope or None,
             max_pages=args.max_pages, deny=args.deny, proxy=args.proxy,
-            insecure=args.insecure, headers=_parse_headers(args.headers),
+            insecure=args.insecure, headers=_parse_headers(args.headers), rps=args.rps,
         )
         if args.fmt == "md":
             sys.stdout.write(_findings_markdown(findings))

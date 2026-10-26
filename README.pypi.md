@@ -53,8 +53,12 @@ surfaces the tell with the exact replay that proves it. **You confirm the bug.**
 - **`zerodom sweep URL --as user=… --as admin=…`** — the whole app in one command: crawls as one
   identity to map the GET surface, replays every in-scope URL across all identities, reports only
   the deterministic tells (`--format md` for a report table).
-- **`zerodom crawl` / `scan` / `audit`** — recon (forms, links, fired API calls), YAML attack-surface
-  rules + inline-JS secrets, and resolving the selectors in an existing test suite.
+- **`zerodom crawl` / `scan` / `audit`** — recon: routes/forms/API plus the callable API surface
+  (method + body) and DOM-XSS sinks read from the page's JS, response-header posture (CSP/CORS/cookie)
+  and a `csrf-posture` correlation, and resolving the selectors in an existing test suite.
+- **`zerodom repeat` / `probe` / `race`** — act & verify: a Repeater (`--save` HAR/.http evidence),
+  a tampered-body diff for mass assignment (`probe --tamper`), and a concurrent burst to flag a
+  check-then-act race (`race`; HTTP/2 multiplexing via the `zerodom[race]` extra).
 
 It drives your **real Chrome** (relay mode) over `chrome.debugger` — cookies, MFA, SSO already
 done — or a throwaway browser (`--stealth`). Read-only by default; scope is enforceable and
@@ -63,7 +67,7 @@ lockable. Route through Burp/Caido with `--proxy`. *Only test targets you're aut
 ## From an AI agent (MCP)
 
 ZeroDOM is a native **MCP server**. Claude, Cursor, LangGraph, CrewAI, the OpenAI Agents SDK,
-Pydantic AI and more load the full 35-tool set from one config:
+Pydantic AI and more load the full 39-tool set from one config:
 
 ```jsonc
 { "mcpServers": { "zerodom": { "command": "uvx", "args": ["--from", "zerodom", "zerodom-mcp"] } } }

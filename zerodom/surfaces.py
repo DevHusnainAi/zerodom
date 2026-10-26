@@ -154,6 +154,95 @@ def evaluate(graph: dict[str, Any], rules: list[Rule]) -> list[Finding]:
     return findings
 
 
+# --- Response-header posture rules ----------------------------------------
+# A separate, equally-declarative engine: the node rules judge the DOM, these
+# judge the HTTP response (CSP/CORS/Set-Cookie). Same `Finding` output, same
+# YAML file under a `header_rules:` key. Keys: `header` (name, lowercased) plus
+# exactly one condition — `absent` (fires if the header is missing), `present`
+# (fires if present), `value_regex` (present AND matches), `value_missing_regex`
+# (present AND does NOT match, e.g. Set-Cookie without SameSite).
+_HEADER_CONDS = {"absent", "present", "value_regex", "value_missing_regex"}
+
+
+@dataclass
+class HeaderRule:
+    id: str
+    severity: str
+    description: str
+    header: str
+    cond: str
+    pattern: re.Pattern[str] | None = None
+
+
+def load_header_rules(path: str | Path | None = None) -> list[HeaderRule]:
+    """Parse the `header_rules:` section (same file as the node rules). A missing
+    section is fine — returns []. A malformed rule fails loudly, like load_rules."""
+    path = Path(path) if path else DEFAULT_RULES
+    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw = doc.get("header_rules", []) if isinstance(doc, dict) else []
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}: 'header_rules' must be a list")
+    rules: list[HeaderRule] = []
+    for i, r in enumerate(raw):
+        rid = r.get("id") or f"header_rule[{i}]"
+        if "header" not in r:
+            raise ValueError(f"{rid}: header rule needs a 'header' name")
+        conds = _HEADER_CONDS & set(r)
+        if len(conds) != 1:
+            raise ValueError(f"{rid}: header rule needs exactly one of {sorted(_HEADER_CONDS)}")
+        cond = conds.pop()
+        severity = r.get("severity", "medium")
+        if severity not in _SEVERITIES:
+            raise ValueError(f"{rid}: severity must be one of {sorted(_SEVERITIES)}")
+        pat = None
+        if cond in ("value_regex", "value_missing_regex"):
+            pat = re.compile(str(r[cond]), re.IGNORECASE)
+        rules.append(HeaderRule(rid, severity, r.get("description", ""),
+                                r["header"].lower(), cond, pat))
+    return rules
+
+
+_CSRF_TOKEN_RE = re.compile(r"csrf|xsrf|authenticity_token|__requestverificationtoken|anti[-_]?forgery", re.I)
+_SAMESITE_SAFE_RE = re.compile(r"samesite\s*=\s*(strict|lax)", re.I)
+
+
+def csrf_posture(headers: dict[str, str], post_endpoints: list[str], hidden_blob: str,
+                 url: str) -> Finding | None:
+    """The finding the individual signals only hint at: a state-changing POST that
+    is cookie-authenticated, with the cookie sendable cross-site (no SameSite
+    Strict/Lax) and no anti-CSRF token in sight. Correlates what `evaluate_headers`,
+    `extract_endpoints` and the hidden-field gate each see separately — a single
+    missing-CSRF input is noise, this conjunction is the exploitable bug."""
+    cookie = headers.get("set-cookie")
+    if not cookie or _SAMESITE_SAFE_RE.search(cookie):
+        return None  # no cookie session, or SameSite already blocks cross-site use
+    if not post_endpoints or _CSRF_TOKEN_RE.search(hidden_blob or ""):
+        return None  # nothing state-changing, or an anti-CSRF token is present
+    shown = ", ".join(post_endpoints[:3]) + (" …" if len(post_endpoints) > 3 else "")
+    return Finding(
+        "csrf-posture", "medium",
+        f"state-changing POST ({shown}) is cookie-authenticated with no SameSite and no "
+        f"anti-CSRF token — forgeable from any origin",
+        url)
+
+
+def evaluate_headers(headers: dict[str, str], url: str, rules: list[HeaderRule]) -> list[Finding]:
+    """Findings for one response's headers, in rule order. `headers` is lowercased
+    keys → value (multiple Set-Cookie joined by newline), as `_http_fetch` returns."""
+    findings: list[Finding] = []
+    for rule in rules:
+        val = headers.get(rule.header)
+        fired = (
+            (rule.cond == "absent" and val is None)
+            or (rule.cond == "present" and val is not None)
+            or (rule.cond == "value_regex" and val is not None and rule.pattern.search(val))
+            or (rule.cond == "value_missing_regex" and val is not None and not rule.pattern.search(val))
+        )
+        if fired:
+            findings.append(Finding(rule.id, rule.severity, rule.description, url))
+    return findings
+
+
 def _selfcheck() -> None:
     rules = load_rules()  # the shipped ruleset must parse
     graph = {
@@ -170,7 +259,7 @@ def _selfcheck() -> None:
     found = {f.rule for f in evaluate(graph, rules)}
     assert "sensitive-field-name" in found, found      # API_KEY label
     assert "exposed-admin-link" in found, found         # /admin/users href
-    assert "form-without-csrf" in found, found          # textbox + no csrf hidden
+    assert "form-without-csrf" not in found, found      # retired: too noisy, see csrf_posture
     # A rule with an unknown key must fail loudly.
     import tempfile
     bad = Path(tempfile.mkstemp(suffix=".yaml")[1])
@@ -182,6 +271,27 @@ def _selfcheck() -> None:
         assert "unknown match keys" in str(exc), exc
     finally:
         bad.unlink()
+
+    # Header rules: the shipped set parses, and fires on a weak posture.
+    hrules = load_header_rules()
+    weak = evaluate_headers(
+        {"access-control-allow-origin": "*", "set-cookie": "session=abc; Path=/"},
+        "http://x", hrules)
+    hits = {f.rule for f in weak}
+    assert "missing-csp" in hits, hits                 # no CSP header at all
+    assert "cors-wildcard-origin" in hits, hits        # ACAO: *
+    assert "cookie-without-samesite" in hits, hits      # Set-Cookie lacks SameSite
+    strong = evaluate_headers(
+        {"content-security-policy": "default-src 'self'",
+         "set-cookie": "session=abc; Secure; HttpOnly; SameSite=Lax"},
+        "http://x", hrules)
+    assert not {f.rule for f in strong} & {"missing-csp", "cookie-without-samesite"}, strong
+
+    # CSRF correlation: cookie w/o SameSite + a POST endpoint + no token → fires.
+    assert csrf_posture({"set-cookie": "session=abc; Path=/"}, ["/api/transfer"], "", "http://x")
+    assert csrf_posture({"set-cookie": "session=abc; SameSite=Lax"}, ["/api/transfer"], "", "http://x") is None
+    assert csrf_posture({"set-cookie": "session=abc"}, ["/api/transfer"], "csrf_token", "http://x") is None
+    assert csrf_posture({"set-cookie": "session=abc"}, [], "", "http://x") is None
     print("surfaces selfcheck ok")
 
 

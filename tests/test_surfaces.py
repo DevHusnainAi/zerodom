@@ -39,13 +39,23 @@ GRAPH = {
 
 def test_bundled_ruleset_fires_the_expected_rules():
     fired = {f.rule for f in evaluate(GRAPH, load_rules())}
-    assert {"sensitive-field-name", "exposed-admin-link", "form-without-csrf"} <= fired
+    assert {"sensitive-field-name", "exposed-admin-link"} <= fired
+    assert "form-without-csrf" not in fired  # retired as noise; see csrf_posture
+
+
+_PW_GRAPH = {
+    "metadata": {"url": "http://x", "hidden_fields": []},
+    "nodes": [{"id": "n1", "type": "input", "input_type": "password",
+               "role": "textbox", "label": "Password", "selector": "#p"}],
+}
 
 
 def test_csrf_gate_suppresses_when_token_present():
-    graph = {**GRAPH, "metadata": {**GRAPH["metadata"],
-             "hidden_fields": [{"name": "csrf_token"}]}}
-    assert "form-without-csrf" not in {f.rule for f in evaluate(graph, load_rules())}
+    # The page-level missing_hidden_regex gate, via the kept password rule.
+    assert "password-field-outside-form-token" in {f.rule for f in evaluate(_PW_GRAPH, load_rules())}
+    with_token = {**_PW_GRAPH, "metadata": {**_PW_GRAPH["metadata"],
+                  "hidden_fields": [{"name": "csrf_token"}]}}
+    assert "password-field-outside-form-token" not in {f.rule for f in evaluate(with_token, load_rules())}
 
 
 def test_unknown_match_key_is_a_load_error(tmp_path):

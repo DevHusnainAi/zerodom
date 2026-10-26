@@ -243,6 +243,18 @@ export class InteractionGraph {
   }
 
   /**
+   * `ref -> css selector`, keyed by the SAME `[NN]` token `toCompactText` prints
+   * (which strips the `node_` prefix `selectorMap` keeps). An action agent reads
+   * `[03]` and resolves it straight to a selector to click/fill — without this,
+   * `[03]` silently misses the `node_03` key in selectorMap.
+   */
+  refMap(): Record<string, string> {
+    const map: Record<string, string> = {};
+    for (const node of this.nodes) map[node.id.replace(/^node_/, "")] = node.selector;
+    return map;
+  }
+
+  /**
    * Token-dense line format for model context.
    *
    * JSON spends most of its tokens on repeated keys, quotes and braces. This drops

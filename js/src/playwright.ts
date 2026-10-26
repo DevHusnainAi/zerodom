@@ -106,6 +106,30 @@ export const SERIALIZE = `(opts) => {
   }
 }`;
 
+// Wait for the DOM to stop moving before we serialize it. The parser is
+// deterministic on fixed HTML, but a live page mid-render is a moving target:
+// nodes get injected, labels get filled in, panels hydrate milliseconds after
+// load — so two reads an instant apart can legitimately differ. This bounded
+// settle makes the read land on a quiet moment. Resolves once the DOM has been
+// quiet for `quietMs`, or hits a hard `timeoutMs` cap. Port of Python SETTLE.
+//
+// Observes childList/subtree/characterData only, NOT attributes — so a
+// CSS-animated carousel/spinner (pure attribute churn) still lets the page
+// settle; only real structural/text changes reset the quiet timer. A page that
+// truly never stops hits the cap and reads as-is — honest, bounded.
+export const SETTLE = `(o) => new Promise((resolve) => {
+  let t, done = false;
+  const fin = () => { if (done) return; done = true; clearTimeout(t); clearTimeout(hard); obs.disconnect(); resolve(); };
+  const obs = new MutationObserver(() => { clearTimeout(t); t = setTimeout(fin, o.quietMs); });
+  let hard;
+  try { obs.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); }
+  catch (e) { return resolve(); }
+  hard = setTimeout(fin, o.timeoutMs);
+  t = setTimeout(fin, o.quietMs);
+})`;
+
+const SETTLE_OPTS = { quietMs: 200, timeoutMs: 1200 };
+
 /** Minimal surface this module needs from a Playwright Page. */
 export interface PageLike extends FrameLike {
   content(): Promise<string>;
@@ -151,13 +175,20 @@ export const ZeroDOM = {
    * that makes a real click throw "element intercepts pointer events." Off by
    * default: an elementFromPoint() hit-test per element is real, unmeasured
    * cost.
+   *
+   * `settle: true` (default) waits for async DOM churn to quiesce before
+   * serializing (see SETTLE) so the read lands on a stable moment, not a page
+   * still injecting nodes or filling labels. Set false for a read-exactly-now.
    */
   async fromPage(
     page: PageLike,
-    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean } = {}
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
   ): Promise<InteractionGraph> {
     const viewportOnly = options.viewportOnly ?? true;
     const checkOcclusion = options.checkOcclusion ?? false;
+    if (options.settle ?? true) {
+      try { await page.evaluate(SETTLE, SETTLE_OPTS); } catch {}
+    }
     const html = await serialize(page, viewportOnly, checkOcclusion);
     const graph = new ZeroDOMParser(
       html, (page as unknown as { url(): string }).url(), viewportOnly, checkOcclusion, true
@@ -184,6 +215,23 @@ export const ZeroDOM = {
       }
     } catch {}
     return options.frames ? mergeFrames(page, graph, viewportOnly, checkOcclusion) : graph;
+  },
+
+  /**
+   * Full-page interaction snapshot for an action agent. Returns the token-dense
+   * `[NN]`-ref listing plus a `{ref: selector}` map keyed to those same refs, so
+   * the agent can act on what it read — `[03]` -> selector -> click/fill.
+   *
+   * Defaults to `viewportOnly: false`: an agent can scroll, so it needs the whole
+   * interactive surface, not just what is on screen (the `fromPage` default is the
+   * on-screen view, right for a human observer, wrong for an agent).
+   */
+  async agentSnapshot(
+    page: PageLike,
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
+  ): Promise<{ text: string; refMap: Record<string, string> }> {
+    const graph = await this.fromPage(page, { viewportOnly: false, ...options });
+    return { text: graph.toCompactText(), refMap: graph.refMap() };
   },
 };
 

@@ -6,6 +6,96 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-10-26
+
+Two big threads land in this release. ZeroDOM grows from a *read-only perception
+layer* into one that can also **act and verify** — the `repeat` / `probe` / `race`
+verbs send crafted requests, the JS-intel pass sees logic that lives in bundles,
+and header posture is judged alongside the node graph. And a new **`agent_snapshot`**
+makes the interaction graph a drop-in page representation for browser agents.
+
+All new behaviour is additive or behind a new flag; existing reads and the graph
+schema are unchanged. The one removal (`form-without-csrf`) has a direct
+replacement — see [Removed](#removed-013).
+
+### Added
+
+#### For browser agents
+
+- **`agent_snapshot` — a full-page interaction read for action agents.**
+  `ZeroDOM.agent_snapshot(page)` (Python) / `ZeroDOM.agentSnapshot(page)` (JS)
+  returns the compact `[NN]`-ref listing plus a `ref_map` / `refMap` keyed to those
+  same refs, so an agent can resolve `[03]` straight to a selector to click or fill.
+  Defaults to `viewport_only=False` — an agent can scroll, so it needs the whole
+  interactive surface, not just what is on screen (the `from_page` default stays the
+  on-screen view). Mirrored in the TypeScript port.
+- **`ref_map()` / `refMap()` on the graph.** Keyed by the exact `[NN]` token
+  `to_compact_text()` prints (where `selector_map()` keeps the full `node_NN` id),
+  so a ref-addressed consumer no longer silently misses the key.
+
+#### Read reliability
+
+- **Reads wait for async DOM churn to settle.** `ZeroDOM.from_page` now watches the
+  DOM via a `MutationObserver` and serializes only once it has been quiet for a beat
+  (200 ms), bounded by a hard 1200 ms cap — so a read no longer lands on a page still
+  injecting nodes, hydrating panels or filling in labels. Observes structural/text
+  changes only, not attributes, so a CSS-animated carousel or spinner still lets the
+  page settle. On by default; `settle=False` (Python) / `settle: false` (JS) restores
+  read-exactly-now. Mirrored in the TypeScript port. Perpetual animations and
+  hydration slower than the cap remain a bounded ceiling — read as-of-cap, never hung.
+
+#### JavaScript intelligence (`scan --js`, `crawl`)
+
+- **External JS bundles are now read.** `scan --js` and `crawl` fetch the page's
+  same-origin `<script src>` files (jsintel stays network-free; the CLI supplies the
+  bytes), so apps whose logic lives in a bundle are no longer invisible.
+- **Callable API surface with method + body shape.** `extract_endpoints` parses
+  `fetch` / `axios` / wrapper call sites; `crawl` records a `js_endpoints` field
+  (e.g. `POST /api/cart/coupon body=[code]`) distinct from the load-time `api_calls`,
+  and `scan --js` reports them.
+- **DOM-XSS sink detection with source reachability.** `scan --js` flags unescaped
+  interpolations into `innerHTML` / `document.write` / `eval` / … and ranks a sink
+  **high** only when it traces to an attacker-controllable source
+  (hash / URL / postMessage / storage), else **low**.
+
+#### Request sending & verification (bug bounty)
+
+- **`zerodom repeat`** — send a request (optionally N times, shared session) with a
+  chosen method/body; `--save` writes HAR / `.http` evidence.
+- **`zerodom probe`** — replay an endpoint with a tampered body (`--tamper`) and diff
+  vs baseline to flag mass assignment / price / privilege tampering.
+- **`zerodom race`** — fire a concurrent burst (one body, or a mix of operations via
+  repeated `--body`) to flag a check-then-act race (TOCTOU). Two engines: stdlib
+  last-byte-sync (`http1`, always available) and HTTP/2 multiplexing (`http2`, the
+  optional `zerodom[race]` extra); `--engine auto` picks per availability and the
+  report names the engine actually used.
+- **`--rps`** on `zerodom sweep` to stay under a program's rate limit; `race` now
+  distinguishes a 429 rate-limit from dedup in its no-finding note.
+
+#### Response-header posture (`scan`)
+
+- **Header posture rules** via a declarative `header_rules:` section in
+  `surfaces.yaml`: CSP absent / `unsafe-inline`, CORS `*`, and `Set-Cookie` without
+  `SameSite` / `HttpOnly`.
+- **`csrf-posture` correlation** — fires on a cookie-authenticated state-changing
+  POST (a JS endpoint or a server-rendered `<form>`) that has no `SameSite` and no
+  anti-CSRF token.
+
+#### MCP parity
+
+- **`zerodom_scan`, `zerodom_repeat`, `zerodom_race`, `zerodom_probe`** expose the
+  above to agents, driving the active authenticated session (race runs as the
+  browser's own multiplexed fetch). Tool count: 35 → 39.
+
+### Removed <a id="removed-013"></a>
+
+- **The broad `form-without-csrf` surface rule.** It fired on every search and
+  newsletter box, which was almost all noise. Replaced by the precise `csrf-posture`
+  correlation above; the targeted `password-field-outside-form-token` rule is kept.
+  **Migration:** if you matched on `rule == "form-without-csrf"`, switch to
+  `rule == "csrf-posture"` (fires only on genuinely state-changing, cookie-auth'd,
+  token-less surfaces).
+
 ## [0.1.2] — 2026-10-23
 
 Discoverability and community polish; no API changes.
