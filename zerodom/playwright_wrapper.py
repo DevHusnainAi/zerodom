@@ -199,7 +199,7 @@ class ZeroDOM:
 
     @staticmethod
     def from_page(
-        page: Any, frames: bool = False, viewport_only: bool = True, check_occlusion: bool = False, collapse_duplicates: bool = True, settle: bool = True
+        page: Any, frames: bool = False, viewport_only: bool = True, check_occlusion: bool = False, collapse_duplicates: bool = True, settle: bool = True, settle_network_ms: int = 3000
     ) -> InteractionGraph | Any:
         """Parse a Playwright page.
 
@@ -230,23 +230,44 @@ class ZeroDOM:
         (see SETTLE above) so the read lands on a stable moment, not a page
         still injecting nodes or filling labels. On by default; set False for a
         latency-critical read where you want the DOM exactly as of now.
+
+        `settle_network_ms` (part of settle) first waits for in-flight network to
+        go idle, bounded by this cap in ms. A page that renders from a data fetch
+        landing hundreds of ms after `load` (e.g. a project/search list) is silent
+        — no DOM churn — until the fetch returns, so the DOM-quiet SETTLE alone
+        resolves against the empty shell. The network-idle gate catches that. `0`
+        disables it (latency-critical callers); a perpetually-polling page reads
+        as-of-cap rather than hanging. Playwright-only (duck-typed on
+        `wait_for_load_state`); skipped when settle is off.
         """
         # Duck-typed on purpose — anything with `.content()` and `.url` parses. Shadow
         # serialization also needs `.evaluate()`, and returns None when the page has no
         # shadow roots, so both paths fall back to the plain light-DOM content.
         opts = _opts(viewport_only, check_occlusion)
+        # ponytail: Playwright's own networkidle, bounded — not a hand-rolled fetch
+        # counter. Sync path only here; async pages handle it in _from_async_page_settled.
+        if settle and settle_network_ms and hasattr(page, "wait_for_load_state") and not inspect.iscoroutinefunction(page.wait_for_load_state):
+            try:
+                page.wait_for_load_state("networkidle", timeout=settle_network_ms)
+            except Exception:
+                pass
+        settle_error = False
         if settle and hasattr(page, "evaluate"):
             # Settle first; it also doubles as the sync/async probe. An awaitable
             # here means an async page, so hand the whole read to the async path.
-            # A navigation mid-settle destroys the execution context and raises —
-            # that just means the page moved on, so swallow it and serialize the
-            # page we land on (Playwright's next evaluate waits for the new frame).
+            # A navigation mid-settle destroys the execution context — retry once on
+            # the frame we landed on (Playwright's next evaluate binds to it). If it
+            # still fails, flag it so an empty read isn't mistaken for "no controls".
             try:
                 settled = page.evaluate(SETTLE, _SETTLE_OPTS)
             except Exception:
-                settled = None
+                try:
+                    settled = page.evaluate(SETTLE, _SETTLE_OPTS)
+                except Exception:
+                    settled = None
+                    settle_error = True
             if inspect.isawaitable(settled):
-                return _from_async_page_settled(settled, page, frames, viewport_only, check_occlusion, collapse_duplicates)
+                return _from_async_page_settled(settled, page, frames, viewport_only, check_occlusion, collapse_duplicates, settle_network_ms)
         pending = page.evaluate(SERIALIZE, opts) if hasattr(page, "evaluate") else None
         if inspect.isawaitable(pending):
             return _from_async_page(pending, page, frames, viewport_only, check_occlusion, collapse_duplicates)
@@ -254,6 +275,8 @@ class ZeroDOM:
         if inspect.isawaitable(content):
             return _from_async_page(content, page, frames, viewport_only, check_occlusion, collapse_duplicates)
         graph = ZeroDOMParser(content, page.url, viewport_only, check_occlusion, collapse_duplicates).parse()
+        if settle_error:
+            graph["metadata"]["settle_error"] = True
         # Hydration pending detection via framework root inspection
         if hasattr(page, "evaluate"):
             try:
@@ -344,8 +367,14 @@ async def _from_async_page_settled(
     viewport_only: bool = True,
     check_occlusion: bool = False,
     collapse_duplicates: bool = True,
+    settle_network_ms: int = 3000,
 ) -> InteractionGraph:
     """Await the DOM-settle promise, then run the normal async read."""
+    if settle_network_ms and hasattr(page, "wait_for_load_state"):
+        try:
+            await page.wait_for_load_state("networkidle", timeout=settle_network_ms)
+        except Exception:
+            pass  # perpetual polling / navigation — read as-of-cap, don't hang
     try:
         await settled
     except Exception:

@@ -157,6 +157,7 @@ export interface PageLike extends FrameLike {
   mainFrame(): FrameLike;
   frameLocator(selector: string): unknown;
   locator(selector: string): unknown;
+  waitForLoadState?(state: string, options?: { timeout?: number }): Promise<void>;
 }
 
 function serializeOpts(viewportOnly: boolean, checkOcclusion: boolean) {
@@ -198,20 +199,41 @@ export const ZeroDOM = {
    * `settle: true` (default) waits for async DOM churn to quiesce before
    * serializing (see SETTLE) so the read lands on a stable moment, not a page
    * still injecting nodes or filling labels. Set false for a read-exactly-now.
+   *
+   * `settleNetworkMs` (part of settle, default 3000) first waits for in-flight
+   * network to go idle, bounded by this cap. A page that renders from a data
+   * fetch landing after `load` is silent — no DOM churn — until the fetch
+   * returns, so the DOM-quiet SETTLE alone reads the empty shell; the network
+   * gate catches it. `0` disables (latency-critical). A perpetually-polling page
+   * reads as-of-cap, not hung. Playwright-only (duck-typed on waitForLoadState).
    */
   async fromPage(
     page: PageLike,
-    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean; settleNetworkMs?: number } = {}
   ): Promise<InteractionGraph> {
     const viewportOnly = options.viewportOnly ?? true;
     const checkOcclusion = options.checkOcclusion ?? false;
-    if (options.settle ?? true) {
-      try { await page.evaluate(SETTLE, SETTLE_OPTS); } catch {}
+    const settle = options.settle ?? true;
+    const settleNetworkMs = options.settleNetworkMs ?? 3000;
+    let settleError = false;
+    if (settle) {
+      // ponytail: Playwright's own networkidle, bounded — catches late data fetches.
+      if (settleNetworkMs && typeof page.waitForLoadState === "function") {
+        try { await page.waitForLoadState("networkidle", { timeout: settleNetworkMs }); } catch {}
+      }
+      // Navigation during settle destroys the context — retry once on the frame we
+      // landed on; flag it if it still fails so an empty read isn't read as "no controls".
+      try { await page.evaluate(SETTLE, SETTLE_OPTS); }
+      catch {
+        try { await page.evaluate(SETTLE, SETTLE_OPTS); }
+        catch { settleError = true; }
+      }
     }
     const html = await serialize(page, viewportOnly, checkOcclusion);
     const graph = new ZeroDOMParser(
       html, (page as unknown as { url(): string }).url(), viewportOnly, checkOcclusion, true
     ).parse();
+    if (settleError) (graph.metadata as any).settle_error = true;
     try {
       const hydration = await page.evaluate(`() => {
         const hasReact = !!window.__REACT_DEVTOOLS_GLOBAL_HOOK__?.renderers;
@@ -247,7 +269,7 @@ export const ZeroDOM = {
    */
   async agentSnapshot(
     page: PageLike,
-    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean; settleNetworkMs?: number } = {}
   ): Promise<{ text: string; refMap: Record<string, string> }> {
     const graph = await this.fromPage(page, { viewportOnly: false, ...options });
     return { text: graph.toCompactText({ terse: true }), refMap: graph.refMap() };
@@ -264,7 +286,7 @@ export const ZeroDOM = {
   async agentSnapshotDelta(
     page: PageLike,
     since?: DeltaState | null,
-    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean; settleNetworkMs?: number } = {}
   ): Promise<{ text: string; refMap: Record<string, string>; state: DeltaState }> {
     const graph = await this.fromPage(page, { viewportOnly: false, ...options });
     const url = graph.metadata.url;

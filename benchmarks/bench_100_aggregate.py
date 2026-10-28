@@ -16,11 +16,21 @@ for i, url in enumerate(sites):
     zd_tok, zd_act = z.get("tokens", 0), z.get("nodes", 0)
     rows.append((url, sh_tok, zd_tok, sh_act, zd_act))
 
-# comparable = both tools got a real page (neither looks bot-walled/empty)
+# Honest classification — don't fold ZeroDOM's own render failures into "bot-walled".
+#   comparable     : both rendered a real page -> fair token/coverage comparison
+#   zerodom_failed : Stagehand rendered but ZeroDOM returned ~nothing -> counts AGAINST us
+#   stagehand_failed: ZeroDOM rendered but Stagehand returned ~nothing -> against them
+#   both_walled    : neither got a page (genuine bot/consent wall) -> excluded, fair
 comp = [r for r in rows if r[1] > 50 and r[4] >= WALL and r[3] >= WALL]
-print(f"sites: {len(rows)}  |  comparable (both rendered): {len(comp)}")
-print(f"  excluded: ZeroDOM empty/blocked {sum(1 for r in rows if r[4] < WALL)}; "
-      f"Stagehand empty/blocked {sum(1 for r in rows if r[3] < WALL)}")
+zerodom_failed  = [r for r in rows if r[3] >= WALL and r[4] < WALL]
+stagehand_failed = [r for r in rows if r[4] >= WALL and r[3] < WALL]
+both_walled = [r for r in rows if r[3] < WALL and r[4] < WALL]
+print(f"sites: {len(rows)}")
+print(f"  comparable (both rendered):  {len(comp)}")
+print(f"  ZeroDOM FAILED (SH rendered, ZD ~empty) — counts against us: {len(zerodom_failed)}")
+for r in zerodom_failed: print(f"      SH_act={r[3]:4} ZD_nodes={r[4]:3}  {r[0]}")
+print(f"  Stagehand failed (ZD rendered, SH ~empty): {len(stagehand_failed)}")
+print(f"  both bot-walled (fair exclude): {len(both_walled)}")
 
 sav = [100*(r[1]-r[2])/r[1] for r in comp if r[1]]
 print("\n== TOKENS (Stagehand observe tree vs ZeroDOM snapshot) ==")

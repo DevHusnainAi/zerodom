@@ -106,3 +106,33 @@ lean by default and a `context` mode that also emits page text is a bounded opt-
 rare task that needs it — never paid for by every snapshot the way Stagehand does.
 `# ponytail:` context mode is left unbuilt until a real consumer needs it; YAGNI, and the
 eval says action agents don't.
+
+## What a representation swap into `observe()` would and wouldn't carry (adapter de-risk)
+
+Before building the adapter, we checked *what information* each representation actually
+carries, so a swap doesn't silently break a downstream consumer. Role histograms from the
+captured Stagehand trees (real `observe()` output):
+
+| role class (sample: HN / Wikipedia tree) | Stagehand carries | ZeroDOM carries |
+|---|---|---|
+| **actionable** — link, button, textbox, term, heading | yes (199+131 links, buttons, 1 textbox…) | **yes** — the whole point; flat `[ref]` list + per-ref selector |
+| **state** — checked / selected / expanded / pressed | yes, `[checked]`-style suffix | yes, `x`/`*`/`on`/`open` markers (+ ZeroDOM adds sensitive-field redaction Stagehand lacks) |
+| **StaticText** (page prose) | yes — **~1/3 of every tree** (257/760 lines on HN, 161/587 on Wikipedia) | **no** (lean by default; opt-in `context` mode) |
+| **structural scaffolding** — RootWebArea, cell, LayoutTableCell, region, LineBreak, DisclosureTriangle | yes, nested + indented | no — flattened away |
+
+**Consequence for the three Stagehand verbs — the swap is safe for two, not the third:**
+
+- **`observe()`** wants a list of actionable candidates + a way to target each. ZeroDOM's
+  `ref_map` *is* that (ref → CSS selector), delivered at ~1/5 the tokens. **Swap-safe.**
+- **`act()`** consumes an observe result (target + method) and clicks/fills it. It reads
+  the actionable element, not the prose or the tree nesting. **Swap-safe.**
+- **`extract()`** pulls structured data from the page's *text* and *structure* — exactly
+  the `StaticText` + nesting ZeroDOM drops. A naive swap here **would lose information.**
+  So the adapter scopes ZeroDOM to the `observe`/`act` path and leaves `extract` on
+  Stagehand's richer tree (or ZeroDOM's `context` mode once a consumer needs it).
+
+This is the honest shape of the integration: ZeroDOM is a **cheaper serialization for the
+action path**, not a drop-in for text extraction. Naming that up front is what makes the
+adapter a bounded change instead of a regression nobody caught until `extract()` returned
+empty. `# ponytail:` verified from captured role histograms, not assumed — the one place a
+swap bites is extract, and the adapter simply doesn't touch it.

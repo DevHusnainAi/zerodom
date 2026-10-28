@@ -11,9 +11,11 @@ done=set()
 if os.path.exists(sys.argv[2]):
     done={json.loads(l)["i"] for l in open(sys.argv[2]) if l.strip()}
 out = open(sys.argv[2], "a")
+# No resource-abort route: blocking images/fonts degraded some renders (DDG read 35
+# with it, 141 without). The network-idle gate (settle_network_ms) needs the real
+# network to settle on, so let everything load.
 with sync_playwright() as p:
     b = p.chromium.launch(headless=True); ctx = b.new_context(user_agent=UA)
-    ctx.route("**/*", lambda r: (r.abort if r.request.resource_type in ("image","media","font") else r.continue_)())
     for i, url in enumerate(sites):
         if i in done:
             continue
@@ -21,8 +23,14 @@ with sync_playwright() as p:
         t0 = time.time()
         try:
             pg = ctx.new_page(); pg.goto(url, wait_until="load", timeout=40000)
-            text, refmap = ZeroDOM.agent_snapshot(pg); pg.close()
-            rec.update(nodes=len(refmap), tokens=tk(text), ok=True)
+            # from_page (not agent_snapshot) so we can record the honesty flags: a
+            # near-empty read with hydration_pending/settle_error is a FAILURE, not
+            # "this page has no controls" — it must not be silently excluded.
+            g = ZeroDOM.from_page(pg, viewport_only=False)
+            text = g.to_compact_text(terse=True); meta = g["metadata"]; pg.close()
+            rec.update(nodes=len(g.ref_map()), tokens=tk(text), ok=True,
+                       hydration_pending=bool(meta.get("hydration_pending")),
+                       settle_error=bool(meta.get("settle_error")))
         except Exception as e:
             rec["err"] = type(e).__name__
         out.write(json.dumps(rec) + "\n"); out.flush()
