@@ -73,7 +73,7 @@ four are reported **against** ZeroDOM anyway — the benchmark no longer hides t
 |---|---|---|
 | **tokens** | ZeroDOM **~1/5** (81% median, 82% aggregate) | 100 real sites |
 | **actionable coverage** | **tie / slight edge** (92% within ±25%, 0 materially behind) | 100 real sites |
-| **decision accuracy** | measured head-to-head — see `RESULTS_AGENT_DECISIONS.md` / `eval_head_to_head.py` | controlled, 3 models, both formats |
+| **decision accuracy** | **parity** — ZeroDOM 19/21 (90%) vs Stagehand 18/21 (86%); tie at this n | measured head-to-head, 3 models, both formats (`eval_head_to_head.py`) |
 | **state-capture accuracy** | ZeroDOM 100%, zero misses | controlled + live DOM (`RESULTS_STATE_ACCURACY.md`) |
 | **secret hygiene** | **ZeroDOM win** — Stagehand leaked a filled card number; ZeroDOM redacts card/CVV/SSN/IBAN + password | controlled login+payment page |
 | **delta on re-render** | **ZeroDOM win** — 1 line vs Stagehand 27 (full subtree) | controlled insert/re-render |

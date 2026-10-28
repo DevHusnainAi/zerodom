@@ -1,0 +1,65 @@
+7 decision scenarios × 3 models × 2 formats (opencode, $0)
+accuracy = pass / (pass+fail); errors (timeout/unparsable) excluded
+
+[toggle already on]  zd-gold ['none']  sh-gold ['none']
+    zerodom   PASS  nemotron-3.5-lightning-30b-a3b -> none
+    stagehand PASS  nemotron-3.5-lightning-30b-a3b -> none
+    zerodom   PASS  nemotron-3.5-super-vl-120b-a12b -> none
+    stagehand PASS  nemotron-3.5-super-vl-120b-a12b -> none
+    zerodom   PASS  nemotron-3-ultra-550b-a55b     -> none
+    stagehand PASS  nemotron-3-ultra-550b-a55b     -> none
+
+[toggle off -> act]  zd-gold ['click [02]']  sh-gold ['click [0-11]']
+    zerodom   PASS  nemotron-3.5-lightning-30b-a3b -> click [02]
+    stagehand PASS  nemotron-3.5-lightning-30b-a3b -> click [0-11]
+    zerodom   PASS  nemotron-3.5-super-vl-120b-a12b -> click [02]
+    stagehand PASS  nemotron-3.5-super-vl-120b-a12b -> click [0-11]
+    zerodom   PASS  nemotron-3-ultra-550b-a55b     -> click [02]
+    stagehand PASS  nemotron-3-ultra-550b-a55b     -> click [0-11]
+
+[form ready -> submit]  zd-gold ['click [03]']  sh-gold ['click [0-15]']
+    zerodom   PASS  nemotron-3.5-lightning-30b-a3b -> click [03]
+    stagehand PASS  nemotron-3.5-lightning-30b-a3b -> click [0-15]
+    zerodom   PASS  nemotron-3.5-super-vl-120b-a12b -> click [03]
+    stagehand PASS  nemotron-3.5-super-vl-120b-a12b -> click [0-15]
+    zerodom   FAIL  nemotron-3-ultra-550b-a55b     -> click
+    stagehand PASS  nemotron-3-ultra-550b-a55b     -> click [0-15]
+
+[form incomplete -> fill]  zd-gold ['fill [02]']  sh-gold ['fill [0-6]']
+    zerodom   FAIL  nemotron-3.5-lightning-30b-a3b -> click [03]
+    stagehand FAIL  nemotron-3.5-lightning-30b-a3b -> click [0-14]
+    zerodom   PASS  nemotron-3.5-super-vl-120b-a12b -> fill [02]
+    stagehand FAIL  nemotron-3.5-super-vl-120b-a12b -> fill [06]
+    zerodom   PASS  nemotron-3-ultra-550b-a55b     -> fill [02]
+    stagehand FAIL  nemotron-3-ultra-550b-a55b     -> click [0-14]
+
+[expand collapsed panel]  zd-gold ['click [03]']  sh-gold ['click [0-13]']
+    zerodom   PASS  nemotron-3.5-lightning-30b-a3b -> click [03]
+    stagehand PASS  nemotron-3.5-lightning-30b-a3b -> click [0-13]
+    zerodom   PASS  nemotron-3.5-super-vl-120b-a12b -> click [03]
+    stagehand PASS  nemotron-3.5-super-vl-120b-a12b -> click [0-13]
+    zerodom   PASS  nemotron-3-ultra-550b-a55b     -> click [03]
+    stagehand PASS  nemotron-3-ultra-550b-a55b     -> click [0-13]
+
+[radio already selected]  zd-gold ['none']  sh-gold ['none']
+    zerodom   PASS  nemotron-3.5-lightning-30b-a3b -> none
+    stagehand PASS  nemotron-3.5-lightning-30b-a3b -> none
+    zerodom   PASS  nemotron-3.5-super-vl-120b-a12b -> none
+    stagehand PASS  nemotron-3.5-super-vl-120b-a12b -> none
+    zerodom   PASS  nemotron-3-ultra-550b-a55b     -> none
+    stagehand PASS  nemotron-3-ultra-550b-a55b     -> none
+
+[switch active tab]  zd-gold ['click [02]']  sh-gold ['click [0-10]']
+    zerodom   PASS  nemotron-3.5-lightning-30b-a3b -> click [02]
+    stagehand PASS  nemotron-3.5-lightning-30b-a3b -> click [0-10]
+    zerodom   PASS  nemotron-3.5-super-vl-120b-a12b -> click [02]
+    stagehand PASS  nemotron-3.5-super-vl-120b-a12b -> click [0-10]
+    zerodom   PASS  nemotron-3-ultra-550b-a55b     -> click [02]
+    stagehand PASS  nemotron-3-ultra-550b-a55b     -> click [0-10]
+
+==================================================================
+DECISION ACCURACY — ZeroDOM format vs Stagehand observe() tree
+  zerodom    19/21  (90%)
+  stagehand  18/21  (86%)
+
+[exited with code 0]
