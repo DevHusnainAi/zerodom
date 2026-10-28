@@ -64,3 +64,25 @@ Stagehand's tree is heavier for two separate reasons, and only one is pure forma
   stated, not hidden.
 
 This is the real, mergeable case for a leaner serialization in a `observe()`-style pipeline.
+
+## Quality and other dimensions (not just tokens)
+
+Measured from the same real captured trees unless noted. "measured" = from data here;
+"asserted" = design fact not head-to-head benchmarked.
+
+| dimension | Stagehand `observe()` | ZeroDOM | honest read |
+|---|---|---|---|
+| **actionable coverage** | 232 / 197 / 89 / 150 | 231 / 201 / 88 / 141 | **tie — same elements found** (measured). The token win is *not* from seeing less. |
+| **tokens (full repr.)** | 29,523 | 6,288 | ZeroDOM ~1/5 (measured) |
+| **tokens (element-for-element)** | 8,764 | 6,288 | ZeroDOM ~28% leaner (measured) |
+| **page text / context** | included (`StaticText`, ~1/3 of tree) | omitted | Stagehand richer for context tasks; ZeroDOM leaner for action tasks (measured trade) |
+| **decision accuracy** | — | 100% on actionable-only (`RESULTS_AGENT_DECISIONS.md`) | ZeroDOM measured; not run head-to-head on Stagehand's format |
+| **secret hygiene** | no password field on these pages to test | redacts sensitive values to `filled` (`RESULTS_STATE_ACCURACY.md`) | ZeroDOM verified; Stagehand untested here — no claim either way |
+| **selectors** | ID → XPath | ref → CSS + content-based identity | ZeroDOM's content identity is reflow-stable in delta mode (measured in delta tests); Stagehand diffs by trimmed line (asserted: can churn on reflow) |
+| **snapshot latency** | not isolated (observe bundles an LLM call) | ~2.1 s median full-page (`RESULTS_REAL_SITES.md`) | not a fair head-to-head; ZeroDOM's parse is network-free |
+
+**Bottom line across dimensions:** ZeroDOM matches Stagehand on *what it finds* (coverage)
+and on *acting correctly* (100% decision eval), at **~1/5 the tokens** of its `observe()`
+representation. The one thing Stagehand carries that ZeroDOM doesn't is the page's text
+content — richer for context-heavy tasks, dead weight for action selection. That is the
+whole, honest comparison: equal quality where it counts for an action agent, far cheaper.
