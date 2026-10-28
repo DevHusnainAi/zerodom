@@ -15,7 +15,14 @@ Models run via `opencode` (free tier, $0) across several providers, so a pass is
 fluke of one model's priors. A format that only one frontier model can read is a bad
 format; these are small/cheap models — if THEY get it, the format is legible.
 
-Run:   opencode auth login           # once
+A run reports three outcomes per (model, scenario): PASS / FAIL / ERROR. An ERROR is
+missing data (the endpoint timed out, or the model answered in a form we can't map to a
+decision) — it is excluded from accuracy and counted separately, never scored as a wrong
+decision. Accuracy = pass / (pass + fail). This matters: on flaky free endpoints a naive
+pass/total conflates "the model decided wrong" with "we never got an answer", which
+understates a legible format.
+
+Run:   opencode auth login           # once (any provider opencode can reach)
        uv run python benchmarks/eval_agent_decisions.py
        uv run python benchmarks/eval_agent_decisions.py --models opencode/glm-5.3-flash-free,...
 """
@@ -26,6 +33,7 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 
 from zerodom.parser import parse_html, compact_line, diff_nodes
 
@@ -101,7 +109,9 @@ SCENARIOS = [
      "task": "Turn ON email alerts.", "snap": _snap(SETTINGS),
      "gold": {"click [02]"}},  # Email alerts has no `x`
     {"part": 2, "name": "form ready -> submit",
-     "task": "Log in. Both fields are already filled.", "snap": _snap(LOGIN_READY),
+     "task": ("The email and password are already entered but the form is NOT submitted "
+              "yet. Do the one action that completes the login."),
+     "snap": _snap(LOGIN_READY),
      "gold": {"click [03]"}},  # email `=...`, password `filled` → just submit
     {"part": 2, "name": "form incomplete -> fill",
      "task": "Log in.", "snap": _snap(LOGIN_EMPTY),
@@ -135,48 +145,74 @@ SCENARIOS += [
 ]
 
 
-def ask(model: str, prompt: str, timeout: int) -> str:
-    try:
-        out = subprocess.run(["opencode", "run", "-m", model, prompt],
-                             capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return "<timeout>"
-    return (out.stdout or "") + (out.stderr or "")
+def ask(model: str, prompt: str, timeout: int, retries: int = 3) -> tuple[str, str]:
+    """(answer, status) with status in {'ok','error'}. The free opencode endpoints have
+    highly variable latency and intermittently time out; a call that never returns text
+    is MISSING DATA (status 'error'), never a wrong decision — so it must not count as a
+    FAIL. Retries with linear backoff before giving up."""
+    for attempt in range(retries):
+        try:
+            out = subprocess.run(["opencode", "run", "-m", model, prompt],
+                                 capture_output=True, text=True, timeout=timeout)
+            # drop opencode's "> build · model" header/log lines; keep the answer body.
+            body = "\n".join(l for l in (out.stdout or "").splitlines()
+                             if l.strip() and not l.lstrip().startswith(">")).strip()
+            if body:
+                return body, "ok"
+        except subprocess.TimeoutExpired:
+            pass
+        if attempt < retries - 1:
+            time.sleep(2 * (attempt + 1))
+    return "", "error"
 
 
-_REF = re.compile(r"\b(click|fill|none)\b(?:\s+\[?(\d{1,2})\]?)?", re.I)
+# Action synonyms — the legend asks for click/fill/none, but a model that says "press"
+# or "type" picked the SAME action; crediting that isn't leniency about correctness, only
+# about surface wording. Anything genuinely different (e.g. "scroll") stays unmatched.
+_VERB = {"click": "click", "press": "click", "tap": "click", "select": "click",
+         "choose": "click", "toggle": "click", "fill": "fill", "type": "fill",
+         "enter": "fill", "input": "fill", "none": "none", "nothing": "none"}
+_REF = re.compile(r"\b(" + "|".join(_VERB) + r")\b(?:[^\[\d]{0,12}\[?(\d{1,2})\]?)?", re.I)
 
 
-def grade(scenario: dict, raw: str) -> tuple[bool, str]:
-    """Lenient: pull the model's chosen action+ref (or a one-word answer) and match gold."""
+def grade(scenario: dict, raw: str, status: str) -> tuple[str, str]:
+    """-> (outcome, detail), outcome in {'pass','fail','error'}. 'error' = no answer to
+    grade (missing data), reported separately and excluded from accuracy."""
+    if status == "error":
+        return "error", "<no answer>"
     txt = raw.strip().lower()
     if scenario["part"] == 3:
-        # one-word answer scenarios
         pick = next((w for w in ("standard", "express") if w in txt), "")
-        return pick in scenario["gold"], pick or "<none>"
+        if not pick:
+            return "error", "<unparsed>"   # answered, but not in the asked form — don't guess
+        return ("pass" if pick in scenario["gold"] else "fail"), pick
     m = _REF.search(txt)
     if not m:
-        return False, "<unparsed>"
-    verb, ref = m.group(1), m.group(2)
-    ans = verb if verb == "none" else f"{verb} [{int(ref):02d}]" if ref else verb
-    return ans in scenario["gold"], ans
+        return "error", "<unparsed>"
+    verb, ref = _VERB[m.group(1).lower()], m.group(2)
+    ans = verb if verb == "none" else (f"{verb} [{int(ref):02d}]" if ref else verb)
+    return ("pass" if ans in scenario["gold"] else "fail"), ans
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    # Default to the authenticated Nvidia endpoint — the opencode/*-free models route
+    # through a shared free proxy whose latency is wildly variable (it intermittently
+    # times out models that answered instantly minutes earlier), which pollutes a run
+    # with ERRORs. Any `provider/model` opencode can reach works; pass --models to swap.
     ap.add_argument("--models", default=",".join([
-        "opencode/glm-5.3-flash-free",
-        "opencode/deepseek-v4.1-flash-free",
-        "opencode/nemotron-3.5-lightning-free",
-        "opencode/mimo-v2.6-flash-free",
-        "opencode/flint-40b-free",
+        "nvidia/nvidia/nemotron-3.5-lightning-30b-a3b",
+        "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b",
+        "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
     ]))
-    ap.add_argument("--timeout", type=int, default=120)
+    ap.add_argument("--timeout", type=int, default=180)
     args = ap.parse_args()
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
-    scores: dict[str, list[bool]] = {m: [] for m in models}
-    print(f"{len(SCENARIOS)} scenarios × {len(models)} models (opencode free tier, $0)\n")
+    # per model: counts of pass/fail/error
+    tally: dict[str, dict[str, int]] = {m: {"pass": 0, "fail": 0, "error": 0} for m in models}
+    print(f"{len(SCENARIOS)} scenarios × {len(models)} models (via opencode, free tier, $0)")
+    print("accuracy = pass / (pass + fail); errors (timeout / unparsable) excluded & shown\n")
     for sc in SCENARIOS:
         if sc["snap"] is not None:
             prompt = f"{LEGEND}\n{ANSWER_RULE}\n\nPAGE:\n{sc['snap']}\n\nTASK: {sc['task']}"
@@ -184,19 +220,25 @@ def main() -> int:
             prompt = f"{LEGEND}\n\nTASK: {sc['task']}"
         print(f"[P{sc['part']}] {sc['name']}  (gold: {sorted(sc['gold'])})")
         for m in models:
-            raw = ask(m, prompt, args.timeout)
-            ok, got = grade(sc, raw)
-            scores[m].append(ok)
-            print(f"    {'PASS' if ok else 'FAIL'}  {m.split('/')[-1]:<32} -> {got}")
+            raw, status = ask(m, prompt, args.timeout)
+            outcome, got = grade(sc, raw, status)
+            tally[m][outcome] += 1
+            mark = {"pass": "PASS", "fail": "FAIL", "error": " -- "}[outcome]
+            print(f"    {mark}  {m.split('/')[-1]:<32} -> {got}")
         print()
 
-    print("=" * 60)
-    print("ACCURACY (decision correctness on ZeroDOM snapshots)")
+    print("=" * 64)
+    print("DECISION ACCURACY on ZeroDOM snapshots  (errors excluded, counted separately)")
+    tp = tf = te = 0
     for m in models:
-        s = scores[m]
-        print(f"  {m.split('/')[-1]:<34} {sum(s)}/{len(s)}  ({100*sum(s)/len(s):.0f}%)")
-    allv = [v for s in scores.values() for v in s]
-    print(f"  {'OVERALL':<34} {sum(allv)}/{len(allv)}  ({100*sum(allv)/len(allv):.0f}%)")
+        t = tally[m]
+        tp += t["pass"]; tf += t["fail"]; te += t["error"]
+        ans = t["pass"] + t["fail"]
+        acc = f"{100 * t['pass'] / ans:.0f}%" if ans else "n/a"
+        print(f"  {m.split('/')[-1]:<34} {t['pass']}/{ans}  ({acc})"
+              + (f"   [{t['error']} err]" if t["error"] else ""))
+    ans = tp + tf
+    print(f"  {'OVERALL':<34} {tp}/{ans}  ({100 * tp / ans:.0f}%)" + (f"   [{te} err]" if te else ""))
     return 0
 
 
