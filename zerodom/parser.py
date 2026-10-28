@@ -1000,6 +1000,11 @@ class ZeroDOMParser:
                 node["action"] = "fill"
             else:
                 node["action"] = "click"
+                # a <select>'s current option is live state too (SERIALIZE stamps it),
+                # but you act on it by clicking/selecting, not typing — so surface the
+                # value without making it fillable.
+                if el.tag == "select" and (sv := el.get("data-zd-value")):
+                    node["value"] = sv[:80]
             self.nodes.append(node)
 
         dup_skipped = 0

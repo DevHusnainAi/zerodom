@@ -1014,6 +1014,11 @@ export class ZeroDOMParser {
         } else {
           node.value = raw.slice(0, 80);
         }
+      } else if (el.localName === "select") {
+        // a <select>'s current option is live state (SERIALIZE stamps it); surface the
+        // value without making it fillable (you act on it by clicking/selecting).
+        const sv = el.getAttribute("data-zd-value");
+        if (sv) node.value = sv.slice(0, 80);
       }
       this.nodes.push(node);
     }
