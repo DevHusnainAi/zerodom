@@ -78,8 +78,24 @@ Measured from the same real captured trees unless noted. "measured" = from data 
 | **page text / context** | always included (`StaticText`, ~1/3 of tree) | omitted by design (opt-in extension point, not yet built) | *not* a deficit: an action agent needs elements, not prose (the 100% decision eval shows the text doesn't change what to click). Lean is the default; a `context` mode that also emits text is a bounded add for the rare task that needs page prose — deliberately not paid for by every snapshot. |
 | **decision accuracy** | — | 100% on actionable-only (`RESULTS_AGENT_DECISIONS.md`) | ZeroDOM measured; not run head-to-head on Stagehand's format |
 | **secret hygiene** | protects only `type=password` (browser masks it); **leaks** other sensitive values — a filled credit-card field appeared verbatim (`4111111111111111`) in its tree | redacts password AND card/CVV/SSN/IBAN to `filled` by field name/label, any input type | **ZeroDOM win, both tested on the same filled login+payment page.** Stagehand relies on browser masking, so a card/SSN in a normal text input reaches the LLM; ZeroDOM's sensitive-field policy redacts it. |
-| **delta stability (multi-turn)** | diffs the tree by trimmed line (`diffCombinedTrees`) | matches elements by content identity (label/href/role) | ZeroDOM's delta is reflow-stable — one insert = one `+` line (measured). Stagehand's line diff *should* churn when a reflow shifts lines (read from their source, **not** head-to-head tested — would need a run to confirm) |
+| **delta stability (multi-turn)** | diffs the tree by trimmed line (`diffCombinedTrees`) | matches elements by content identity (label/href/role) | **both measured** on the same page+mutations: plain insert → Stagehand 3 lines / ZeroDOM 1; in-place re-render (React/Vue pattern) → **Stagehand 27 lines (the whole list again) / ZeroDOM 1**. Stagehand's delta collapses to a full snapshot on any re-render (new backend ids ⇒ every line "new"); ZeroDOM stays at the true change. |
 | **snapshot latency** | not isolated (observe bundles an LLM call) | ~2.1 s median full-page (`RESULTS_REAL_SITES.md`) | not a fair head-to-head; ZeroDOM's parse is network-free |
+
+### Delta stability — how it was measured (both sides)
+
+Same page (an 8-item feed), same two in-place mutations, each tool's **real** delta:
+
+- **Stagehand:** captured its `observe()` tree before and after each mutation (via the custom
+  LLM client), then applied its own exported `diffCombinedTrees(prev, next)` — the exact
+  function it ships for `--delta`. Count = lines it reports changed.
+- **ZeroDOM:** `agent_snapshot_delta(page, since=state)` before and after the same mutation.
+  Count = `+`/`-`/`~` lines.
+
+Results: **insert** → Stagehand 3, ZeroDOM 1. **Re-render** (`list.innerHTML` rebuilt with the
+same items + one) → **Stagehand 27, ZeroDOM 1**. The re-render is the common case (every SPA
+framework replaces DOM nodes on state change), and it's where line-vs-id diffing breaks:
+new backend ids make every line look new, so Stagehand re-sends the whole subtree while
+ZeroDOM, matching by content, reports only the one genuinely-new item.
 
 **Bottom line across dimensions:** ZeroDOM matches Stagehand on *what it finds* (coverage)
 and on *acting correctly* (100% decision eval), at **~1/5 the tokens** of its `observe()`
