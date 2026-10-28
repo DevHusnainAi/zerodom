@@ -120,7 +120,7 @@ def test_parse_url_returns_compact_graph_and_hides_selectors(page):
     out = asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
     assert out.splitlines() == [
         "PAGE: T | https://example.com/",
-        "[01] input 'Search'",
+        "[01] input 'Search' empty",
         "[02] button 'Go'",
         "[03] button 'Menu'",
     ]

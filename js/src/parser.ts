@@ -229,6 +229,7 @@ export function stateSuffix(node: GraphNode): string {
   if (node.expanded !== undefined) s += node.expanded ? " open" : " closed";
   if (node.filled) s += " filled";
   else if (node.value) s += ` =${node.value}`;
+  else if (node.action === "fill") s += " empty";
   return s;
 }
 

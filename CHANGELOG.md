@@ -14,7 +14,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   their attributes the moment a user or framework touches them. The snapshot now
   carries them as compact ASCII markers: `x` checked, `*` selected, `on` pressed,
   `open`/`closed` for a disclosure, `current` for the active nav item, `=value` for a
-  populated field. Live properties are read in the browser (`from_page`) by stamping
+  populated field, `empty` for a fillable field with nothing in it (explicit, so a model
+  never has to infer emptiness from an absent marker). Live properties are read in the
+  browser (`from_page`) by stamping
   them during serialize; aria-\* and native attributes are read directly, so a
   network-free `parse_html` gets what the static DOM exposes. **A sensitive field's
   value is never carried** (password/card/CVV/SSN/IBAN…) — only that it's `filled`.
@@ -25,7 +27,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   real LLMs (via `opencode`, free tier) a ZeroDOM snapshot + a task and checks they
   pick the correct `[ref]` and action, including decisions that depend on the new
   state markers and on reading a `~delta`. Proves the format is *legible*, not merely
-  cheap. The harness's `LEGEND` is the ready-to-ship prompt snippet for an integrator.
+  cheap: **24/24 (100%)** across three model sizes on the authenticated endpoint, zero
+  errors; accuracy counts only answered scenarios (timeouts are missing data, never a
+  wrong decision). The harness's `LEGEND` is the ready-to-ship prompt snippet for an
+  integrator.
 
 - **`agent_snapshot_delta` — per-turn delta snapshots for a multi-turn agent loop.**
   An agent re-snapshots after every action, but most turns change little. The first

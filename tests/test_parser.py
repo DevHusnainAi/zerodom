@@ -386,7 +386,7 @@ def test_latency_worst_case_all_nodes_interactive_and_unselectable():
 def test_compact_text_format(graph):
     lines = graph.to_compact_text().splitlines()
     assert lines[0] == "PAGE: Login - Example | https://example.com/login"
-    assert lines[1] == "[01] input* 'Email Address' ph='user@example.com'"
+    assert lines[1] == "[01] input* 'Email Address' empty ph='user@example.com'"
     assert "[06] button 'Sign In'" in lines
     # The whole point: no CSS selector reaches the model.
     assert "#email-input" not in graph.to_compact_text()

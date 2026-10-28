@@ -54,9 +54,9 @@ You control a web page through a compact snapshot. Each interactive element is o
     current  = this nav item is the current page
     =text    = the field currently contains `text`
     filled   = a sensitive field (password/card) is filled (value hidden)
-  The ABSENCE of a marker is meaningful: a field with no `=text`/`filled` is EMPTY, a
-  checkbox/switch with no `x` is OFF, a panel with no `open` is COLLAPSED. Don't repeat
-  an action whose state marker shows it's already done.
+    empty    = a fillable field with nothing in it yet — fill it if the task needs a value
+  The ABSENCE of a marker is also meaningful: a checkbox/switch with no `x` is OFF, a
+  panel with no `open` is COLLAPSED. Don't repeat an action a marker shows is already done.
 - A line starting with `~[ref]` in a delta means that element CHANGED since last turn.
   `+[ref]` means it appeared, `-[ref]` means it was removed. `(no change)` means nothing moved.
 """

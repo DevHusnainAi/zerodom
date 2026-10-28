@@ -216,7 +216,10 @@ def _state_suffix(node: dict[str, Any]) -> str:
     """Compact state markers for an action agent, ASCII and ~1 token each (exotic
     glyphs tokenize to 2-3 and read ambiguously). Shown only when they carry signal:
     `x` checked, `*` selected, `on` pressed, `current`, `open`/`closed` for a
-    disclosure, `=value` or `filled` (sensitive) for a populated field."""
+    disclosure, `=value` or `filled` (sensitive) for a populated field, `empty` for a
+    fillable field with nothing in it. `empty` is explicit (not left to absence) because
+    smaller models under-weight the absence of a marker and skip a field that needs
+    input — only fillable fields carry it, a handful per page, so the token cost is tiny."""
     s = ""
     if node.get("checked"):
         s += " x"
@@ -232,6 +235,8 @@ def _state_suffix(node: dict[str, Any]) -> str:
         s += " filled"
     elif node.get("value"):
         s += f" ={node['value']}"
+    elif node.get("action") == "fill":
+        s += " empty"
     return s
 
 

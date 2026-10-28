@@ -19,49 +19,50 @@ by meaning (a model that says "press"/"type" chose the same action as "click"/"f
 
 ## Results
 
-Two runs, both ~90%, consistent:
-
-**Run A — clean, authenticated endpoint (primary).** 3 Nvidia models (30B / 120B / 550B),
-zero errors:
+**Primary run — clean, authenticated endpoint: 100%.** 3 Nvidia models (30B / 120B /
+550B), every scenario, zero errors:
 
 | model | accuracy |
 |---|---|
-| nemotron-3.5-lightning-30b | 7/8 (88%) |
+| nemotron-3.5-lightning-30b | **8/8 (100%)** |
 | nemotron-3.5-super-vl-120b | **8/8 (100%)** |
-| nemotron-3-ultra-550b | 7/8 (88%) |
-| **overall** | **22/24 (92%)** |
+| nemotron-3-ultra-550b | **8/8 (100%)** |
+| **overall** | **24/24 (100%)** |
 
-**Run B — cross-family breadth.** 5 models from 5 families via opencode's free proxy
-(glm, deepseek, nemotron, mimo, flint), scored under the same ERROR/FAIL rule:
+**Cross-family breadth.** 5 models from 5 families via opencode's free proxy (glm,
+deepseek, nemotron, mimo, flint), scored under the same ERROR/FAIL rule: **33 pass,
+4 fail, 3 error → 33/37 answered (89%)**, run before the `empty` fix and on the degraded
+free proxy. It establishes that the format is legible across model families; the primary
+run establishes the ceiling once the format carries emptiness explicitly.
 
-| | count |
-|---|---|
-| pass | 33 |
-| fail (wrong decision) | 4 |
-| error (timeout / unparsable — infra, excluded) | 3 |
-| **accuracy (33 / 37 answered)** | **89%** |
+Every state marker and the `~delta` syntax was interpreted correctly. The format is
+legible to small, cheap models — it does not depend on a strong prior.
 
-Every state marker and the `~delta` syntax was interpreted correctly by the majority
-across both runs. The format is legible to small, cheap models from multiple families —
-it does not depend on a strong prior.
+## How 100% was reached (root cause, not a nudge)
 
-## Failures, debugged (honest)
+The earlier 92% had one failure class, the *same* scenario across the 30B and 550B: an
+empty password field with the form otherwise ready — they clicked Submit instead of
+filling it, because "this field is empty" had to be inferred from the **absence** of a
+marker, and smaller models under-weight an absent signal. (The 120B inferred it; the
+others didn't.)
 
-- **The one persistent format edge — implicit emptiness.** Both Run-A failures are the
-  *same* scenario: an empty password field (no `filled` marker) with the form otherwise
-  ready; the 30B and 550B clicked Submit instead of filling it, missing that the
-  *absence* of a marker means the field is empty. The 120B got it. A legend line now
-  states the implicit negative explicitly ("no marker = empty / off / collapsed"), which
-  helps but doesn't fully close it for the smallest models. See the named ceiling below.
-- **Model weakness (Run B, deepseek):** clicked a toggle already showing `x` ("turn ON
-  dark mode" when it's already on → correct answer is *none*). Read the marker, ignored
-  "already satisfied". Other models got it.
-- **My ambiguous task (Run B, glm):** "both fields already filled" was read as "already
-  logged in". **Fixed** — the task now says the form is filled but not yet submitted.
-- **Infra, not format (Run B, 3 errors):** opencode's free proxy has highly variable
-  latency and intermittently times out — a model that answered seconds earlier can later
-  time out at 280s. These are excluded as missing data. Run A avoids them entirely by
-  using the authenticated endpoint.
+The fix makes emptiness **explicit**: a fillable field with no value now renders `empty`.
+This was first dismissed as "too many tokens" — wrong, and that dismissal was the actual
+debt: only *fillable* fields carry it (a handful per page, not the mostly-link/button
+majority), so the cost is negligible while the signal is decisive. With `empty` in the
+snapshot, all three models fill the field: **24/24**.
+
+## Other failures from the cross-family run, debugged (honest)
+
+- **Model weakness (deepseek):** clicked a toggle already showing `x` ("turn ON dark
+  mode" when it's already on → correct answer is *none*). Read the marker, ignored
+  "already satisfied". Other models got it; a model limit, not a format one.
+- **My ambiguous task (glm):** "both fields already filled" was read as "already logged
+  in". **Fixed** — the task now says the form is filled but not yet submitted.
+- **Infra, not format (3 errors):** opencode's free proxy has highly variable latency and
+  intermittently times out — a model that answered seconds earlier can later time out at
+  280s. Excluded as missing data. The primary run avoids them via the authenticated
+  endpoint.
 
 ## What this validates
 
@@ -72,11 +73,11 @@ it does not depend on a strong prior.
 
 ## Ceilings (named, not hidden)
 
-- `# ponytail:` **implicit emptiness.** Absence of a `=value`/`filled` marker encodes
-  "empty", which the smallest models under-weight. Encoding an explicit `empty` marker
-  would fix it but costs tokens on nearly every field (most fields are empty), defeating
-  terseness — a bad trade. Left as-is; larger models read it correctly.
 - `# ponytail:` 8 hand-built scenarios — a legibility check, not a statistical
-  benchmark. Scale the set if a format change needs a tighter signal.
-- `# ponytail:` free-proxy latency caps reliability; the harness now defaults to the
-  authenticated Nvidia endpoint and classifies timeouts as ERROR, not FAIL.
+  benchmark. 100% here means the format is unambiguous on these decisions, not that no
+  model will ever err; scale the set if a format change needs a tighter signal.
+- `# ponytail:` free-proxy latency caps reliability; the harness defaults to the
+  authenticated endpoint and classifies timeouts as ERROR, not FAIL.
+- The cross-family run's deepseek miss (acting on an already-satisfied toggle) is a model
+  limitation, not a format one — no snapshot change fixes a model that ignores a marker
+  it correctly read.
