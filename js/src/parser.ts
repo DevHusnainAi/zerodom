@@ -52,6 +52,12 @@ const TAG_ROLES: Record<string, string> = { a: "link", button: "button", select:
 // Roles driven by typing text rather than clicking.
 const FILLABLE_ROLES = new Set(["textbox", "searchbox", "slider"]);
 
+// Hand-kept mirror of Python SENSITIVE_FIELD_RE / graph_ui.js SENSITIVE_RE — a field
+// whose value must never reach the model's context (shown as `filled`, not the value).
+// Keep the three copies in lockstep.
+const SENSITIVE_FIELD_RE =
+  /passw|passwd|\bpwd\b|card ?number|card ?no\b|\bcvv\b|\bcvc\b|security code|\bssn\b|social security|routing number|account number|\biban\b|sort code/i;
+
 // A "card" is the nearest ancestor that groups one repeated list/feed item —
 // used to disambiguate identically-labeled controls (twenty "Upvote" buttons
 // on a feed) by grouping each under its own item's title in toCompactText().
@@ -138,6 +144,12 @@ export interface GraphNode {
   content_editable?: boolean;
   card?: string;
   value?: string;
+  checked?: boolean;
+  expanded?: boolean;
+  selected?: boolean;
+  pressed?: boolean;
+  current?: boolean;
+  filled?: boolean;
   action: "click" | "fill";
   frame?: string[];
   frame_url?: string;
@@ -202,6 +214,24 @@ export function detectChallenge(html: string): { kind: string; marker: string } 
 // itself: the `a` tag (link is the default; non-link types stay) and the quotes
 // around the label. `[06] a 'Pricing'` -> `[06] Pricing`. ~15% fewer tokens, no
 // agent-relevant loss (the agent clicks by ref). Mirror of Python compact_line.
+/**
+ * Compact state markers for an action agent, ASCII and ~1 token each (exotic glyphs
+ * tokenize to 2-3 and read ambiguously). Shown only when they carry signal: `x`
+ * checked, `*` selected, `on` pressed, `current`, `open`/`closed` for a disclosure,
+ * `=value` or `filled` (sensitive) for a populated field. Mirror of Python `_state_suffix`.
+ */
+export function stateSuffix(node: GraphNode): string {
+  let s = "";
+  if (node.checked) s += " x";
+  if (node.selected) s += " *";
+  if (node.pressed) s += " on";
+  if (node.current) s += " current";
+  if (node.expanded !== undefined) s += node.expanded ? " open" : " closed";
+  if (node.filled) s += " filled";
+  else if (node.value) s += ` =${node.value}`;
+  return s;
+}
+
 export function compactLine(node: GraphNode, selectors = false, hrefs = false, terse = false): string {
   const ref = node.id.replace(/^node_/, "");
   let flags = node.required ? "*" : "";
@@ -209,6 +239,7 @@ export function compactLine(node: GraphNode, selectors = false, hrefs = false, t
   let line = terse
     ? `[${ref}]${node.type === "a" ? "" : ` ${node.type}`}${flags} ${node.label}`
     : `[${ref}] ${node.type}${flags} ${JSON.stringify(node.label)}`;
+  line += stateSuffix(node);
   if (node.count) line += ` ×${node.count}`;
   if (node.placeholder) line += ` ph=${JSON.stringify(node.placeholder)}`;
   if (hrefs && node.href) line += ` -> ${node.href}`;
@@ -233,7 +264,9 @@ export function findNodes(nodes: GraphNode[], query: string): GraphNode[] {
 // its identity. JSON string so it's cheaply comparable.
 function nodeSig(node: GraphNode): string {
   return JSON.stringify([node.type, node.label ?? "", !!node.required, !!node.disabled,
-    node.count ?? null, node.placeholder ?? null]);
+    node.count ?? null, node.placeholder ?? null,
+    node.checked ?? null, node.expanded ?? null, node.selected ?? null,
+    node.pressed ?? null, node.current ?? null, node.value ?? null, node.filled ?? null]);
 }
 
 /**
@@ -541,6 +574,38 @@ export class ZeroDOMParser {
     if (!el.hasAttribute("contenteditable")) return false;
     const value = (el.getAttribute("contenteditable") ?? "").toLowerCase();
     return value === "" || value === "true";
+  }
+
+  /**
+   * Boolean interactive state an action agent needs: checked / expanded / selected /
+   * pressed / current. aria-* and native attributes are read directly; `checked`
+   * prefers SERIALIZE's `data-zd-checked` stamp of the live DOM property (it diverges
+   * from the attribute once toggled). The current `value` is handled with the fill
+   * action below (same live-stamp + sensitive redaction). Mirror of Python `_add_state`.
+   */
+  private static addState(node: GraphNode, el: Element): void {
+    const zc = el.getAttribute("data-zd-checked");
+    const ac = el.getAttribute("aria-checked");
+    if (zc !== null) node.checked = zc === "1";
+    else if (ac === "true" || ac === "false") node.checked = ac === "true";
+    else if (el.localName === "input" && (el.getAttribute("type") === "checkbox" || el.getAttribute("type") === "radio"))
+      node.checked = el.hasAttribute("checked");
+
+    const ae = el.getAttribute("aria-expanded");
+    if (ae === "true" || ae === "false") node.expanded = ae === "true";
+    if (el.getAttribute("data-zd-selected") === "1" || el.getAttribute("aria-selected") === "true"
+      || (el.localName === "option" && el.hasAttribute("selected"))) node.selected = true;
+    if (el.getAttribute("aria-pressed") === "true") node.pressed = true;
+    const cur = el.getAttribute("aria-current");
+    if (cur && cur !== "false") node.current = true;
+  }
+
+  /** A field whose value must never reach the model's context. Mirror of Python `_is_sensitive`. */
+  private static isSensitive(node: GraphNode, el: Element): boolean {
+    if (el.getAttribute("type") === "password") return true;
+    return SENSITIVE_FIELD_RE.test(
+      `${el.getAttribute("name") ?? ""} ${el.getAttribute("id") ?? ""} ${node.label ?? ""} ${node.placeholder ?? ""}`,
+    );
   }
 
   /** Is this something an agent can act on? */
@@ -935,9 +1000,19 @@ export class ZeroDOMParser {
       if (href) node.href = href;
       if (el.hasAttribute("required")) node.required = true;
       if (el.hasAttribute("disabled")) node.disabled = true;
+      ZeroDOMParser.addState(node, el);
       if (ZeroDOMParser.isContentEditable(el)) node.content_editable = true;
       if (FILLABLE_ROLES.has(role)) {
-        node.value = el.localName === "input" ? el.getAttribute("value") ?? "" : directText(el);
+        // Prefer the live value (SERIALIZE's data-zd-value) over the stale attribute,
+        // and never carry a sensitive field's value — only that it's `filled`.
+        const raw = el.getAttribute("data-zd-value")
+          || (el.localName === "input" ? el.getAttribute("value") ?? "" : directText(el));
+        if (raw && ZeroDOMParser.isSensitive(node, el)) {
+          node.value = "";
+          node.filled = true;
+        } else {
+          node.value = raw.slice(0, 80);
+        }
       }
       this.nodes.push(node);
     }

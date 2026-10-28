@@ -197,7 +197,7 @@ def test_fill_returns_the_refreshed_graph_without_navigating(page):
     out = asyncio.run(mcp_server.zerodom_fill_node("01", "zerodom"))
 
     assert out.splitlines()[0] == "filled [01] with 'zerodom'"
-    assert "~[01] input 'Search'  '' -> 'zerodom'" in out
+    assert "~[01] input 'Search' =zerodom  '' -> 'zerodom'" in out
     assert not [c for c in page.calls if c[0] == "goto"][1:], "fill must not reload"
 
 

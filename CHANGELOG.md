@@ -8,6 +8,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Interactive state in `agent_snapshot` — what an action agent can't decide without.**
+  A static DOM parse can't see that a checkbox is checked, a password is typed, a menu
+  is open, or which tab is active — those live in DOM *properties* that diverge from
+  their attributes the moment a user or framework touches them. The snapshot now
+  carries them as compact ASCII markers: `x` checked, `*` selected, `on` pressed,
+  `open`/`closed` for a disclosure, `current` for the active nav item, `=value` for a
+  populated field. Live properties are read in the browser (`from_page`) by stamping
+  them during serialize; aria-\* and native attributes are read directly, so a
+  network-free `parse_html` gets what the static DOM exposes. **A sensitive field's
+  value is never carried** (password/card/CVV/SSN/IBAN…) — only that it's `filled`.
+  State is part of a node's delta signature, so a toggled checkbox is a `~change`.
+  Costs ~0 tokens on a content page and ≤~15% on a form-dense one, carrying state the
+  agent otherwise cannot observe. Mirrored in the TypeScript port.
+- **`benchmarks/eval_agent_decisions.py` — effectiveness, not just token cost.** Hands
+  real LLMs (via `opencode`, free tier) a ZeroDOM snapshot + a task and checks they
+  pick the correct `[ref]` and action, including decisions that depend on the new
+  state markers and on reading a `~delta`. Proves the format is *legible*, not merely
+  cheap. The harness's `LEGEND` is the ready-to-ship prompt snippet for an integrator.
+
 - **`agent_snapshot_delta` — per-turn delta snapshots for a multi-turn agent loop.**
   An agent re-snapshots after every action, but most turns change little. The first
   call returns a full terse snapshot; later calls (pass the returned `state` back as

@@ -87,6 +87,30 @@ test("terse format drops the link tag and label quotes (mirror of test_parser.py
   assert.ok(!terse.includes('"')); // no label quotes
 });
 
+test("interactive state is captured and sensitive values redacted (mirror of test_parser.py)", () => {
+  const graph = parseHtml(
+    "<button aria-expanded='false'>Menu</button>"
+    + "<input id='rm' type='checkbox' checked><label for='rm'>Remember</label>"
+    + "<input aria-label='Company' type='text' value='acme'>"
+    + "<input aria-label='Password' type='password' value='hunter2'>"
+    + "<div role='tab' aria-selected='true'>Tab1</div>",
+  );
+  const byLabel = Object.fromEntries(graph.nodes.map((n) => [n.label, n]));
+  assert.equal(byLabel["Menu"].expanded, false);
+  assert.equal(byLabel["Remember"].checked, true);
+  assert.equal(byLabel["Company"].value, "acme");
+  // sensitive: value present but redacted
+  assert.ok(!byLabel["Password"].value && byLabel["Password"].filled === true);
+  assert.equal(byLabel["Tab1"].selected, true);
+  // rendering: ASCII markers, no sensitive value
+  const terse = graph.toCompactText({ terse: true });
+  const line = (label: string) => terse.split("\n").find((l) => l.includes(label))!;
+  assert.ok(line("Menu").endsWith("closed"));
+  assert.ok(line("Remember").includes(" x"));
+  assert.ok(line("Company").endsWith("=acme"));
+  assert.ok(line("Password").includes("filled") && !line("Password").includes("hunter2"));
+});
+
 test("refMap is keyed by the compact [NN] ref, not node_NN (mirror of test_parser.py)", () => {
   const graph = parseHtml('<a href="/a">one</a><button>two</button>');
   const refs = graph.refMap();
