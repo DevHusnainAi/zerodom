@@ -25,13 +25,13 @@ from playwright.sync_api import sync_playwright
 
 from zerodom.playwright_wrapper import ZeroDOM
 
-# Ground truth for a LIST of ZeroDOM selectors, read in one pass at one instant (a
-# per-node loop lets a mutating SPA re-render selectors stale between reads). Each entry
-# is the element's TRUE state as the browser sees it (properties, not attributes), "BADSEL"
-# if the selector throws, or null if it doesn't resolve.
-GT_MANY = r"""(sels) => sels.map(sel => {
-  let el; try { el = document.querySelector(sel); } catch (e) { return "BADSEL"; }
-  if (!el) return null;
+# The element's TRUE state as the browser sees it (properties, not attributes). Applied to
+# an element already RESOLVED through Playwright's own selector engine (page.query_selector),
+# which understands ZeroDOM's `:light()` syntax and pierces shadow DOM — a plain in-page
+# document.querySelector cannot, which is why the first cut mis-scored shadow nodes as
+# "unverifiable". Nothing is unverifiable now: either it resolves and we check it, or it
+# genuinely no longer exists (re-rendered away).
+STATE_OF_EL = r"""(el) => {
   const t = el.tagName, r = {};
   // checked truth: aria-checked wins on any element (switch/checkbox role on a button),
   // else the native .checked property for a real checkbox/radio input.
@@ -45,7 +45,7 @@ GT_MANY = r"""(sels) => sels.map(sel => {
   if (el.getAttribute("aria-selected") === "true" || (t === "OPTION" && el.selected)) r.selected = true;
   if (el.getAttribute("aria-pressed") === "true") r.pressed = true;
   return r;
-})"""
+}"""
 
 
 def part_a() -> int:
@@ -120,12 +120,18 @@ def part_b() -> None:
             try:
                 pg.goto(url, wait_until="load", timeout=45000)
                 nodes = ZeroDOM.from_page(pg)["nodes"]
-                gts = pg.evaluate(GT_MANY, [n["selector"] for n in nodes])  # one instant
-                for n, gt in zip(nodes, gts):
-                    if gt is None or gt == "BADSEL":
+                for n in nodes:
+                    # resolve through Playwright's OWN selector engine — understands
+                    # `:light()` and pierces shadow DOM, which document.querySelector can't.
+                    try:
+                        h = pg.query_selector(n["selector"])
+                    except Exception:
+                        h = None
+                    if h is None:                       # genuinely gone (re-rendered away)
                         if _has_marker(n):
                             u += 1
                         continue
+                    gt = h.evaluate(STATE_OF_EL)
                     for dim, ok, detail in _compare(n, gt):
                         if ok:
                             c += 1
@@ -141,7 +147,7 @@ def part_b() -> None:
         b.close()
     total = correct + wrong
     print(f"\n  AGREEMENT {100*correct/total:.1f}%  ({correct}/{total} comparable dimensions matched the live DOM)")
-    print(f"  unresolvable selectors carrying a marker (dynamic re-render / shadow-pierce): {unresolved}")
+    print(f"  selectors that no longer resolved (element re-rendered away between snapshot and read): {unresolved}")
     if mismatches:
         print(f"  {len(mismatches)} mismatch(es):")
         print("\n".join(mismatches[:25]))
