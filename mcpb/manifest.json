@@ -21,7 +21,7 @@
     "entry_point": "zerodom-mcp",
     "mcp_config": {
       "command": "uvx",
-      "args": ["--from", "zerodom==0.1.3", "zerodom-mcp"]
+      "args": ["--from", "zerodom==0.1.4", "zerodom-mcp"]
     }
   },
   "tools": [
