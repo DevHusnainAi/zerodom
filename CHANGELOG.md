@@ -6,6 +6,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-10-29
+
 ### Added
 
 - **Interactive state in `agent_snapshot` — what an action agent can't decide without.**
@@ -56,6 +58,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   / `toCompactText({terse})` too; mirrored in the TypeScript port. Benchmarked at a
   **median ~49% token reduction vs `agent-browser snapshot -i`** (Vercel Labs) at
   matching coverage and 100% ref resolution — see `benchmarks/bench_agent_snapshot.py`.
+
+### Fixed
+
+- **Bounded network-idle gate fixes under-rendered snapshots** (`settle_network_ms`,
+  default 3000 ms, `0` disables; `settleNetworkMs` in the TS port). Some sites render
+  their real content from a data fetch that lands *after* `load` with no DOM activity
+  in between (e.g. gitlab.com/explore has no SPA framework yet fills its project list
+  ~1.5 s later), so the old quiet/cap settle resolved against an empty shell. A bounded
+  `wait_for_load_state("networkidle")` before serialize closes this, guarded by a
+  capability check so non-Playwright callers skip it. Measured: gitlab 26→174, duckduckgo
+  35→141, khanacademy 0→94 actionable elements. Re-measured head-to-head vs Stagehand's
+  real `observe()` across 100 sites: **~1/5 the tokens (81% median) at parity coverage
+  (0 sites materially behind), decision accuracy 19/21 vs 18/21** — see
+  `benchmarks/RESULTS_100_SITES.md`. Mirrored in the TypeScript port.
+- **Navigation during settle no longer errors** — if the frame navigates mid-settle the
+  routine retries once against the new frame, else flags `metadata.settle_error` instead
+  of raising.
 
 ## [0.1.3] — 2026-10-26
 
