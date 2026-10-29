@@ -82,7 +82,7 @@ SETTINGS = """<title>Settings</title>
 
 LOGIN_READY = """<title>Login</title>
 <input aria-label="Email" value="me@acme.com">
-<input aria-label="Password" type=password value="s3cret">
+<input aria-label="Password" type=password value="hunter2">
 <button>Sign in</button>"""
 
 LOGIN_EMPTY = """<title>Login</title>

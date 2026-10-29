@@ -12,7 +12,5 @@ secret:
       match: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdef123456
     - name: dummy test password in parser/eval fixtures (not a real secret)
       match: hunter2
-    - name: dummy test password in decision eval fixture (not a real secret)
-      match: s3cret
     - name: AWS public documentation example key, used as a redaction self-check input
       match: AKIAIOSFODNN7EXAMPLE
