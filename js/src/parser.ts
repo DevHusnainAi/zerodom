@@ -52,6 +52,12 @@ const TAG_ROLES: Record<string, string> = { a: "link", button: "button", select:
 // Roles driven by typing text rather than clicking.
 const FILLABLE_ROLES = new Set(["textbox", "searchbox", "slider"]);
 
+// Hand-kept mirror of Python SENSITIVE_FIELD_RE / graph_ui.js SENSITIVE_RE — a field
+// whose value must never reach the model's context (shown as `filled`, not the value).
+// Keep the three copies in lockstep.
+const SENSITIVE_FIELD_RE =
+  /passw|passwd|\bpwd\b|card ?number|card ?no\b|\bcvv\b|\bcvc\b|security code|\bssn\b|social security|routing number|account number|\biban\b|sort code/i;
+
 // A "card" is the nearest ancestor that groups one repeated list/feed item —
 // used to disambiguate identically-labeled controls (twenty "Upvote" buttons
 // on a feed) by grouping each under its own item's title in toCompactText().
@@ -138,6 +144,12 @@ export interface GraphNode {
   content_editable?: boolean;
   card?: string;
   value?: string;
+  checked?: boolean;
+  expanded?: boolean;
+  selected?: boolean;
+  pressed?: boolean;
+  current?: boolean;
+  filled?: boolean;
   action: "click" | "fill";
   frame?: string[];
   frame_url?: string;
@@ -198,10 +210,37 @@ export function detectChallenge(html: string): { kind: string; marker: string } 
 
 /** One node as the compact DSL renders it. Shared so partial views — a search
  * result, a diff — never drift from the format the full graph prints. */
-export function compactLine(node: GraphNode, selectors = false, hrefs = false): string {
+// `terse` drops two pure-overhead tokens for an action agent that resolves refs
+// itself: the `a` tag (link is the default; non-link types stay) and the quotes
+// around the label. `[06] a 'Pricing'` -> `[06] Pricing`. ~15% fewer tokens, no
+// agent-relevant loss (the agent clicks by ref). Mirror of Python compact_line.
+/**
+ * Compact state markers for an action agent, ASCII and ~1 token each (exotic glyphs
+ * tokenize to 2-3 and read ambiguously). Shown only when they carry signal: `x`
+ * checked, `*` selected, `on` pressed, `current`, `open`/`closed` for a disclosure,
+ * `=value` or `filled` (sensitive) for a populated field. Mirror of Python `_state_suffix`.
+ */
+export function stateSuffix(node: GraphNode): string {
+  let s = "";
+  if (node.checked) s += " x";
+  if (node.selected) s += " *";
+  if (node.pressed) s += " on";
+  if (node.current) s += " current";
+  if (node.expanded !== undefined) s += node.expanded ? " open" : " closed";
+  if (node.filled) s += " filled";
+  else if (node.value) s += ` =${node.value}`;
+  else if (node.action === "fill") s += " empty";
+  return s;
+}
+
+export function compactLine(node: GraphNode, selectors = false, hrefs = false, terse = false): string {
+  const ref = node.id.replace(/^node_/, "");
   let flags = node.required ? "*" : "";
   flags += node.disabled ? "!" : "";
-  let line = `[${node.id.replace(/^node_/, "")}] ${node.type}${flags} ${JSON.stringify(node.label)}`;
+  let line = terse
+    ? `[${ref}]${node.type === "a" ? "" : ` ${node.type}`}${flags} ${node.label}`
+    : `[${ref}] ${node.type}${flags} ${JSON.stringify(node.label)}`;
+  line += stateSuffix(node);
   if (node.count) line += ` ×${node.count}`;
   if (node.placeholder) line += ` ph=${JSON.stringify(node.placeholder)}`;
   if (hrefs && node.href) line += ` -> ${node.href}`;
@@ -220,6 +259,106 @@ export function findNodes(nodes: GraphNode[], query: string): GraphNode[] {
     const haystack = `${node.type} ${node.label}`.toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
+}
+
+// What the model sees — the bits a delta reports as a `~change` on a node that kept
+// its identity. JSON string so it's cheaply comparable.
+function nodeSig(node: GraphNode): string {
+  return JSON.stringify([node.type, node.label ?? "", !!node.required, !!node.disabled,
+    node.count ?? null, node.placeholder ?? null,
+    node.checked ?? null, node.expanded ?? null, node.selected ?? null,
+    node.pressed ?? null, node.current ?? null, node.value ?? null, node.filled ?? null]);
+}
+
+/**
+ * A reflow-stable handle for a node — *what it is*, not *where it sits*. A
+ * non-positional selector (no `nth-`) is already stable, so it IS the identity; a
+ * positional selector falls back to the element's content (href / placeholder /
+ * label). Mirror of Python `node_identity`.
+ */
+export function nodeIdentity(node: GraphNode): string {
+  if (!node.selector.includes("nth-")) return `s\x00${node.selector}`;
+  const key = node.href || node.placeholder || node.label || "";
+  return `c\x00${node.type}\x00${key}`;
+}
+
+interface DeltaEntry { ident: string; ref: string; sig: string; }
+export interface DeltaState {
+  entries: DeltaEntry[];
+  next: number;
+  url?: string;
+}
+
+/**
+ * Delta of the current `nodes` against the previous snapshot `since`. Identity is
+ * content-based (see `nodeIdentity`), so a node keeps its ref across reflow and
+ * relabels. `since` undefined/null → a full terse listing; otherwise only
+ * `+`/`-`/`~` lines plus an `(N unchanged)` note — or a full `(refreshed — N nodes)`
+ * listing if churn would make the delta no smaller than a snapshot. `refMap` is
+ * always the full current `{ref: selector}`. Mirror of Python `diff_nodes`.
+ */
+export function diffNodes(
+  nodes: GraphNode[],
+  since?: DeltaState | null,
+): { text: string; refMap: Record<string, string>; state: DeltaState } {
+  const prevGroups = new Map<string, DeltaEntry[]>();
+  if (since) for (const e of since.entries) {
+    (prevGroups.get(e.ident) ?? prevGroups.set(e.ident, []).get(e.ident)!).push(e);
+  }
+  let next = since ? since.next : 1;
+  const refMap: Record<string, string> = {};
+  const entries: DeltaEntry[] = [];
+  const added: [string, GraphNode][] = [];
+  const changed: [string, GraphNode][] = [];
+  let unchanged = 0;
+
+  for (const node of nodes) {
+    const ident = nodeIdentity(node);
+    const sig = nodeSig(node);
+    const group = prevGroups.get(ident);
+    let ref: string;
+    if (group && group.length) {
+      const prev = group.shift()!;
+      ref = prev.ref;
+      if (prev.sig !== sig) changed.push([ref, node]);
+      else unchanged++;
+    } else {
+      ref = String(next).padStart(2, "0");
+      next++;
+      added.push([ref, node]);
+    }
+    refMap[ref] = node.selector;
+    entries.push({ ident, ref, sig });
+  }
+  const removed: string[] = [];
+  for (const group of prevGroups.values()) for (const e of group) removed.push(e.ref);
+  removed.sort((a, b) => a.length - b.length || a.localeCompare(b));
+  const state: DeltaState = { entries, next };
+  const render = (ref: string, node: GraphNode) => compactLine({ ...node, id: ref }, false, false, true);
+
+  if (!since) {
+    return { text: added.map(([r, n]) => render(r, n)).join("\n"), refMap, state };
+  }
+  let delta: string;
+  if (!added.length && !changed.length && !removed.length) {
+    delta = "(no change)";
+  } else {
+    const lines: string[] = [];
+    for (const [r, n] of added) lines.push("+" + render(r, n));
+    for (const [r, n] of changed) lines.push("~" + render(r, n));
+    for (const r of removed) lines.push(`-[${r}]`);
+    if (unchanged) lines.push(`(${unchanged} unchanged)`);
+    delta = lines.join("\n");
+  }
+  // Safety net, only worth checking when the change set is a real fraction of the
+  // page: a handful of edits obviously beats a full list.
+  if (nodes.length && 2 * (added.length + changed.length + removed.length) > nodes.length) {
+    const full = entries.map((e, i) => render(e.ref, nodes[i])).join("\n");
+    if (delta.length >= full.length) {
+      return { text: `(refreshed — ${nodes.length} nodes)\n${full}`, refMap, state };
+    }
+  }
+  return { text: delta, refMap, state };
 }
 
 export class InteractionGraph {
@@ -265,7 +404,7 @@ export class InteractionGraph {
    *
    * `*` marks required, `!` marks disabled.
    */
-  toCompactText(options: { selectors?: boolean; hrefs?: boolean } = {}): string {
+  toCompactText(options: { selectors?: boolean; hrefs?: boolean; terse?: boolean } = {}): string {
     const lines = [`PAGE: ${this.metadata.page_title} | ${this.metadata.url}`];
     if (this.metadata.offscreen_skipped) {
       lines.push(`(${this.metadata.offscreen_skipped} more nodes offscreen — scroll and re-read to see them)`);
@@ -282,7 +421,7 @@ export class InteractionGraph {
         if (node.card) lines.push(`@card ${JSON.stringify(node.card)}:`);
         currentCard = node.card;
       }
-      const line = compactLine(node, options.selectors, options.hrefs);
+      const line = compactLine(node, options.selectors, options.hrefs, options.terse);
       lines.push(node.card ? `  ${line}` : line);
     }
     return lines.join("\n");
@@ -436,6 +575,38 @@ export class ZeroDOMParser {
     if (!el.hasAttribute("contenteditable")) return false;
     const value = (el.getAttribute("contenteditable") ?? "").toLowerCase();
     return value === "" || value === "true";
+  }
+
+  /**
+   * Boolean interactive state an action agent needs: checked / expanded / selected /
+   * pressed / current. aria-* and native attributes are read directly; `checked`
+   * prefers SERIALIZE's `data-zd-checked` stamp of the live DOM property (it diverges
+   * from the attribute once toggled). The current `value` is handled with the fill
+   * action below (same live-stamp + sensitive redaction). Mirror of Python `_add_state`.
+   */
+  private static addState(node: GraphNode, el: Element): void {
+    const zc = el.getAttribute("data-zd-checked");
+    const ac = el.getAttribute("aria-checked");
+    if (zc !== null) node.checked = zc === "1";
+    else if (ac === "true" || ac === "false") node.checked = ac === "true";
+    else if (el.localName === "input" && (el.getAttribute("type") === "checkbox" || el.getAttribute("type") === "radio"))
+      node.checked = el.hasAttribute("checked");
+
+    const ae = el.getAttribute("aria-expanded");
+    if (ae === "true" || ae === "false") node.expanded = ae === "true";
+    if (el.getAttribute("data-zd-selected") === "1" || el.getAttribute("aria-selected") === "true"
+      || (el.localName === "option" && el.hasAttribute("selected"))) node.selected = true;
+    if (el.getAttribute("aria-pressed") === "true") node.pressed = true;
+    const cur = el.getAttribute("aria-current");
+    if (cur && cur !== "false") node.current = true;
+  }
+
+  /** A field whose value must never reach the model's context. Mirror of Python `_is_sensitive`. */
+  private static isSensitive(node: GraphNode, el: Element): boolean {
+    if (el.getAttribute("type") === "password") return true;
+    return SENSITIVE_FIELD_RE.test(
+      `${el.getAttribute("name") ?? ""} ${el.getAttribute("id") ?? ""} ${node.label ?? ""} ${node.placeholder ?? ""}`,
+    );
   }
 
   /** Is this something an agent can act on? */
@@ -830,9 +1001,24 @@ export class ZeroDOMParser {
       if (href) node.href = href;
       if (el.hasAttribute("required")) node.required = true;
       if (el.hasAttribute("disabled")) node.disabled = true;
+      ZeroDOMParser.addState(node, el);
       if (ZeroDOMParser.isContentEditable(el)) node.content_editable = true;
       if (FILLABLE_ROLES.has(role)) {
-        node.value = el.localName === "input" ? el.getAttribute("value") ?? "" : directText(el);
+        // Prefer the live value (SERIALIZE's data-zd-value) over the stale attribute,
+        // and never carry a sensitive field's value — only that it's `filled`.
+        const raw = el.getAttribute("data-zd-value")
+          || (el.localName === "input" ? el.getAttribute("value") ?? "" : directText(el));
+        if (raw && ZeroDOMParser.isSensitive(node, el)) {
+          node.value = "";
+          node.filled = true;
+        } else {
+          node.value = raw.slice(0, 80);
+        }
+      } else if (el.localName === "select") {
+        // a <select>'s current option is live state (SERIALIZE stamps it); surface the
+        // value without making it fillable (you act on it by clicking/selecting).
+        const sv = el.getAttribute("data-zd-value");
+        if (sv) node.value = sv.slice(0, 80);
       }
       this.nodes.push(node);
     }

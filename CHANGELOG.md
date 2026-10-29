@@ -6,6 +6,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Interactive state in `agent_snapshot` — what an action agent can't decide without.**
+  A static DOM parse can't see that a checkbox is checked, a password is typed, a menu
+  is open, or which tab is active — those live in DOM *properties* that diverge from
+  their attributes the moment a user or framework touches them. The snapshot now
+  carries them as compact ASCII markers: `x` checked, `*` selected, `on` pressed,
+  `open`/`closed` for a disclosure, `current` for the active nav item, `=value` for a
+  populated field, `empty` for a fillable field with nothing in it (explicit, so a model
+  never has to infer emptiness from an absent marker). Live properties are read in the
+  browser (`from_page`) by stamping
+  them during serialize; aria-\* and native attributes are read directly, so a
+  network-free `parse_html` gets what the static DOM exposes. **A sensitive field's
+  value is never carried** (password/card/CVV/SSN/IBAN…) — only that it's `filled`.
+  State is part of a node's delta signature, so a toggled checkbox is a `~change`.
+  Costs ~0 tokens on a content page and ≤~15% on a form-dense one, carrying state the
+  agent otherwise cannot observe. Mirrored in the TypeScript port.
+- **`benchmarks/eval_agent_decisions.py` — effectiveness, not just token cost.** Hands
+  real LLMs (via `opencode`, free tier) a ZeroDOM snapshot + a task and checks they
+  pick the correct `[ref]` and action, including decisions that depend on the new
+  state markers and on reading a `~delta`. Proves the format is *legible*, not merely
+  cheap: **24/24 (100%)** across three model sizes on the authenticated endpoint, zero
+  errors; accuracy counts only answered scenarios (timeouts are missing data, never a
+  wrong decision). The harness's `LEGEND` is the ready-to-ship prompt snippet for an
+  integrator.
+
+- **`agent_snapshot_delta` — per-turn delta snapshots for a multi-turn agent loop.**
+  An agent re-snapshots after every action, but most turns change little. The first
+  call returns a full terse snapshot; later calls (pass the returned `state` back as
+  `since`) return only what changed — `+`/`-`/`~` lines. Node identity is
+  content-based (href / placeholder / label, like agent-browser's role+name), so a
+  node keeps its ref across **reflow** and relabels — inserting one list item is one
+  `+` line, not churn — and a churn that outgrows a full listing falls back to a full
+  `(refreshed)` snapshot, so a delta is never worse than one. Navigation auto-resets.
+  A no-change turn costs ~3 tokens. Over a read-heavy run where the consumer would
+  otherwise
+  re-send the full tree each turn (as Firecrawl's agent does), this measured a
+  **~92% aggregate reduction** across a 5-turn run — see
+  `benchmarks/bench_agent_snapshot_delta.py`. Pure `diff_nodes` /
+  `diffNodes` under the hood; mirrored in the TypeScript port.
+
+### Changed
+
+- **`agent_snapshot` now emits a terser format** — drops the `a` tag (link is the
+  default; non-link types stay) and the label quotes, since an action agent resolves
+  refs itself and those carry nothing it needs. ~15% fewer tokens on top of the
+  compact format, no agent-relevant loss. Available on `to_compact_text(terse=True)`
+  / `toCompactText({terse})` too; mirrored in the TypeScript port. Benchmarked at a
+  **median ~49% token reduction vs `agent-browser snapshot -i`** (Vercel Labs) at
+  matching coverage and 100% ref resolution — see `benchmarks/bench_agent_snapshot.py`.
+
 ## [0.1.3] — 2026-10-26
 
 Two big threads land in this release. ZeroDOM grows from a *read-only perception

@@ -1,0 +1,7 @@
+{
+  "SETTINGS": "[0-2] RootWebArea: Settings\n  [0-4] scrollable, html\n    [0-6] body\n      [0-9] switch: Dark mode [checked]\n      [0-11] switch: Email alerts\n      [0-13] button: Advanced",
+  "LOGIN_READY": "[0-8] RootWebArea: Login\n  [0-9] scrollable, html\n    [0-11] body\n      [0-2] textbox: Email\n        [0-3] StaticText: me@acme.com\n      [0-7] textbox: Password\n        [0-1] StaticText: ••••••\n      [0-15] button: Sign in",
+  "LOGIN_EMPTY": "[0-7] RootWebArea: Login\n  [0-8] scrollable, html\n    [0-10] body\n      [0-1] textbox: Email\n        [0-2] StaticText: me@acme.com\n      [0-6] textbox: Password\n      [0-14] button: Sign in",
+  "SHIPPING": "[0-6] RootWebArea: Checkout\n  [0-7] scrollable, html\n    [0-9] body\n      [0-11] radio: Standard\n      [0-13] radio: Express [checked]\n      [0-15] button: Place order",
+  "TABS": "[0-4] RootWebArea: Dashboard\n  [0-5] scrollable, html\n    [0-7] body\n      [0-9] tab: Overview [selected]\n      [0-10] tab: Reports\n      [0-11] tab: Settings"
+}

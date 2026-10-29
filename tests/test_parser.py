@@ -386,7 +386,7 @@ def test_latency_worst_case_all_nodes_interactive_and_unselectable():
 def test_compact_text_format(graph):
     lines = graph.to_compact_text().splitlines()
     assert lines[0] == "PAGE: Login - Example | https://example.com/login"
-    assert lines[1] == "[01] input* 'Email Address' ph='user@example.com'"
+    assert lines[1] == "[01] input* 'Email Address' empty ph='user@example.com'"
     assert "[06] button 'Sign In'" in lines
     # The whole point: no CSS selector reaches the model.
     assert "#email-input" not in graph.to_compact_text()
@@ -415,6 +415,113 @@ def test_ref_map_keys_match_compact_refs(graph):
             continue  # skip @card headers / notes
         assert index in refs, f"compact ref [{index}] missing from ref_map()"
         assert refs[index] == sel[f"node_{index}"]
+
+
+def test_interactive_state_is_captured_and_sensitive_values_redacted():
+    """An action agent needs current state (checked/expanded/selected/value); a
+    sensitive field's value is never carried — only that it's `filled`."""
+    from zerodom.parser import compact_line
+    html = ("<html><title>T</title><body>"
+            "<button aria-expanded='false'>Menu</button>"
+            "<input id='rm' type='checkbox' checked><label for='rm'>Remember</label>"
+            "<input aria-label='Company' type='text' value='acme'>"
+            "<input aria-label='Password' type='password' value='hunter2'>"
+            "<div role='tab' aria-selected='true'>Tab1</div>"
+            "</body></html>")
+    nodes = {n["label"]: n for n in parse_html(html)["nodes"]}
+    assert nodes["Menu"].get("expanded") is False
+    assert nodes["Remember"].get("checked") is True
+    assert nodes["Company"].get("value") == "acme"
+    # sensitive: value present but redacted
+    assert not nodes["Password"].get("value") and nodes["Password"].get("filled") is True
+    assert nodes["Tab1"].get("selected") is True
+    # rendering: ASCII markers, no sensitive value
+    assert compact_line(nodes["Menu"], terse=True).endswith("closed")
+    assert " x" in compact_line(nodes["Remember"], terse=True)
+    assert compact_line(nodes["Company"], terse=True).endswith("=acme")
+    pw = compact_line(nodes["Password"], terse=True)
+    assert "filled" in pw and "hunter2" not in pw
+
+
+def test_terse_format_is_leaner_and_ref_resolvable():
+    """Agent-facing terse: drops the `a` tag and label quotes, keeps non-link types,
+    flags, refs — and every ref still resolves via ref_map (the agent acts by ref)."""
+    html = ("<html><title>T</title><body>"
+            + "".join(f"<a href='/p{i}'>Item {i}</a>" for i in range(20))
+            + "<button>Save</button></body></html>")
+    graph = parse_html(html)
+    normal, terse = graph.to_compact_text(), graph.to_compact_text(terse=True)
+    assert len(terse) < len(normal)
+    # a link: no "a" tag, no quotes — just ref + label
+    link_line = next(l for l in terse.splitlines() if "Item 0" in l)
+    assert link_line.strip() == "[01] Item 0"
+    # a typed node keeps its type, still unquoted
+    btn_line = next(l for l in terse.splitlines() if "Save" in l)
+    assert btn_line.strip() == "[21] button Save"
+    assert "'" not in terse  # no label quotes anywhere
+    refs = graph.ref_map()
+    for line in terse.splitlines()[1:]:
+        ref = line.strip().split("]")[0].lstrip("[")
+        assert ref in refs
+
+
+def test_diff_nodes_delta_stable_selectors():
+    """Delta on id-anchored (stable) selectors: a node keeps its ref; the next turn
+    emits only +/-/~ and an unchanged count (enough unchanged that the delta wins)."""
+    from zerodom.parser import diff_nodes
+    def n(i, label=None):
+        return {"id": "node_00", "selector": f"#a{i}", "type": "button", "label": label or f"B{i}"}
+
+    first = [n(i) for i in range(10)]
+    text1, refs1, state1 = diff_nodes(first)
+    assert refs1["01"] == "#a0" and refs1["10"] == "#a9"
+    assert "[01] button B0" in text1 and "+" not in text1
+
+    # relabel #a5 (ref 06), remove #a9 (ref 10), add #a10.
+    second = [n(i) for i in range(5)] + [n(5, "RENAMED")] + [n(i) for i in range(6, 9)] + [n(10)]
+    text2, refs2, state2 = diff_nodes(second, since=state1)
+    assert "~[06] button RENAMED" in text2  # relabel keeps ref 06
+    assert "+[11] button B10" in text2      # new node, fresh ref
+    assert "-[10]" in text2                 # #a9 removed by its old ref
+    assert "(8 unchanged)" in text2
+    assert "10" not in refs2 and refs2["06"] == "#a5"  # #a9 gone, #a5 kept its ref
+
+    assert diff_nodes(second, since=state2)[0] == "(no change)"  # idempotent
+
+
+def test_diff_nodes_delta_survives_reflow_on_positional_selectors():
+    """The real fix: links with NO id/class use positional nth selectors. Inserting
+    one item at the top used to churn every downstream ref; content identity (href)
+    now sees it as a single add, refs intact."""
+    from zerodom.parser import diff_nodes
+    def link(pos, i):
+        return {"id": "node_00", "selector": f"body > ul > li:nth-of-type({pos}) > a",
+                "type": "a", "label": f"Item {i}", "href": f"/p{i}"}
+
+    first = [link(i + 1, i) for i in range(5)]
+    _, refs1, state1 = diff_nodes(first)
+    # Insert NEW at the top: every positional selector shifts down by one.
+    second = [{"id": "node_00", "selector": "body > ul > li:nth-of-type(1) > a",
+               "type": "a", "label": "NEW", "href": "/new"}] + [link(i + 2, i) for i in range(5)]
+    text2, refs2, _ = diff_nodes(second, since=state1)
+
+    assert "+[06] NEW" in text2
+    assert "(5 unchanged)" in text2
+    assert "~" not in text2                              # NO churn
+    assert "01" in refs2 and refs2["01"].endswith("nth-of-type(2) > a")  # Item 0 kept ref 01, now at pos 2
+
+
+def test_diff_nodes_full_fallback_when_churn_exceeds_full():
+    """If a delta would be no smaller than a fresh listing, send the full listing —
+    a delta is never worse than a snapshot."""
+    from zerodom.parser import diff_nodes
+    first = [{"id": "node_00", "selector": f"#a{i}", "type": "button", "label": f"B{i}"} for i in range(4)]
+    _, _, state1 = diff_nodes(first)
+    # Replace every node with a different one — maximal churn.
+    second = [{"id": "node_00", "selector": f"#x{i}", "type": "button", "label": f"X{i}"} for i in range(4)]
+    text2, _, _ = diff_nodes(second, since=state1)
+    assert text2.startswith("(refreshed")
+    assert "button X0" in text2 and "+" not in text2 and "~" not in text2
 
 
 def test_compact_text_beats_json_on_link_dense_pages():

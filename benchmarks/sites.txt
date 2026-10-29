@@ -30,3 +30,13 @@ https://www.gov.uk
 https://www.usa.gov
 https://owasp.org
 https://portswigger.net/web-security
+https://httpbin.org/forms/post
+https://duckduckgo.com
+https://www.wikipedia.org
+https://www.python.org
+https://pypi.org
+https://www.w3.org
+https://developer.chrome.com
+https://www.mozilla.org
+https://archive.org
+https://www.djangoproject.com

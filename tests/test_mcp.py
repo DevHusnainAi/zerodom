@@ -120,7 +120,7 @@ def test_parse_url_returns_compact_graph_and_hides_selectors(page):
     out = asyncio.run(mcp_server.zerodom_parse_url("https://example.com/"))
     assert out.splitlines() == [
         "PAGE: T | https://example.com/",
-        "[01] input 'Search'",
+        "[01] input 'Search' empty",
         "[02] button 'Go'",
         "[03] button 'Menu'",
     ]
@@ -197,7 +197,7 @@ def test_fill_returns_the_refreshed_graph_without_navigating(page):
     out = asyncio.run(mcp_server.zerodom_fill_node("01", "zerodom"))
 
     assert out.splitlines()[0] == "filled [01] with 'zerodom'"
-    assert "~[01] input 'Search'  '' -> 'zerodom'" in out
+    assert "~[01] input 'Search' =zerodom  '' -> 'zerodom'" in out
     assert not [c for c in page.calls if c[0] == "goto"][1:], "fill must not reload"
 
 

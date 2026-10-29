@@ -2,8 +2,8 @@
 
 import type { FrameLike } from "./frames.js";
 import { frameChain, isWorthReading, renumber } from "./frames.js";
-import type { GraphMetadata } from "./parser.js";
-import { InteractionGraph, ZeroDOMParser } from "./parser.js";
+import type { GraphMetadata, DeltaState } from "./parser.js";
+import { InteractionGraph, ZeroDOMParser, diffNodes } from "./parser.js";
 
 // `page.content()` serializes light DOM only, so controls inside a shadow root are
 // invisible — and worse, Playwright's CSS engine *pierces* open shadow roots when it
@@ -19,6 +19,7 @@ export const SERIALIZE = `(opts) => {
   const marked = [];
   const offscreenMarked = [];
   const occludedMarked = [];
+  const stateMarked = [];
   const vw = window.innerWidth, vh = window.innerHeight;
   const candidates = [];
   const visit = (root) => {
@@ -29,6 +30,22 @@ export const SERIALIZE = `(opts) => {
         el.setAttribute('data-zerodom-hidden', '');
         marked.push(el);
         continue;
+      }
+      // Live interactive state the parser can't see in static HTML: DOM properties
+      // (checked, value, selected) diverge from their attributes once the user or a
+      // framework touches them. Stamped for the serialize, removed after. aria-* and
+      // native open/selected attributes the parser reads directly.
+      const _t = el.tagName;
+      if (_t === 'INPUT' || _t === 'TEXTAREA') {
+        if (el.type === 'checkbox' || el.type === 'radio') {
+          el.setAttribute('data-zd-checked', el.checked ? '1' : '0'); stateMarked.push(el);
+        } else if (el.value) {
+          el.setAttribute('data-zd-value', String(el.value).slice(0, 80)); stateMarked.push(el);
+        }
+      } else if (_t === 'OPTION') {
+        if (el.selected) { el.setAttribute('data-zd-selected', '1'); stateMarked.push(el); }
+      } else if (_t === 'SELECT' && el.value) {
+        el.setAttribute('data-zd-value', String(el.value).slice(0, 80)); stateMarked.push(el);
       }
       if (!viewportOnly && !checkOcclusion) continue;
       const r = el.getBoundingClientRect();
@@ -83,6 +100,7 @@ export const SERIALIZE = `(opts) => {
     for (const el of marked) el.removeAttribute('data-zerodom-hidden');
     for (const el of offscreenMarked) el.removeAttribute('data-zerodom-offscreen');
     for (const el of occludedMarked) el.removeAttribute('data-zerodom-occluded');
+    for (const el of stateMarked) { el.removeAttribute('data-zd-checked'); el.removeAttribute('data-zd-value'); el.removeAttribute('data-zd-selected'); }
     return null;
   }
   try {
@@ -103,6 +121,7 @@ export const SERIALIZE = `(opts) => {
     for (const el of marked) el.removeAttribute('data-zerodom-hidden');
     for (const el of offscreenMarked) el.removeAttribute('data-zerodom-offscreen');
     for (const el of occludedMarked) el.removeAttribute('data-zerodom-occluded');
+    for (const el of stateMarked) { el.removeAttribute('data-zd-checked'); el.removeAttribute('data-zd-value'); el.removeAttribute('data-zd-selected'); }
   }
 }`;
 
@@ -138,6 +157,7 @@ export interface PageLike extends FrameLike {
   mainFrame(): FrameLike;
   frameLocator(selector: string): unknown;
   locator(selector: string): unknown;
+  waitForLoadState?(state: string, options?: { timeout?: number }): Promise<void>;
 }
 
 function serializeOpts(viewportOnly: boolean, checkOcclusion: boolean) {
@@ -179,20 +199,41 @@ export const ZeroDOM = {
    * `settle: true` (default) waits for async DOM churn to quiesce before
    * serializing (see SETTLE) so the read lands on a stable moment, not a page
    * still injecting nodes or filling labels. Set false for a read-exactly-now.
+   *
+   * `settleNetworkMs` (part of settle, default 3000) first waits for in-flight
+   * network to go idle, bounded by this cap. A page that renders from a data
+   * fetch landing after `load` is silent — no DOM churn — until the fetch
+   * returns, so the DOM-quiet SETTLE alone reads the empty shell; the network
+   * gate catches it. `0` disables (latency-critical). A perpetually-polling page
+   * reads as-of-cap, not hung. Playwright-only (duck-typed on waitForLoadState).
    */
   async fromPage(
     page: PageLike,
-    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean; settleNetworkMs?: number } = {}
   ): Promise<InteractionGraph> {
     const viewportOnly = options.viewportOnly ?? true;
     const checkOcclusion = options.checkOcclusion ?? false;
-    if (options.settle ?? true) {
-      try { await page.evaluate(SETTLE, SETTLE_OPTS); } catch {}
+    const settle = options.settle ?? true;
+    const settleNetworkMs = options.settleNetworkMs ?? 3000;
+    let settleError = false;
+    if (settle) {
+      // ponytail: Playwright's own networkidle, bounded — catches late data fetches.
+      if (settleNetworkMs && typeof page.waitForLoadState === "function") {
+        try { await page.waitForLoadState("networkidle", { timeout: settleNetworkMs }); } catch {}
+      }
+      // Navigation during settle destroys the context — retry once on the frame we
+      // landed on; flag it if it still fails so an empty read isn't read as "no controls".
+      try { await page.evaluate(SETTLE, SETTLE_OPTS); }
+      catch {
+        try { await page.evaluate(SETTLE, SETTLE_OPTS); }
+        catch { settleError = true; }
+      }
     }
     const html = await serialize(page, viewportOnly, checkOcclusion);
     const graph = new ZeroDOMParser(
       html, (page as unknown as { url(): string }).url(), viewportOnly, checkOcclusion, true
     ).parse();
+    if (settleError) (graph.metadata as any).settle_error = true;
     try {
       const hydration = await page.evaluate(`() => {
         const hasReact = !!window.__REACT_DEVTOOLS_GLOBAL_HOOK__?.renderers;
@@ -228,10 +269,33 @@ export const ZeroDOM = {
    */
   async agentSnapshot(
     page: PageLike,
-    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean } = {}
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean; settleNetworkMs?: number } = {}
   ): Promise<{ text: string; refMap: Record<string, string> }> {
     const graph = await this.fromPage(page, { viewportOnly: false, ...options });
-    return { text: graph.toCompactText(), refMap: graph.refMap() };
+    return { text: graph.toCompactText({ terse: true }), refMap: graph.refMap() };
+  },
+
+  /**
+   * Delta agent snapshot for a multi-turn loop — the per-turn cost lever. An agent
+   * re-snapshots after every action, but most turns change little. First call
+   * (`since` omitted) returns a full terse snapshot; later calls return only what
+   * changed (`+`/`-`/`~` lines keyed by selector, so refs stay valid). Returns
+   * `{text, refMap, state}` — put `text` in context, resolve clicks via `refMap`,
+   * pass `state` back as `since` next turn.
+   */
+  async agentSnapshotDelta(
+    page: PageLike,
+    since?: DeltaState | null,
+    options: { frames?: boolean; viewportOnly?: boolean; checkOcclusion?: boolean; settle?: boolean; settleNetworkMs?: number } = {}
+  ): Promise<{ text: string; refMap: Record<string, string>; state: DeltaState }> {
+    const graph = await this.fromPage(page, { viewportOnly: false, ...options });
+    const url = graph.metadata.url;
+    // Navigation resets the delta: a new page shares no identities with the old.
+    const base = since && since.url !== url ? null : since;
+    const { text, refMap, state } = diffNodes(graph.nodes, base);
+    state.url = url;
+    const full = base ? text : `PAGE: ${graph.metadata.page_title} | ${url}\n${text}`;
+    return { text: full, refMap, state };
   },
 };
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from typing import Any
 
 import lxml.html
@@ -38,6 +38,16 @@ INTERACTIVE_ROLES = {
     "button", "link", "textbox", "checkbox", "radio", "combobox",
     "searchbox", "switch", "menuitem", "tab", "option", "slider",
 }
+
+# Hand-kept mirror of mcp_server._SENSITIVE_FIELD_RE / graph_ui.js SENSITIVE_RE — a
+# field whose value must never reach the model's context (shown as `filled`, not the
+# value). Keep the three copies in lockstep.
+SENSITIVE_FIELD_RE = re.compile(
+    r"passw|passwd|\bpwd\b|card ?number|card ?no\b|\bcvv\b|\bcvc\b|"
+    r"security code|\bssn\b|social security|routing number|account number|"
+    r"\biban\b|sort code",
+    re.IGNORECASE,
+)
 
 # input[type] -> ARIA role. Anything unlisted (text, email, password, ...) is a textbox.
 INPUT_ROLES = {
@@ -152,7 +162,7 @@ class InteractionGraph(dict):
         without this, `[03]` silently misses the `node_03` key in selector_map."""
         return {node["id"].removeprefix("node_"): node["selector"] for node in self["nodes"]}
 
-    def to_compact_text(self, selectors: bool = False, hrefs: bool = False) -> str:
+    def to_compact_text(self, selectors: bool = False, hrefs: bool = False, terse: bool = False) -> str:
         """Token-dense line format for model context.
 
         JSON spends most of its tokens on repeated keys, quotes and braces. This
@@ -182,7 +192,7 @@ class InteractionGraph(dict):
                 if card:
                     lines.append(f"@card {card!r}:")
                 current_card = card
-            line = compact_line(node, selectors, hrefs)
+            line = compact_line(node, selectors, hrefs, terse)
             lines.append(f"  {line}" if card else line)
         return "\n".join(lines)
 
@@ -202,12 +212,52 @@ def find_nodes(nodes: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     ]
 
 
-def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = False) -> str:
+def _state_suffix(node: dict[str, Any]) -> str:
+    """Compact state markers for an action agent, ASCII and ~1 token each (exotic
+    glyphs tokenize to 2-3 and read ambiguously). Shown only when they carry signal:
+    `x` checked, `*` selected, `on` pressed, `current`, `open`/`closed` for a
+    disclosure, `=value` or `filled` (sensitive) for a populated field, `empty` for a
+    fillable field with nothing in it. `empty` is explicit (not left to absence) because
+    smaller models under-weight the absence of a marker and skip a field that needs
+    input — only fillable fields carry it, a handful per page, so the token cost is tiny."""
+    s = ""
+    if node.get("checked"):
+        s += " x"
+    if node.get("selected"):
+        s += " *"
+    if node.get("pressed"):
+        s += " on"
+    if node.get("current"):
+        s += " current"
+    if "expanded" in node:
+        s += " open" if node["expanded"] else " closed"
+    if node.get("filled"):
+        s += " filled"
+    elif node.get("value"):
+        s += f" ={node['value']}"
+    elif node.get("action") == "fill":
+        s += " empty"
+    return s
+
+
+def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = False, terse: bool = False) -> str:
     """One node as the compact DSL renders it. Shared so partial views — a search
-    result, a diff — never drift from the format the full graph prints."""
+    result, a diff — never drift from the format the full graph prints.
+
+    `terse` drops two pure-overhead tokens for an action agent that resolves refs
+    itself: the `a` tag (link is the default; non-link types stay) and the quotes
+    around the label. `[06] a 'Pricing'` -> `[06] Pricing`; `[02] button 'X'` ->
+    `[02] button X`. ~15% fewer tokens, no agent-relevant loss (the agent clicks by
+    ref, so the implicit-link tag and delimiters carry nothing it needs)."""
+    ref = node["id"].removeprefix("node_")
     flags = "*" if node.get("required") else ""
     flags += "!" if node.get("disabled") else ""
-    line = f"[{node['id'].removeprefix('node_')}] {node['type']}{flags} {node['label']!r}"
+    if terse:
+        typ = "" if node["type"] == "a" else f" {node['type']}"
+        line = f"[{ref}]{typ}{flags} {node['label']}"
+    else:
+        line = f"[{ref}] {node['type']}{flags} {node['label']!r}"
+    line += _state_suffix(node)
     if count := node.get("count"):
         line += f" ×{count}"
     if placeholder := node.get("placeholder"):
@@ -217,6 +267,116 @@ def compact_line(node: dict[str, Any], selectors: bool = False, hrefs: bool = Fa
     if selectors:
         line += f" ({node['selector']})"
     return line
+
+
+def _node_sig(node: dict[str, Any]) -> tuple:
+    """What the model actually sees — the bits a delta reports as a `~change` when
+    they differ on a node that kept its identity (e.g. a button relabelled in place)."""
+    return (node["type"], node.get("label", ""),
+            bool(node.get("required")), bool(node.get("disabled")),
+            node.get("count"), node.get("placeholder"),
+            node.get("checked"), node.get("expanded"), node.get("selected"),
+            node.get("pressed"), node.get("current"), node.get("value"), node.get("filled"))
+
+
+def node_identity(node: dict[str, Any]) -> str:
+    """A reflow-stable handle for a node — *what it is*, not *where it sits*.
+
+    A non-positional selector (id/class-anchored, no `nth-`) is already stable, so it
+    IS the identity. A positional selector shifts the moment a sibling is inserted, so
+    it can't be — fall back to the element's own content: its href (links), placeholder
+    (inputs), else its (type, label). This is the role+name identity agent-browser and
+    React-style reconciliation use, so a moved or relabelled node keeps its ref instead
+    of churning the whole list after an insertion point."""
+    sel = node["selector"]
+    if "nth-" not in sel:
+        return f"s\x00{sel}"
+    key = node.get("href") or node.get("placeholder") or node.get("label") or ""
+    return f"c\x00{node['type']}\x00{key}"
+
+
+def diff_nodes(
+    nodes: list[dict[str, Any]], since: dict[str, Any] | None = None
+) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Delta of the current `nodes` against the previous snapshot `since`.
+
+    Identity is content-based (see `node_identity`), so a node keeps its ref across
+    reflow and relabels — the agent's held refs stay valid. Returns
+    `(text, ref_map, state)`:
+
+    - `since=None` (first turn): a full terse listing, each node a fresh `[NN]` ref.
+    - otherwise: only the changes — `+[ref] …` added, `~[ref] …` changed, `-[ref]`
+      removed — plus an `(N unchanged)` note. If churn ever makes the delta no smaller
+      than a fresh listing, a full `(refreshed — N nodes)` listing is returned instead,
+      so a delta is never worse than a snapshot. `ref_map` is always the full current
+      `{ref: selector}`, so any ref the agent holds resolves.
+
+    Duplicate identities (e.g. three unlabelled `Delete` buttons) are matched in
+    document order — the irreducibly-ambiguous case; a mid-list removal there may
+    shift one ref. Pass the returned `state` back as `since` next turn. Flat (no
+    @card grouping): the whole delta session is flat by design.
+    """
+    prev: list[dict[str, Any]] = since["entries"] if since else []
+    next_ref: int = since["next"] if since else 1
+
+    # Prev nodes grouped by identity, in order, so duplicates match FIFO.
+    prev_groups: dict[str, deque] = defaultdict(deque)
+    for e in prev:
+        prev_groups[e["ident"]].append((e["ref"], e["sig"]))
+
+    ref_map: dict[str, str] = {}
+    entries: list[dict[str, Any]] = []
+    added: list[tuple[str, dict]] = []
+    changed: list[tuple[str, dict]] = []
+    unchanged = 0
+
+    for node in nodes:
+        ident = node_identity(node)
+        sig = _node_sig(node)
+        group = prev_groups.get(ident)
+        if group:
+            ref, old_sig = group.popleft()
+            if old_sig != sig:
+                changed.append((ref, node))
+            else:
+                unchanged += 1
+        else:
+            ref = f"{next_ref:02d}"
+            next_ref += 1
+            added.append((ref, node))
+        ref_map[ref] = node["selector"]
+        entries.append({"ident": ident, "ref": ref, "sig": sig})
+
+    removed = sorted(
+        (ref for group in prev_groups.values() for ref, _ in group),
+        key=lambda r: (len(r), r),
+    )
+    state = {"entries": entries, "next": next_ref}
+
+    def render(ref: str, node: dict) -> str:
+        return compact_line({**node, "id": ref}, terse=True)
+
+    if since is None:  # first snapshot — full listing, no prefixes
+        return "\n".join(render(ref, node) for ref, node in added), ref_map, state
+
+    if not added and not changed and not removed:
+        delta = "(no change)"
+    else:
+        lines = [f"+{render(ref, node)}" for ref, node in added]
+        lines += [f"~{render(ref, node)}" for ref, node in changed]
+        lines += [f"-[{ref}]" for ref in removed]
+        if unchanged:
+            lines.append(f"({unchanged} unchanged)")
+        delta = "\n".join(lines)
+
+    # Safety net: churn (e.g. a reflow that even content-identity can't track) must
+    # never cost more than a fresh snapshot. Only worth checking when the change set
+    # is a real fraction of the page — a handful of edits obviously beats a full list.
+    if nodes and 2 * (len(added) + len(changed) + len(removed)) > len(nodes):
+        full = "\n".join(render(e["ref"], node) for e, node in zip(entries, nodes))
+        if len(delta) >= len(full):
+            return f"(refreshed — {len(nodes)} nodes)\n{full}", ref_map, state
+    return delta, ref_map, state
 
 
 class ZeroDOMParser:
@@ -324,6 +484,38 @@ class ZeroDOMParser:
         """
         value = el.get("contenteditable")
         return value is not None and value.lower() in ("", "true")
+
+    @staticmethod
+    def _add_state(node: dict[str, Any], el: HtmlElement) -> None:
+        """Boolean interactive state an action agent needs to decide its next move:
+        checked / expanded / selected / pressed / current. aria-* and native
+        attributes are read directly; `checked` prefers SERIALIZE's `data-zd-checked`
+        stamp of the live DOM property (it diverges from the attribute once toggled).
+        The current `value` is handled with the fill action below (it needs the same
+        live-stamp + sensitive-field redaction)."""
+        if (zc := el.get("data-zd-checked")) is not None:
+            node["checked"] = zc == "1"
+        elif (ac := el.get("aria-checked")) in ("true", "false"):
+            node["checked"] = ac == "true"
+        elif el.tag == "input" and el.get("type") in ("checkbox", "radio"):
+            node["checked"] = "checked" in el.attrib
+
+        if (ae := el.get("aria-expanded")) in ("true", "false"):
+            node["expanded"] = ae == "true"
+        if el.get("data-zd-selected") == "1" or el.get("aria-selected") == "true" \
+                or (el.tag == "option" and "selected" in el.attrib):
+            node["selected"] = True
+        if el.get("aria-pressed") == "true":
+            node["pressed"] = True
+        if (cur := el.get("aria-current")) and cur != "false":
+            node["current"] = True
+
+    @staticmethod
+    def _is_sensitive(node: dict[str, Any], el: HtmlElement) -> bool:
+        """A field whose value must never reach the model's context."""
+        return el.get("type") == "password" or bool(SENSITIVE_FIELD_RE.search(
+            f"{el.get('name', '')} {el.get('id', '')} {node.get('label', '')} {node.get('placeholder', '')}"
+        ))
 
     @staticmethod
     def _is_card(el: HtmlElement) -> bool:
@@ -787,6 +979,7 @@ class ZeroDOMParser:
                 node["required"] = True
             if "disabled" in el.attrib:
                 node["disabled"] = True
+            self._add_state(node, el)
             if self._is_content_editable(el):
                 # mcp_server._act's signal to type via press_sequentially
                 # (real per-character key events) instead of .fill()/.value= —
@@ -795,10 +988,23 @@ class ZeroDOMParser:
                 # bulk insert.
                 node["content_editable"] = True
             if role in FILLABLE_ROLES:
-                node["value"] = el.get("value", "") if el.tag == "input" else (el.text or "")
+                # Prefer the live value (SERIALIZE's data-zd-value) over the stale
+                # attribute, and never carry a sensitive field's value — only that
+                # it's `filled`. node["value"] stays present for mcp's fill path.
+                raw = el.get("data-zd-value") or (el.get("value", "") if el.tag == "input" else (el.text or ""))
+                if raw and self._is_sensitive(node, el):
+                    node["value"] = ""
+                    node["filled"] = True
+                else:
+                    node["value"] = raw[:80]
                 node["action"] = "fill"
             else:
                 node["action"] = "click"
+                # a <select>'s current option is live state too (SERIALIZE stamps it),
+                # but you act on it by clicking/selecting, not typing — so surface the
+                # value without making it fillable.
+                if el.tag == "select" and (sv := el.get("data-zd-value")):
+                    node["value"] = sv[:80]
             self.nodes.append(node)
 
         dup_skipped = 0
