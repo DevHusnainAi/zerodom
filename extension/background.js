@@ -24,6 +24,15 @@ const RECONNECT_ALARM = "zerodom-reconnect";
 // asks for this: the popup has no URL field, this is the only address ever used.
 const DEFAULT_RELAY_URL = "ws://127.0.0.1:8765/extension/local";
 
+// Fall-forward ports. One relay carries one profile (relay.py rejects a second
+// extension with "Another extension connection already established"), so a 2nd
+// or 3rd profile's extension finds 8765 busy and auto-advances to the next free
+// relay. The popup has no URL field and the user shouldn't juggle ports — click
+// Connect in each profile and they sort themselves out across 8765-8768.
+const RELAY_PORTS = [8765, 8766, 8767, 8768];
+const relayUrlForPort = (p) => `ws://127.0.0.1:${p}/extension/local`;
+let relayPortIndex = 0;
+
 // Tabs we've chrome.debugger.attach()'d, persisted in chrome.storage.session
 // (survives an MV3 service-worker restart, unlike a plain JS Set) so a fresh
 // connect() can always detach anything left over from a previous session
@@ -935,10 +944,20 @@ async function connect(url) {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     ws = null;
     stopPing();
     setStatus("disconnected");
+    // This relay already has an extension (another profile got here first) —
+    // advance to the next relay port and try there, so the user never picks one.
+    // Only on that specific rejection: a plain failure (relay not up yet) keeps
+    // retrying the same port via scheduleReconnect, unchanged.
+    const rejected = ev && ev.reason && ev.reason.indexOf("Another extension") !== -1;
+    if (!userDisconnected && rejected && relayPortIndex < RELAY_PORTS.length - 1) {
+      relayPortIndex += 1;
+      connect(relayUrlForPort(RELAY_PORTS[relayPortIndex]));
+      return;
+    }
     scheduleReconnect();
   };
 
@@ -999,6 +1018,7 @@ chrome.tabs.onUpdated.addListener(onTabUpdated);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "zerodom-connect") {
+    relayPortIndex = 0;  // a fresh click restarts the port search at 8765
     connect(message.url);
     sendResponse({ ok: true });
   } else if (message.type === "zerodom-disconnect") {

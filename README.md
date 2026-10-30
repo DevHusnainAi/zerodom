@@ -251,7 +251,8 @@ Ready-to-run MCP examples — same server, a few lines each — are in
 | `zerodom_probe(url, tamper, body=None, method="POST")` | replay with a tampered body and diff vs baseline — mass-assignment / tampering |
 | `zerodom_race(url, bodies=None, n=20, method="POST", setup=None, check=None)` | concurrent burst over the active session (browser multiplex) to flag a check-then-act race (TOCTOU) |
 | `zerodom_set_scope(hosts, deny=None, max_rps=None)` | constrain the hunt to authorized hosts — enforced in code, not on trust |
-| `zerodom_add_identity(name, storage_state=None, header=None)` | register a second identity (e.g. user B) for cross-tenant testing |
+| `zerodom_add_identity(name, storage_state=None, header=None, from_live=False, via="auto", endpoint=None)` | register a second identity (e.g. user B) for cross-tenant testing. `from_live` snapshots the current login; `via="live"` sends with the **real Chrome fingerprint** (cookie-swap) to pass a fingerprinting WAF like DataDome; `endpoint` binds a **second real Chrome profile** (its own relay) as the identity |
+| `zerodom_switch_profile(name, endpoint=None)` | drive a **different Chrome profile** with full interactive control — two or three logged-in accounts side by side, each its own real Chrome; after switching, every tool drives the active profile, and each keeps its own tabs/state. `"default"` is the original session; `endpoint="ws://127.0.0.1:8766/cdp/local"` registers another |
 | `zerodom_replay(url, method="GET", body=None, header=None, as_identity=None)` | replay a request under a chosen identity — Burp Repeater for the agent |
 | `zerodom_compare_identities(url, method="GET", body=None, identities=None)` | fetch one URL as each identity and diff — flags identical responses and 2xx-vs-401/403 splits |
 | `zerodom_create_group(name, color="cyan")` | create a named, colored tab group the agent is sandboxed to; persists across a browser restart |
@@ -485,8 +486,13 @@ Known and worth knowing before you build on it:
   JS-rendered pages. Iframes are opt-in (`--frames`).
 - **The extension is unpacked/dev-mode only** — `chrome.debugger` + a local WebSocket preclude a
   Web Store listing (like Playwright's own CDP relay).
-- **`--stealth` is POSIX-only**; the MCP server drives **one browser session at a time**
-  (multi-tab is supported — a deliberate scope limit).
+- **`--stealth` is POSIX-only.** The MCP server drives **multiple real Chrome profiles** —
+  one per relay (`zerodom relay --port 8766`), switched with `zerodom_switch_profile` — so two
+  or three logged-in accounts can be driven side by side, each its own cookie jar and
+  fingerprint. Within a profile, multi-tab is supported. *Concurrent* cross-identity requests
+  (for cross-user races) are available only through the request-level identities
+  (`compare_identities` fires independent profiles together); interactive driving is one active
+  profile at a time, switched on demand.
 
 ---
 
