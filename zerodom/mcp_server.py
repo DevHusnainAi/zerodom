@@ -44,11 +44,37 @@ _session: dict[str, Any] = {
     "aria_cache_url": None,  # sidebar's Playwright-comparison card, cached per URL
     "aria_cache_tokens": None,  # -- see _read(), aria_snapshot() is too expensive to run on every read
     "navigated_at": 0.0,  # time.monotonic() of the last _goto() -- see _recently_navigated()
-    "identities": {},  # name -> APIRequestContext, for cross-identity replay/IDOR
+    "identities": {},  # name -> APIRequestContext/_SwapIdentity/_ProfileIdentity, for cross-identity replay/IDOR
+    "identity_conns": {},  # name -> {"pw","browser"} for endpoint-bound profile identities; isolated from the active session's pw so _teardown_active_session's pw.stop() can't kill them
     "scope": None,  # None = unrestricted; else {allow, deny, max_rps, locked} — see _scope_ok
     "clearance": None,  # last attempt_clearance() result — surfaced as metadata["cleared"]
     "clearance_note": None,  # last ladder's human-facing note (solver/human rungs)
+    # Full interactive driving of more than one Chrome profile at once. Each
+    # profile is its own connection (its own relay endpoint) + its own page
+    # state; switching one in moves exactly _PROFILE_KEYS between here and the
+    # saved entry, so every page tool keeps reading the flat _session untouched.
+    "profiles": {"default": {"endpoint": None, "state": None}},  # endpoint None = env ZERODOM_CDP_ENDPOINT
+    "current_profile": "default",
 }
+
+# The connection/page-scoped keys a profile owns — swapped on zerodom_switch_profile.
+# Everything else in _session (scope, identities, profiles itself) is cross-profile.
+_PROFILE_KEYS = (
+    "pw", "browser", "pages", "active", "_next_tab", "attached", "selectors",
+    "nodes", "url", "frames", "viewport_only", "check_occlusion", "hidden_fields",
+    "network_log", "cdp_sessions", "action_count", "aria_cache_url",
+    "aria_cache_tokens", "navigated_at",
+)
+
+
+def _blank_profile_state() -> dict[str, Any]:
+    """A clean page-state so _page() bootstraps a fresh connection for a
+    never-yet-activated profile (on that profile's own endpoint)."""
+    return {"pw": None, "browser": None, "pages": {}, "active": None, "_next_tab": 0,
+            "attached": False, "selectors": {}, "nodes": [], "url": None, "frames": False,
+            "viewport_only": False, "check_occlusion": False, "hidden_fields": [],
+            "network_log": {}, "cdp_sessions": {}, "action_count": 0,
+            "aria_cache_url": None, "aria_cache_tokens": None, "navigated_at": 0.0}
 
 # How long after a fresh navigation a click that produced zero diff is worth
 # flagging as a possible SSR-hydration miss (Next.js/Remix/Nuxt: the raw HTML
@@ -91,7 +117,13 @@ def _cdp_endpoint() -> str | None:
     D10). The browser extension's native host (Stage 4) will populate
     ~/.zerodom/bridge.json for the same seam; that discovery path is added then,
     not speculated here.
+
+    A non-default active profile (zerodom_switch_profile) overrides this with
+    its own relay endpoint, so _page() connects that profile's Chrome.
     """
+    prof = _session.get("profiles", {}).get(_session.get("current_profile"))
+    if prof and prof.get("endpoint"):
+        return prof["endpoint"]
     return os.environ.get("ZERODOM_CDP_ENDPOINT") or None
 
 
@@ -2550,7 +2582,12 @@ async def zerodom_restore_groups() -> str:
 _INPAGE_FETCH_JS = """async (req) => {
   try {
     const init = { method: req.method, credentials: 'include', redirect: 'follow' };
-    if (req.headers) init.headers = req.headers;
+    // ponytail: default Accept to JSON — these primitives hunt JSON APIs, and
+    // many (e.g. Vinted) content-negotiate a 403 HTML page for a non-JSON
+    // Accept. Overridable: any caller-set Accept (any case) wins.
+    const h = req.headers || {};
+    if (!Object.keys(h).some(k => k.toLowerCase() === 'accept')) h['Accept'] = 'application/json';
+    init.headers = h;
     if (req.body != null && req.method !== 'GET' && req.method !== 'HEAD') init.body = req.body;
     const resp = await fetch(req.url, init);
     const headers = {};
@@ -2618,13 +2655,76 @@ class _LiveIdentity:
                                result.get("headers"))
 
 
+class _SwapIdentity:
+    """A registered identity that sends with the REAL browser fingerprint.
+
+    Playwright's APIRequestContext carries an identity's cookies but speaks with
+    its own HTTP client's fingerprint, which a fingerprinting WAF (DataDome &c.)
+    tells apart from the human's browser. This instead swaps the identity's
+    cookie jar into the live tab, runs the in-page fetch (real fingerprint + this
+    identity's cookies, including its own WAF cookie), then restores the original
+    jar. So a two-identity IDOR diff is meaningful even behind such a WAF.
+
+    # ponytail: full-jar swap, sequential — one cookie jar per context. Concurrent
+    # cross-identity requests (cross-user race conditions) need two isolated
+    # real-Chrome contexts at once (Target.createBrowserContext over the relay, or
+    # a Playwright-launched channel=chrome with two contexts) — deferred.
+    """
+
+    def __init__(self, cookies: list[dict], headers: dict | None = None):
+        self._cookies = cookies
+        self._headers = headers or {}
+
+    async def fetch(self, url: str, method: str = "GET", headers: dict | None = None,
+                    data: str | None = None) -> _InPageResponse:
+        page = await _page()
+        ctx = page.context
+        orig = await ctx.cookies()
+        try:
+            await ctx.clear_cookies()
+            await ctx.add_cookies(self._cookies)
+            merged = {**self._headers, **(headers or {})} or None
+            return await _LiveIdentity(page).fetch(url, method=method, headers=merged, data=data)
+        finally:
+            # Restore the real session's jar no matter what — never leave the live
+            # tab wearing another identity's cookies (a mid-fetch raise must not).
+            await ctx.clear_cookies()
+            await ctx.add_cookies(orig)
+
+
+class _ProfileIdentity:
+    """A second real Chrome *profile* as an identity. Holds that profile's own
+    browser connection (its own connect_over_cdp over its own relay, with an
+    isolated Playwright instance — see _session['identity_conns']) and, per
+    request, resolves its current live page and sends through _LiveIdentity:
+    real Chrome fingerprint + that profile's own live login, no snapshot.
+
+    Resolve-per-fetch, never a cached page — the user will navigate the profile
+    and a cached handle dies, exactly as _page() re-checks is_closed() for the
+    active tab. Same-origin caveat as the live identity applies: the profile's
+    active tab must be on the target origin for the in-page fetch to reach it.
+    """
+
+    def __init__(self, browser: Any, headers: dict | None = None):
+        self._browser = browser
+        self._headers = headers or {}
+
+    async def fetch(self, url: str, method: str = "GET", headers: dict | None = None,
+                    data: str | None = None) -> _InPageResponse:
+        ctx = self._browser.contexts[0]
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        merged = {**self._headers, **(headers or {})} or None
+        return await _LiveIdentity(page).fetch(url, method=method, headers=merged, data=data)
+
+
 async def _identity_request(name: str | None):
     """Who sends a request. None/"live"/"me"/"self" is the real logged-in
     session — an in-page credentialed fetch leaving through Chrome's own
     network stack, fingerprint and all: the path that can get past a WAF that
     fingerprints the connection. Any other name was registered by
-    zerodom_add_identity and sends through Playwright's APIRequestContext:
-    that identity's cookies yes, Chrome's TLS/HTTP fingerprint no."""
+    zerodom_add_identity — a _SwapIdentity (also real fingerprint, via cookie
+    swap) or, for via='http', a Playwright APIRequestContext (cookies yes,
+    Chrome's TLS/HTTP fingerprint no)."""
     if name in (None, "live", "me", "self"):
         page = await _page()
         return _LiveIdentity(page)
@@ -2646,31 +2746,150 @@ def _summarize(status: int, body: str) -> dict:
 
 
 @mcp.tool()
-async def zerodom_add_identity(name: str, storage_state: str | None = None, header: str | None = None) -> str:
+async def zerodom_switch_profile(name: str, endpoint: str | None = None) -> str:
+    """Drive a different Chrome profile — full interactive control, not just fetch.
+
+    Each profile is its own real Chrome (its own relay + login). After switching,
+    EVERY tool (navigate, scroll, click, read, screenshot, …) drives THIS
+    profile; switch back and the other is right where you left it. Use it to work
+    two or three logged-in accounts side by side.
+
+    - `endpoint` — register a new profile the first time:
+      zerodom_switch_profile("B", endpoint="ws://127.0.0.1:8766/cdp/local").
+      Set up once: `zerodom relay --port 8766`, then click Connect in that
+      profile's extension (it auto-finds a free port — no URL to type).
+    - name alone — switch to an already-registered profile. "default" is the
+      original session (ZERODOM_CDP_ENDPOINT / port 8765).
+    """
+    profiles = _session["profiles"]
+    if endpoint:
+        profiles[name] = {"endpoint": endpoint, "state": profiles.get(name, {}).get("state")}
+    if name not in profiles:
+        return (f"unknown profile {name!r}. Known: {', '.join(profiles)}. "
+                f"Pass endpoint=… to register a new one.")
+
+    cur = _session["current_profile"]
+    if name == cur:
+        return f"already on profile {name!r}."
+
+    # Save this profile's live connection+page state, then load the target's — or
+    # a blank state so _page() bootstraps a fresh connect on the target's endpoint.
+    profiles.setdefault(cur, {"endpoint": None})["state"] = {k: _session[k] for k in _PROFILE_KEYS}
+    _session["current_profile"] = name
+    for k, v in (profiles[name].get("state") or _blank_profile_state()).items():
+        _session[k] = v
+
+    ep = profiles[name].get("endpoint") or os.environ.get("ZERODOM_CDP_ENDPOINT") or "(launch)"
+    return (f"switched to profile {name!r} ({ep}). Every tool now drives this profile; "
+            f"zerodom_switch_profile({cur!r}) to switch back.")
+
+
+@mcp.tool()
+async def zerodom_add_identity(name: str, storage_state: str | None = None,
+                               header: str | None = None, from_live: bool = False,
+                               via: str = "auto", endpoint: str | None = None) -> str:
     """Register a second identity (e.g. user B) for cross-tenant IDOR testing.
 
-    `storage_state` is a Playwright storage_state JSON file (cookies + origins) —
-    capture one per account. `header` is an optional extra request header
-    ('Authorization: Bearer …') for token-auth APIs, repeatable via comma isn't
-    supported; call again to add more. The current logged-in session is always
-    available as identity 'live' without registering.
+    Source of the session (pick one):
+    - `endpoint` — a SECOND real Chrome profile, already logged in as B, reached
+      over its own relay: `endpoint="ws://127.0.0.1:8766/cdp/local"`. Each
+      request leaves through that profile's real Chrome (real fingerprint, its
+      own live login) — no snapshot, no re-login, no blank browser. Set it up
+      once: `zerodom relay --port 8766`, load the extension in profile B, paste
+      its URL, log in. Its active tab must be on the target origin (same-origin,
+      like 'live'). Best for a WAF target where two real profiles beat cookie-swap.
+    - `from_live=True` — snapshot the CURRENT logged-in tab's cookies. Log in as
+      B, call this, then log the tab back into A. No file to manage.
+    - `storage_state` — a Playwright storage_state JSON file (cookies + origins).
+    - neither — anonymous (only useful with `header` for token auth).
+
+    `header` adds one extra request header ('Authorization: Bearer …'); call
+    again to add more. The current logged-in session is always available as
+    identity 'live' without registering.
+
+    `via` picks the transport:
+    - "auto" (default) — if a browser is attached, send with the REAL Chrome
+      fingerprint by swapping this identity's cookies into the live tab per
+      request (passes a fingerprinting WAF like DataDome); else Playwright's HTTP client.
+    - "live" — force the real-fingerprint swap path.
+    - "http" — force Playwright's APIRequestContext (cookies yes, Chrome's TLS
+      fingerprint no). For CI/headless, or a cross-origin URL the in-page fetch
+      can't reach (no CORS).
 
     Once two identities exist, zerodom_compare_identities(url) fetches the same
     URL as each and flags a byte-identical response — the cross-tenant IDOR tell.
     """
-    pw = _session.get("pw")
-    if pw is None:
-        # A registered identity is an HTTP client (APIRequestContext), independent
-        # of the live browser — start only Playwright, never force a browser attach
-        # (the relay/extension path can be unavailable, e.g. headless/CI or on camera).
-        from playwright.async_api import async_playwright
-        pw = _session["pw"] = await async_playwright().start()
+    if via not in ("auto", "live", "http"):
+        return f"via must be 'auto', 'live', or 'http', got {via!r}"
     headers = {}
     if header:
         if ":" not in header:
             return f"--header needs 'Key: Value', got {header!r}"
         k, v = header.split(":", 1)
         headers[k.strip()] = v.strip()
+
+    # Second real profile over its own relay: its own isolated Playwright +
+    # connect_over_cdp, kept out of _session["pw"] so _teardown_active_session's
+    # pw.stop() on the active tab can't kill it. Exclusive with the other session
+    # sources — an endpoint IS a live profile, nothing to snapshot or force.
+    if endpoint:
+        if from_live or storage_state or via != "auto":
+            return ("endpoint registers a live second profile — don't combine it with "
+                    "from_live/storage_state/via (those are the single-profile paths).")
+        from playwright.async_api import async_playwright
+        prof_pw = await async_playwright().start()
+        try:
+            browser = await prof_pw.chromium.connect_over_cdp(endpoint, timeout=10000)
+        except Exception as exc:
+            await prof_pw.stop()
+            return (f"couldn't reach profile relay at {endpoint!r}: {exc}. Start it with "
+                    f"`zerodom relay --port <N>` and connect the extension in that profile.")
+        _session["identity_conns"][name] = {"pw": prof_pw, "browser": browser}
+        _session["identities"][name] = _ProfileIdentity(browser, headers)
+        extra = f" + header {list(headers)[0]}" if headers else ""
+        return (f"identity {name!r} registered — live second profile at {endpoint}{extra} "
+                f"(real Chrome, its own login). Its active tab must be on the target "
+                f"origin. Now: zerodom_compare_identities('<url>') or "
+                f"zerodom_replay('<url>', as_identity={name!r}).")
+
+    # Real-fingerprint swap path: when forced, or auto with a browser attached.
+    # Only this path needs the cookie jar in hand — the HTTP path lets Playwright
+    # read the storage_state file itself.
+    if via == "live" or (via == "auto" and _session.get("active") is not None):
+        if from_live:
+            try:
+                page = await _page()
+            except Exception as exc:
+                return f"from_live needs an attached browser session: {exc}"
+            cookies = await page.context.cookies()
+            if not cookies:
+                return ("from_live found no cookies — is the tab logged in as this "
+                        "identity? Log in first, then register.")
+        elif storage_state:
+            try:
+                cookies = json.loads(Path(storage_state).read_text(encoding="utf-8")).get("cookies", [])
+            except Exception as exc:
+                return f"couldn't read storage_state {storage_state!r}: {exc}"
+        else:
+            return ("the real-fingerprint path needs a session to swap in — pass "
+                    "from_live=True or storage_state=…, or via='http' for header-only auth.")
+        _session["identities"][name] = _SwapIdentity(cookies, headers)
+        src = "live snapshot" if from_live else f"cookies from {storage_state}"
+        extra = f" + header {list(headers)[0]}" if headers else ""
+        return (f"identity {name!r} registered — real Chrome fingerprint via cookie-swap "
+                f"({src}{extra}). Now: zerodom_compare_identities('<url>') or "
+                f"zerodom_replay('<url>', as_identity={name!r}).")
+
+    # via='http', or auto without a browser: Playwright's APIRequestContext.
+    if from_live:
+        return ("from_live captures the live browser session, which needs the swap path — "
+                "use via='live'/'auto' with a browser attached, or a storage_state file for via='http'.")
+    pw = _session.get("pw")
+    if pw is None:
+        # Independent of the live browser — start only Playwright, never force a
+        # browser attach (relay/extension can be unavailable, e.g. headless/CI).
+        from playwright.async_api import async_playwright
+        pw = _session["pw"] = await async_playwright().start()
     ctx = await pw.request.new_context(
         storage_state=storage_state or None,
         extra_http_headers=headers or None,
@@ -2681,8 +2900,10 @@ async def zerodom_add_identity(name: str, storage_state: str | None = None, head
         how.append(f"cookies from {storage_state}")
     if headers:
         how.append(f"header {list(headers)[0]}")
-    return f"identity {name!r} registered ({', '.join(how) or 'no auth — anonymous'}). " \
-           f"Now: zerodom_compare_identities('<url>') or zerodom_replay('<url>', as_identity={name!r})."
+    return (f"identity {name!r} registered via HTTP client "
+            f"({', '.join(how) or 'no auth — anonymous'}) — no Chrome fingerprint, so a "
+            f"fingerprinting WAF may challenge it; use from_live/via='live' to avoid that. "
+            f"Now: zerodom_compare_identities('<url>') or zerodom_replay('<url>', as_identity={name!r}).")
 
 
 @mcp.tool()
@@ -2732,11 +2953,22 @@ async def zerodom_compare_identities(url: str, method: str = "GET", body: str | 
     if len(names) < 2:
         return ("Need at least two identities. Register a second with "
                 "zerodom_add_identity('B', storage_state='B.json'), then retry.")
-    per: dict[str, dict] = {}
-    for name in names:
-        req = await _identity_request(name)
+    reqs = {name: await _identity_request(name) for name in names}
+
+    async def _one(req) -> dict:
         resp = await req.fetch(url, method=method.upper(), data=body)
-        per[name] = _summarize(resp.status, await resp.text())
+        return _summarize(resp.status, await resp.text())
+
+    # Fire all identities at once — same-instant cross-user requests, the thing
+    # separate real profiles buy over the cookie-swap. Only safe when every
+    # identity is independent: a _SwapIdentity swaps the single live tab's one
+    # jar, so it (or it + the live tab) racing corrupts the jar mid-flight —
+    # fall back to sequential whenever one is in the set.
+    if any(isinstance(r, _SwapIdentity) for r in reqs.values()):
+        per: dict[str, dict] = {name: await _one(reqs[name]) for name in names}
+    else:
+        results = await asyncio.gather(*(_one(reqs[name]) for name in names))
+        per = dict(zip(names, results))
     identical = [[a, b] for i, a in enumerate(names) for b in names[i + 1:]
                  if per[a]["sha256"] == per[b]["sha256"]]
     lines = [f"{method.upper()} {url}"]
@@ -2803,6 +3035,24 @@ async def zerodom_status() -> str:
         lines.append(f"session:  not yet connected — {await _probe_relay_liveness()}")
     else:
         lines.append("session:  not yet connected")
+
+    profiles = _session.get("profiles") or {}
+    if len(profiles) > 1:
+        cur = _session.get("current_profile")
+        names = ", ".join(f"{n}*" if n == cur else n for n in profiles)
+        lines.append(f"profiles: {names}  (* = active; switch with zerodom_switch_profile)")
+
+    conns = _session.get("identity_conns") or {}
+    for name, conn in conns.items():
+        browser = conn.get("browser")
+        try:
+            ctx = browser.contexts[0]
+            page = ctx.pages[0] if ctx.pages else None
+            await asyncio.wait_for(page.evaluate("1"), timeout=3)
+            state = f"responding, url={page.url}"
+        except Exception:
+            state = "NOT responding — connect the extension in that profile, on the target origin"
+        lines.append(f"profile '{name}': {state}")
 
     if _RELAY_LOG_PATH.exists():
         tail = _RELAY_LOG_PATH.read_text().splitlines()[-10:]

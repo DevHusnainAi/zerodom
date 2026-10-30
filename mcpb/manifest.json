@@ -166,6 +166,10 @@
       "description": "Reopen the remembered tabs of every agent group (best-effort) after a browser restart, re-grouping them under their saved name and color."
     },
     {
+      "name": "zerodom_switch_profile",
+      "description": "Drive a different Chrome profile with full interactive control — switch between two or three logged-in accounts, each its own real Chrome, and every tool drives the active one."
+    },
+    {
       "name": "zerodom_add_identity",
       "description": "Register a second identity (e.g. user B) for cross-tenant IDOR testing."
     },

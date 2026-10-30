@@ -714,8 +714,16 @@ async def run_relay(host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> None:
 
 
 def main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="zerodom.relay")
+    # A second/third profile needs its own relay on its own port — the extension
+    # is per-profile and this server carries one. Default stays DEFAULT_PORT so
+    # the common single-profile case needs no flag.
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    args = ap.parse_args()
     try:
-        asyncio.run(run_relay())
+        asyncio.run(run_relay(port=args.port))
     except KeyboardInterrupt:
         pass
     except OSError as exc:
@@ -723,7 +731,7 @@ def main() -> None:
         # relay) is already on this port. One clean line beats an asyncio traceback.
         if exc.errno == errno.EADDRINUSE:
             raise SystemExit(
-                f"zerodom: port {DEFAULT_PORT} is already in use — a zerodom relay is "
+                f"zerodom: port {args.port} is already in use — a zerodom relay is "
                 f"probably already running (that's usually fine; stop it with Ctrl+C in "
                 f"its terminal, or `pkill -f 'zerodom relay'`, if you need to restart it)."
             )
