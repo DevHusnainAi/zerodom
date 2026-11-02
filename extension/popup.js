@@ -11,6 +11,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
 const actionBtn = $("#action");
 const dot = $(".dot");
 const statusText = $("#status-text");
+const relayPort = $("#relay-port");
 const tabsEl = $("#tabs");
 const liveStatsEl = $("#live-stats");
 const hudToggle = $("#hud-toggle");
@@ -77,9 +78,20 @@ $$(".nav-item").forEach((btn) => {
 let currentStatus = "disconnected";
 let currentUrl = null;
 
-function renderSession(status, tabs) {
+let currentEndpoint = null;
+
+function renderSession(status, tabs, port, endpoint) {
   statusText.textContent = status;
   dot.className = "dot" + (status === "connected" ? " on" : "");
+  // Show which relay port this profile landed on (fall-forward disambiguates
+  // 2+ profiles) + let one click copy its CDP endpoint for add_identity.
+  if (status === "connected" && port) {
+    currentEndpoint = endpoint;
+    relayPort.textContent = "· :" + port;
+    relayPort.style.display = "";
+  } else {
+    relayPort.style.display = "none";
+  }
   if (status === "connected") {
     actionBtn.textContent = "Disconnect";
     actionBtn.className = "danger";
@@ -124,6 +136,8 @@ function renderLiveStats(stats) {
   const attached = !!(stats && stats.attached);
   stopBtn.style.display = attached ? "" : "none";
   stopHint.style.display = attached ? "" : "none";
+  // Reflect the on-page bar's real visibility instead of a hardcoded default.
+  hudToggle.classList.toggle("on", !!(stats && stats.hasBar && !stats.barHidden));
 
   if (!attached) {
     liveStatsEl.innerHTML = "";
@@ -134,17 +148,13 @@ function renderLiveStats(stats) {
     return;
   }
 
+  // Only the four fields the driving bar actually exposes (background.js
+  // LIVE_STATS_JS) — the per-action counters were never populated.
   const statsFields = [
     ["target", stats.target],
     ["path", stats.path],
     ["tokens", stats.tokens],
     ["step", stats.step],
-    ["mcp calls", stats.mcpCalls],
-    ["clicks", stats.clicks],
-    ["fills", stats.fills],
-    ["types", stats.typing],
-    ["hovers", stats.hovers],
-    ["scrolls", stats.scrolls],
   ];
   liveStatsEl.innerHTML = '<div class="panel">' +
     statsFields
@@ -158,6 +168,10 @@ async function refreshLiveStats() {
   const res = await send({ type: "zerodom-get-live-stats" });
   renderLiveStats(res);
 }
+
+relayPort.addEventListener("click", () => {
+  if (currentEndpoint) copyText(currentEndpoint);
+});
 
 actionBtn.addEventListener("click", async () => {
   if (actionBtn.textContent === "Disconnect") {
@@ -540,7 +554,7 @@ async function refreshGraph() {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "zerodom-status") {
     currentStatus = message.status;
-    renderSession(message.status, message.tabs);
+    renderSession(message.status, message.tabs, message.port, message.endpoint);
     refreshLiveStats();
   }
 });
@@ -551,7 +565,7 @@ chrome.runtime.onMessage.addListener((message) => {
   const res = await send({ type: "zerodom-get-status" });
   if (res) {
     currentStatus = res.status;
-    renderSession(res.status, res.tabs);
+    renderSession(res.status, res.tabs, res.port, res.endpoint);
   }
   refreshLiveStats();
 })();

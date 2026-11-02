@@ -55,7 +55,6 @@
 .graph-node.sev-critical{border-left-color:#e05252}
 .graph-node.sev-high{border-left-color:#e0a83d}
 .graph-node.sev-medium{border-left-color:#ffc837}
-.graph-node-id{font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:#22e0d8;flex:none;min-width:24px}
 .graph-node-type{font-size:10px;color:#5b5f68;flex:none}
 .graph-node-label{font-size:12px;color:#9199a3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
 
@@ -73,7 +72,6 @@
 .token-badge{font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:9px;color:#5b5f68;background:rgba(255,255,255,.04);padding:1px 4px;border-radius:3px;flex:none}
 
 .diff-added{background:rgba(79,191,127,.08)}
-.diff-removed{background:rgba(224,82,82,.08)}
 .diff-changed{background:rgba(255,200,55,.08)}
 
 .graph-node.selected{background:rgba(34,224,216,.12);box-shadow:inset 0 0 0 1px rgba(34,224,216,.35)}

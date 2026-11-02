@@ -2795,9 +2795,11 @@ async def zerodom_add_identity(name: str, storage_state: str | None = None,
       over its own relay: `endpoint="ws://127.0.0.1:8766/cdp/local"`. Each
       request leaves through that profile's real Chrome (real fingerprint, its
       own live login) — no snapshot, no re-login, no blank browser. Set it up
-      once: `zerodom relay --port 8766`, load the extension in profile B, paste
-      its URL, log in. Its active tab must be on the target origin (same-origin,
-      like 'live'). Best for a WAF target where two real profiles beat cookie-swap.
+      once: `zerodom relay --port 8766`, load the extension in profile B and click
+      Connect (it auto-finds a free port — no URL to paste), log in. The port it
+      lands on shows in that profile's popup; pass its `/cdp/` endpoint here. Its
+      active tab must be on the target origin (same-origin, like 'live'). Best for
+      a WAF target where two real profiles beat cookie-swap.
     - `from_live=True` — snapshot the CURRENT logged-in tab's cookies. Log in as
       B, call this, then log the tab back into A. No file to manage.
     - `storage_state` — a Playwright storage_state JSON file (cookies + origins).

@@ -6,6 +6,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-11-02
+
 ### Added
 
 - **Multiple real Chrome profiles, full interactive control — `zerodom_switch_profile`.**
@@ -28,12 +30,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`zerodom relay --port N`** so a second/third profile can run its own relay. The extension
   auto-finds a free relay (falls forward 8765→8766→… when one is busy), so a second profile
   just clicks Connect — no URL to type.
+- **Extension popup shows its live relay port.** After fall-forward, each profile's popup
+  displays the port it landed on (`· :8766`) and one click copies that profile's
+  `ws://127.0.0.1:<port>/cdp/local` endpoint for `zerodom_add_identity` — so two or three
+  profiles are no longer indistinguishable in the UI.
 
 ### Fixed
 
 - **In-page fetch defaults `Accept: application/json`** (overridable). JSON APIs that
   content-negotiate — e.g. Vinted returns a 403 HTML page for a non-JSON `Accept` — now
   answer `replay`/`compare` correctly (confirmed 403→200 live).
+- **Extension popup correctness.** The per-tab close (`×`) button now works (handler was
+  missing); the HUD toggle reflects the on-page bar's real visibility instead of a hardcoded
+  default; the tab group-color badge renders; dead live-stat fields and unused CSS removed.
 
 ## [0.1.4] — 2026-10-29
 

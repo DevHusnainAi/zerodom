@@ -424,6 +424,7 @@ const LIVE_STATS_JS = "(() => {" +
   "const val = (id) => document.getElementById(id)?.textContent || null;" +
   "return {" +
     "hasBar: !!document.getElementById('zerodom-driving-bar')," +
+    "barHidden: document.getElementById('zerodom-driving-bar')?.style.display === 'none'," +
     "target: val('zerodom-bar-target')," +
     "path: val('zerodom-bar-path')," +
     "tokens: val('zerodom-bar-tokens')," +
@@ -726,7 +727,11 @@ async function getAttachedTabInfo() {
   for (const tabId of ids) {
     try {
       const tab = await chrome.tabs.get(tabId);
-      tabs.push({ id: tabId, title: tab.title, url: tab.url });
+      let groupColor;
+      if (tab.groupId !== undefined && tab.groupId !== -1) {
+        try { groupColor = (await chrome.tabGroups.get(tab.groupId)).color; } catch (e) {}
+      }
+      tabs.push({ id: tabId, title: tab.title, url: tab.url, groupColor });
     } catch (e) {
       // Tab closed underneath us; markDetached's onRemoved listener will
       // clean ATTACHED_KEY up shortly, nothing to report meanwhile.
@@ -735,9 +740,23 @@ async function getAttachedTabInfo() {
   return tabs;
 }
 
+// The relay port this profile actually landed on after fall-forward, plus the
+// CDP endpoint to register it as an identity. Lets each profile's popup show a
+// distinct address (:8765 vs :8766) and hand the user the exact string for
+// zerodom_add_identity(endpoint=…). Derived from lastUrl, the one address in use.
+function relayInfo() {
+  if (!lastUrl) return {};
+  try {
+    const u = new URL(lastUrl);
+    return { port: u.port, endpoint: lastUrl.replace("/extension/", "/cdp/") };
+  } catch (e) {
+    return {};
+  }
+}
+
 async function broadcastStatus() {
   const tabs = await getAttachedTabInfo();
-  chrome.runtime.sendMessage({ type: "zerodom-status", status, tabs }).catch(() => {});
+  chrome.runtime.sendMessage({ type: "zerodom-status", status, tabs, ...relayInfo() }).catch(() => {});
 }
 
 function setStatus(next) {
@@ -1025,7 +1044,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     disconnect();
     sendResponse({ ok: true });
   } else if (message.type === "zerodom-get-status") {
-    getAttachedTabInfo().then((tabs) => sendResponse({ status, tabs }));
+    getAttachedTabInfo().then((tabs) => sendResponse({ status, tabs, ...relayInfo() }));
+  } else if (message.type === "zerodom-close-tab") {
+    chrome.tabs.remove(Number(message.tabId)).then(
+      () => sendResponse({ ok: true }),
+      (e) => sendResponse({ error: e.message || String(e) }));
   } else if (message.type === "zerodom-get-live-stats") {
     getLiveStats().then(sendResponse);
   } else if (message.type === "zerodom-toggle-hud") {

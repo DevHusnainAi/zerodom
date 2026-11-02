@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "zerodom",
-  "version": "0.1.4",
-  "description": "Let Claude drive this browser through zerodom's compact, verified-unique interaction graph — real session, no bot-detection wall.",
+  "version": "0.1.5",
+  "description": "Drive your real, logged-in Chrome as a zerodom identity for authenticated access-control testing (IDOR/BOLA). Run one per profile to test as two users at once — real sessions, real fingerprints, no bot-detection wall.",
   "permissions": ["debugger", "tabs", "tabGroups", "storage", "alarms"],
   "icons": {
     "16": "icons/icon16.png",
