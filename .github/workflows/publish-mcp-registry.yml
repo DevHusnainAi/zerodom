@@ -1,11 +1,11 @@
 name: Publish to MCP Registry
 
 # Keeps the official registry entry (io.github.DevHusnainAi/zerodom) in step with
-# the packages. PyPI releases on `v*`, npm on `npm-v*` — either tag triggers this.
-# It reads the exact package versions from server.json, waits until BOTH are live
-# on PyPI and npm, then republishes server.json. It's a no-op when that version is
-# already the registry's latest, so whichever sibling tag lands second just skips
-# (and a concurrency group serializes a simultaneous double-push).
+# the packages. Triggered by the PyPI `v*` tag ONLY — the registry entry is one
+# server.json at one version covering BOTH packages, so it publishes once per
+# release. This job already waits until both the PyPI and npm versions are live
+# before republishing, so it doesn't need the `npm-v*` tag too; triggering on both
+# just re-ran the same publish and failed on "duplicate version already exists".
 #
 # GitHub OIDC proves this repo owns the io.github.DevHusnainAi namespace, so there
 # is no token to store. server.json's versions are synced automatically from
@@ -13,7 +13,7 @@ name: Publish to MCP Registry
 # already enforce match their tags — so there is no server.json bump to remember.
 on:
   push:
-    tags: ["v*", "npm-v*"]
+    tags: ["v*"]
   workflow_dispatch: {}
 
 permissions:
