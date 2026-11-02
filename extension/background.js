@@ -24,6 +24,15 @@ const RECONNECT_ALARM = "zerodom-reconnect";
 // asks for this: the popup has no URL field, this is the only address ever used.
 const DEFAULT_RELAY_URL = "ws://127.0.0.1:8765/extension/local";
 
+// Fall-forward ports. One relay carries one profile (relay.py rejects a second
+// extension with "Another extension connection already established"), so a 2nd
+// or 3rd profile's extension finds 8765 busy and auto-advances to the next free
+// relay. The popup has no URL field and the user shouldn't juggle ports — click
+// Connect in each profile and they sort themselves out across 8765-8768.
+const RELAY_PORTS = [8765, 8766, 8767, 8768];
+const relayUrlForPort = (p) => `ws://127.0.0.1:${p}/extension/local`;
+let relayPortIndex = 0;
+
 // Tabs we've chrome.debugger.attach()'d, persisted in chrome.storage.session
 // (survives an MV3 service-worker restart, unlike a plain JS Set) so a fresh
 // connect() can always detach anything left over from a previous session
@@ -415,6 +424,7 @@ const LIVE_STATS_JS = "(() => {" +
   "const val = (id) => document.getElementById(id)?.textContent || null;" +
   "return {" +
     "hasBar: !!document.getElementById('zerodom-driving-bar')," +
+    "barHidden: document.getElementById('zerodom-driving-bar')?.style.display === 'none'," +
     "target: val('zerodom-bar-target')," +
     "path: val('zerodom-bar-path')," +
     "tokens: val('zerodom-bar-tokens')," +
@@ -717,7 +727,11 @@ async function getAttachedTabInfo() {
   for (const tabId of ids) {
     try {
       const tab = await chrome.tabs.get(tabId);
-      tabs.push({ id: tabId, title: tab.title, url: tab.url });
+      let groupColor;
+      if (tab.groupId !== undefined && tab.groupId !== -1) {
+        try { groupColor = (await chrome.tabGroups.get(tab.groupId)).color; } catch (e) {}
+      }
+      tabs.push({ id: tabId, title: tab.title, url: tab.url, groupColor });
     } catch (e) {
       // Tab closed underneath us; markDetached's onRemoved listener will
       // clean ATTACHED_KEY up shortly, nothing to report meanwhile.
@@ -726,9 +740,23 @@ async function getAttachedTabInfo() {
   return tabs;
 }
 
+// The relay port this profile actually landed on after fall-forward, plus the
+// CDP endpoint to register it as an identity. Lets each profile's popup show a
+// distinct address (:8765 vs :8766) and hand the user the exact string for
+// zerodom_add_identity(endpoint=…). Derived from lastUrl, the one address in use.
+function relayInfo() {
+  if (!lastUrl) return {};
+  try {
+    const u = new URL(lastUrl);
+    return { port: u.port, endpoint: lastUrl.replace("/extension/", "/cdp/") };
+  } catch (e) {
+    return {};
+  }
+}
+
 async function broadcastStatus() {
   const tabs = await getAttachedTabInfo();
-  chrome.runtime.sendMessage({ type: "zerodom-status", status, tabs }).catch(() => {});
+  chrome.runtime.sendMessage({ type: "zerodom-status", status, tabs, ...relayInfo() }).catch(() => {});
 }
 
 function setStatus(next) {
@@ -935,10 +963,20 @@ async function connect(url) {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     ws = null;
     stopPing();
     setStatus("disconnected");
+    // This relay already has an extension (another profile got here first) —
+    // advance to the next relay port and try there, so the user never picks one.
+    // Only on that specific rejection: a plain failure (relay not up yet) keeps
+    // retrying the same port via scheduleReconnect, unchanged.
+    const rejected = ev && ev.reason && ev.reason.indexOf("Another extension") !== -1;
+    if (!userDisconnected && rejected && relayPortIndex < RELAY_PORTS.length - 1) {
+      relayPortIndex += 1;
+      connect(relayUrlForPort(RELAY_PORTS[relayPortIndex]));
+      return;
+    }
     scheduleReconnect();
   };
 
@@ -999,13 +1037,18 @@ chrome.tabs.onUpdated.addListener(onTabUpdated);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "zerodom-connect") {
+    relayPortIndex = 0;  // a fresh click restarts the port search at 8765
     connect(message.url);
     sendResponse({ ok: true });
   } else if (message.type === "zerodom-disconnect") {
     disconnect();
     sendResponse({ ok: true });
   } else if (message.type === "zerodom-get-status") {
-    getAttachedTabInfo().then((tabs) => sendResponse({ status, tabs }));
+    getAttachedTabInfo().then((tabs) => sendResponse({ status, tabs, ...relayInfo() }));
+  } else if (message.type === "zerodom-close-tab") {
+    chrome.tabs.remove(Number(message.tabId)).then(
+      () => sendResponse({ ok: true }),
+      (e) => sendResponse({ error: e.message || String(e) }));
   } else if (message.type === "zerodom-get-live-stats") {
     getLiveStats().then(sendResponse);
   } else if (message.type === "zerodom-toggle-hud") {

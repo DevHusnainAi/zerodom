@@ -6,6 +6,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-11-02
+
+### Added
+
+- **Multiple real Chrome profiles, full interactive control — `zerodom_switch_profile`.**
+  Drive two or three logged-in accounts side by side, each its own real Chrome (its own
+  relay + cookie jar + fingerprint). After switching, *every* tool — navigate, scroll,
+  click, read, screenshot — drives the active profile; switch back and the other is right
+  where you left it (each keeps its own tabs/pages/state). `"default"` is the original
+  session; a new profile is registered with `endpoint="ws://127.0.0.1:8766/cdp/local"`.
+  Verified live: two profiles each navigated to YouTube, opened different videos, and
+  scrolled independently.
+- **Real-fingerprint second identity (cookie-swap) — `zerodom_add_identity(via="live"/from_live=True)`.**
+  A registered identity can now send with the **real Chrome fingerprint** by swapping its
+  cookie jar into the live tab per request (restored in a `finally`), so a two-identity
+  `compare` gets past a connection-fingerprinting WAF (e.g. DataDome) instead of being
+  challenged. For CI/headless or cross-origin, `via="http"` keeps the Playwright HTTP client.
+- **Second real profile as an identity — `zerodom_add_identity(endpoint=…)`.** Binds another
+  profile's live session (over its own relay) as a request-level identity; `compare_identities`
+  fires independent profiles **concurrently** (sequential only when a cookie-swap identity,
+  which shares the one live tab, is in the set).
+- **`zerodom relay --port N`** so a second/third profile can run its own relay. The extension
+  auto-finds a free relay (falls forward 8765→8766→… when one is busy), so a second profile
+  just clicks Connect — no URL to type.
+- **Extension popup shows its live relay port.** After fall-forward, each profile's popup
+  displays the port it landed on (`· :8766`) and one click copies that profile's
+  `ws://127.0.0.1:<port>/cdp/local` endpoint for `zerodom_add_identity` — so two or three
+  profiles are no longer indistinguishable in the UI.
+
+### Fixed
+
+- **In-page fetch defaults `Accept: application/json`** (overridable). JSON APIs that
+  content-negotiate — e.g. Vinted returns a 403 HTML page for a non-JSON `Accept` — now
+  answer `replay`/`compare` correctly (confirmed 403→200 live).
+- **Extension popup correctness.** The per-tab close (`×`) button now works (handler was
+  missing); the HUD toggle reflects the on-page bar's real visibility instead of a hardcoded
+  default; the tab group-color badge renders; dead live-stat fields and unused CSS removed.
+
 ## [0.1.4] — 2026-10-29
 
 ### Added
