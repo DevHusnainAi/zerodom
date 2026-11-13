@@ -443,6 +443,23 @@ def test_interactive_state_is_captured_and_sensitive_values_redacted():
     assert "filled" in pw and "hunter2" not in pw
 
 
+def test_unlabelled_sensitive_field_does_not_leak_value_via_label():
+    """A sensitive field with no real label would otherwise fall back to its
+    `value` attribute for a label (label_linker IDENTIFIER_ATTRS), leaking the
+    secret even though the value itself is redacted. The label must be scrubbed
+    to a safe identifier (the field name)."""
+    html = ("<html><title>T</title><body><form>"
+            "<input type='password' name='pw' value='hunter2'>"
+            "<input type='text' name='cardNumber' value='4111111111111111'>"
+            "</form></body></html>")
+    nodes = parse_html(html)["nodes"]
+    serialized = parse_html(html).to_compact_text(terse=True)
+    assert "hunter2" not in serialized and "4111111111111111" not in serialized
+    for n in nodes:
+        assert n["label"] not in ("hunter2", "4111111111111111")
+    assert {n["label"] for n in nodes} == {"pw", "cardNumber"}  # fell back to name
+
+
 def test_terse_format_is_leaner_and_ref_resolvable():
     """Agent-facing terse: drops the `a` tag and label quotes, keeps non-link types,
     flags, refs — and every ref still resolves via ref_map (the agent acts by ref)."""

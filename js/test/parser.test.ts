@@ -111,6 +111,19 @@ test("interactive state is captured and sensitive values redacted (mirror of tes
   assert.ok(line("Password").includes("filled") && !line("Password").includes("hunter2"));
 });
 
+test("unlabelled sensitive field does not leak value via label (mirror of test_parser.py)", () => {
+  const graph = parseHtml(
+    "<form><input type='password' name='pw' value='hunter2'>"
+    + "<input type='text' name='cardNumber' value='4111111111111111'></form>",
+  );
+  const terse = graph.toCompactText({ terse: true });
+  assert.ok(!terse.includes("hunter2") && !terse.includes("4111111111111111"));
+  for (const n of graph.nodes) {
+    assert.ok(n.label !== "hunter2" && n.label !== "4111111111111111");
+  }
+  assert.deepEqual(new Set(graph.nodes.map((n) => n.label)), new Set(["pw", "cardNumber"]));
+});
+
 test("refMap is keyed by the compact [NN] ref, not node_NN (mirror of test_parser.py)", () => {
   const graph = parseHtml('<a href="/a">one</a><button>two</button>');
   const refs = graph.refMap();

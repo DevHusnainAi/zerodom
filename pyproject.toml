@@ -58,6 +58,10 @@ dependencies = [
 # stdlib http1 engine is always available and `pip install 'zerodom[race]'` adds
 # this. httpx[http2] pulls h2/hpack/hyperframe (pure-Python).
 race = ["httpx[http2]>=0.27,<1"]
+# `from zerodom.crawl4ai import ZeroDOMExtractionStrategy` only: the adapter imports
+# crawl4ai's ExtractionStrategy base. Optional — the adapter is the only thing that
+# needs crawl4ai, and only someone already using Crawl4AI reaches for it.
+crawl4ai = ["crawl4ai>=0.4"]
 
 [project.urls]
 Homepage = "https://zerodom.vexralabs.com"

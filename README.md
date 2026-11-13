@@ -279,6 +279,26 @@ file-loaded scope is *locked*, so an unattended agent can't widen its own bounds
 > states exactly when ZeroDOM fits (and when it doesn't) with numbers you can re-verify from
 > the linked benchmark scripts, not marketing copy.
 
+### Use it from Crawl4AI
+
+If you already crawl with [Crawl4AI](https://github.com/unclecode/crawl4ai), ZeroDOM ships an
+opt-in `ExtractionStrategy` that returns a token-lean, selector-backed **actionable snapshot**
+(the elements an agent can click/fill, state inline, selectors kept out of the model context) —
+~68% fewer tokens than the page's own `raw_markdown`, median across 15 pages:
+
+```python
+from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
+from zerodom.crawl4ai import ZeroDOMExtractionStrategy       # pip install 'zerodom[crawl4ai]'
+
+cfg = CrawlerRunConfig(extraction_strategy=ZeroDOMExtractionStrategy())
+async with AsyncWebCrawler() as crawler:
+    result = await crawler.arun("https://example.com/login", config=cfg)
+    print(result.extracted_content)      # [01] input Password filled \n [02] button Sign in
+```
+
+Crawl4AI hands the strategy already-rendered HTML, so state comes from the static DOM that HTML
+exposes; sensitive values (password/card/CVV/SSN) are redacted to `filled`, never carried.
+
 ---
 
 ## Why the agent sees so few tokens

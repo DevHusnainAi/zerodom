@@ -16,7 +16,7 @@ from typing import Any
 import lxml.html
 from lxml.html import HtmlElement
 
-from .label_linker import LabelLinker, text_of
+from .label_linker import MAX_LABEL_LEN, LabelLinker, text_of
 
 # `head` is deliberately absent: everything bloated inside it is pruned by name
 # anyway, and lxml parks stray content (a <button> after <title>) in head where a
@@ -995,6 +995,12 @@ class ZeroDOMParser:
                 if raw and self._is_sensitive(node, el):
                     node["value"] = ""
                     node["filled"] = True
+                    # label_linker's last resort is the `value` attribute
+                    # (IDENTIFIER_ATTRS) — on an unlabelled sensitive field that
+                    # leaks the secret as the label even though `value` is blanked.
+                    # Scrub it back to a safe identifier.
+                    if node.get("label") == (el.get("value") or "").strip()[:MAX_LABEL_LEN]:
+                        node["label"] = el.get("name") or el.get("type") or "input"
                 else:
                     node["value"] = raw[:80]
                 node["action"] = "fill"

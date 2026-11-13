@@ -1011,6 +1011,13 @@ export class ZeroDOMParser {
         if (raw && ZeroDOMParser.isSensitive(node, el)) {
           node.value = "";
           node.filled = true;
+          // labelLinker's last resort is the `value` attribute (IDENTIFIER_ATTRS) —
+          // on an unlabelled sensitive field that leaks the secret as the label even
+          // though `value` is blanked. Scrub it back to a safe identifier.
+          // (80 = labelLinker's MAX_LABEL_LEN cap applied to that fallback.)
+          if (node.label === (el.getAttribute("value") ?? "").trim().slice(0, 80)) {
+            node.label = el.getAttribute("name") || el.getAttribute("type") || "input";
+          }
         } else {
           node.value = raw.slice(0, 80);
         }
