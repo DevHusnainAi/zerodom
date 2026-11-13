@@ -92,7 +92,7 @@ Import order in `__init__.py` matters: `label_linker` → `parser` → `playwrig
 - MV3 service worker, WS to `zerodom relay`
 - Groups zerodom tabs, requests `debugger/tabs/tabGroups/storage/alarms`
 - Uses `Input.setIgnoreInputEvents` to block user input while attached
-- Connects to fixed `ws://127.0.0.1:8765/extension/local`; no URL field in popup
+- Connects to `ws://127.0.0.1:8765/extension/local`, falling forward to 8766–8768 when busy (2nd/3rd profile); no URL field in popup
 
 ## Known gotchas
 - `test_playwright.py` requires Chromium — skipped automatically if missing

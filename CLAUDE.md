@@ -24,9 +24,9 @@ uv run python benchmarks/benchmark_tokens.py   # token-savings report (tiktoken,
 uv build                             # wheel + sdist into dist/
 # no linter/formatter/type-checker is configured (no ruff/mypy in pyproject or CI)
 
-zerodom <url>                        # = `zerodom inspect <url>`; also audit/relay/scan/crawl/compare/sweep/extension/setup/config
+zerodom <url>                        # = `zerodom inspect <url>`; also audit/relay/scan/crawl/compare/sweep/repeat/probe/race/extension/setup/config
 zerodom setup                        # guided first-run: Chromium check, extension path, MCP config, relay
-zerodom relay                        # WS bridge on :8765 for the Chrome extension
+zerodom relay [--port N]             # WS bridge on :8765 for the Chrome extension (2nd profile: --port 8766)
 zerodom inspect <url> --pipe         # JSONL node stream to stdout (one node per line)
 zerodom inspect --stealth <url>      # spawn throwaway Chrome over a CDP pipe (no port, no Playwright)
 cat targets.txt | zerodom scan -     # match each page against surfaces.yaml, findings as JSONL
@@ -54,10 +54,11 @@ npm test                             # node --test --experimental-strip-types, m
 
 ### Which tests need what
 
-- `test_parser.py`, `test_audit.py`, `test_cli.py`, `test_jsintel.py`, `test_surfaces.py`, `test_graph_ui_sync.py`, `test_clearance.py`, `test_scope_escape.py` — pure, no browser (`test_clearance`/`test_scope_escape` drive the ladder + scope with fakes and local fake-solver servers).
+- `test_parser.py`, `test_audit.py`, `test_cli.py`, `test_jsintel.py`, `test_surfaces.py`, `test_graph_ui_sync.py`, `test_clearance.py`, `test_scope_escape.py`, `test_settle_gate.py`, `test_race.py` — pure, no browser (`test_clearance`/`test_scope_escape` drive the ladder + scope with fakes and local fake-solver servers; `test_race` bursts a local `ThreadingHTTPServer` with a real check-then-act window).
 - `js/test/parser.test.ts` — the TS parser, case-for-case mirror of `test_parser.py`;
-  `js/test/graphUi.test.ts` — the shared graph UI, mounted under linkedom. Both via `cd js && npm test`.
-- `test_mcp.py`, `test_mcp_cdp.py` — MCP tools against a `FakePage`/`FakeGotoPage`, no browser.
+  `js/test/graphUi.test.ts` — the shared graph UI, mounted under linkedom;
+  `js/test/settleGate.test.ts` — the network-idle gate, mirror of `test_settle_gate.py`. All via `cd js && npm test`.
+- `test_mcp.py`, `test_mcp_cdp.py`, `test_multi_profile.py`, `test_identity_swap.py` — MCP tools against a `FakePage`/`FakeGotoPage`, no browser.
 - `test_relay.py` — `BrowserModel` state machine with a `FakeExtension`; `test_relay_server.py` —
   real WebSocket round-trips through `RelayServer`, no browser. Each test runs its whole
   start/exercise/stop inside one `asyncio.run()` (a `websockets` server is bound to the loop
@@ -74,7 +75,7 @@ npm test                             # node --test --experimental-strip-types, m
   ladder; a real CF edge is validated by pointing `zerodom` at your *own* CF-fronted / in-scope host.
 - `test_extension_e2e.py` — real relay + real unpacked extension + headed Chromium, opt-in via
   `ZERODOM_E2E=1` and never in CI. Stop any running `zerodom relay`/`zerodom-mcp` first: the
-  extension only ever dials the fixed default port. Run it manually after touching
+  extension falls forward 8765→8766→8767→8768 to the first free relay, so a stale one steals the connection. Run it manually after touching
   `relay.py` or `extension/background.js`.
 
 ## Architecture
@@ -209,7 +210,7 @@ first — for the FR-numbered ones it states the design constraint.
   reports `ok`/`dead`/`ambiguous`/`invalid` — the same "matches more than one element"
   failure mode `_selector()` in `parser.py` is built to avoid, but for selectors a human
   already wrote.
-- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `sweep` / `setup` / `config` / `extension` (prints the unpacked
+- **`cli.py`** — `zerodom inspect <url>` / `audit` / `relay` / `scan` / `crawl` / `compare` / `sweep` / `repeat` / `probe` / `race` / `setup` / `config` / `extension` (prints the unpacked
   extension's path; the wheel bundles `extension/` as `zerodom/extension` via hatch `force-include`,
   and each `v*` release also attaches a zip + sha256) (entry point `zerodom`; a bare
   first arg that isn't a subcommand is rewritten to `inspect`). `capture()` shares one
@@ -253,6 +254,12 @@ Import order in `__init__.py` matters for avoiding circular imports:
   (`# ponytail: one global browser session`), not an oversight; don't add multi-session
   support unless concurrent pages are actually needed. Multi-*tab* already exists
   (`_session["pages"]`, `zerodom_new_tab`/`list_tabs`/`switch_tab`/`close_tab`).
+- **Multi-profile** is layered on that one session, not a second one: `zerodom_switch_profile(name,
+  endpoint)` swaps exactly `_PROFILE_KEYS` (connection + page state) between the flat `_session`
+  and `_session["profiles"][name]`, so every page tool keeps reading `_session` untouched. Scope,
+  identities and `profiles` itself are cross-profile. Each profile is its own relay (`--port`);
+  `_cdp_endpoint()` honors the active one. A new key that is per-page state must be added to
+  `_PROFILE_KEYS` *and* `_blank_profile_state()`, or it leaks across profiles.
 - Every tool re-reads the live DOM through `_read()` rather than re-navigating, so typed
   form state and scroll position survive across actions — `zerodom_parse_url` is the only
   tool that calls `page.goto`.
@@ -266,7 +273,11 @@ Import order in `__init__.py` matters for avoiding circular imports:
   cross-tenant IDOR. The live identity goes out through an in-page fetch — Chrome's own
   network stack, fingerprint included — so it can pass a WAF that fingerprints the
   connection; registered identities use Playwright's `APIRequestContext` (their cookies,
-  but an HTTP client's fingerprint, not Chrome's). `_reject_undrivable()` refuses chrome://,
+  but an HTTP client's fingerprint, not Chrome's) — unless registered `from_live=True`
+  (`_SwapIdentity`: swaps the identity's cookie jar into the live tab per request, restored
+  in `finally`, so it sends with the real Chrome fingerprint and passes a fingerprinting WAF)
+  or with an `endpoint` (`_ProfileIdentity`: binds a second profile's live session).
+  `_reject_undrivable()` refuses chrome://,
   extension, devtools and Web Store URLs (they can't be attached and used to wedge the
   session); `relay._is_attachable()`/`create_target` enforce the same at the relay layer.
 - **Scope enforcement** (`_scope_ok`/`_enforce_action`, tool `zerodom_set_scope`, env
